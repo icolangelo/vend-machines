@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        --background: 210 20% 98%;
+        --foreground: 220 26% 10%;
+
+        --card: 0 0% 100%;
+        --card-foreground: 220 26% 10%;
+
+        --popover: 0 0% 100%;
+        --popover-foreground: 220 26% 10%;
+
+        --primary: 220 26% 10%;
+        --primary-foreground: 0 0% 100%;
+
+        --secondary: 220 9% 46%;
+        --secondary-foreground: 0 0% 100%;
+
+        --muted: 220 14% 96%;
+        --muted-foreground: 220 9% 46%;
+
+        --accent: 217 91% 60%;
+        --accent-foreground: 0 0% 100%;
+
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+
+        --success: 160 84% 39%;
+        --success-foreground: 0 0% 100%;
+
+        --warning: 38 92% 50%;
+        --warning-foreground: 0 0% 100%;
+
+        --border: 220 13% 91%;
+        --input: 220 13% 91%;
+        --ring: 217 91% 60%;
+
+        --radius: 0.25rem;
+
+        --sidebar-background: 220 26% 10%;
+        --sidebar-foreground: 220 14% 96%;
+        --sidebar-primary: 217 91% 60%;
+        --sidebar-primary-foreground: 0 0% 100%;
+        --sidebar-accent: 220 20% 16%;
+        --sidebar-accent-foreground: 220 14% 96%;
+        --sidebar-border: 220 20% 18%;
+        --sidebar-ring: 217 91% 60%;
+
+        --surface: 0 0% 100%;
+        --surface-alt: 220 14% 96%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+        letter-spacing: -0.01em;
+    }
+}
+
+@layer utilities {
+    .font-mono-data {
+        font-family: 'IBM Plex Mono', monospace;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.03em;
+    }
+
+    .text-label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: hsl(var(--muted-foreground));
+    }
+
+    .animate-fade-in {
+        animation: fadeIn 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+
+    .animate-slide-up {
+        animation: slideUp 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
