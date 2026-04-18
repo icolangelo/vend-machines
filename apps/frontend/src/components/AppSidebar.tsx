@@ -26,7 +26,7 @@ const mainItems = [
     { title: "Dashboard", url: "/", icon: LayoutDashboard },
     { title: "Máquinas", url: "/machines", icon: Box },
     { title: "Clientes", url: "/clients", icon: Users },
-    { title: "Produtos", url: "/produtos", icon: Package },
+    { title: "Produtos", url: "/products", icon: Package },
     { title: "Relatórios", url: "/relatorios", icon: BarChart3 },
 ];
 

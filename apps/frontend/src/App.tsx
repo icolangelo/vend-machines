@@ -8,6 +8,7 @@ import Login from "./pages/Login.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import Machines from "./pages/Machines.tsx";
 import Clients from "./pages/Clients.tsx";
+import Products from "./pages/Products.tsx";
 import Settings from "./pages/Settings.tsx";
 
 const queryClient = new QueryClient();
@@ -23,6 +24,7 @@ const App = () => (
                     <Route path="/dashboard" element={<Index />} />
                     <Route path="/machines" element={<Machines />} />
                     <Route path="/clients" element={<Clients />} />
+                    <Route path="/products" element={<Products />} />
                     <Route path="/settings" element={<Settings />} />
                     {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                     <Route path="*" element={<NotFound />} />

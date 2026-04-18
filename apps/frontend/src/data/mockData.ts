@@ -18,10 +18,20 @@ export interface Client {
 }
 
 export interface Product {
-  name: string;
-  totalSold: number;
-  revenue: number;
-  trend: number; // % change
+    name: string;
+    totalSold: number;
+    revenue: number;
+    trend: number; // % change
+}
+
+export interface FullProduct {
+    id: string;
+    code: string;
+    name: string;
+    description: string;
+    typeId: string;
+    isAlcoholic: boolean;
+    cost: number;
 }
 
 export interface ProductType {
@@ -73,11 +83,41 @@ export const topProducts: Product[] = [
 ];
 
 export const bottomProducts: Product[] = [
-  { name: "Chá Gelado Leão", totalSold: 89, revenue: 356, trend: -28.4 },
-  { name: "Amendoim Japonês", totalSold: 112, revenue: 336, trend: -19.2 },
-  { name: "Energético Monster", totalSold: 156, revenue: 1248, trend: -12.8 },
-  { name: "Paçoca Amor", totalSold: 178, revenue: 356, trend: -8.5 },
-  { name: "Vitamina Yakult", totalSold: 203, revenue: 609, trend: -5.1 },
+    { name: "Chá Gelado Leão", totalSold: 89, revenue: 356, trend: -28.4 },
+    { name: "Amendoim Japonês", totalSold: 112, revenue: 336, trend: -19.2 },
+    { name: "Energético Monster", totalSold: 156, revenue: 1248, trend: -12.8 },
+    { name: "Paçoca Amor", totalSold: 178, revenue: 356, trend: -8.5 },
+    { name: "Vitamina Yakult", totalSold: 203, revenue: 609, trend: -5.1 },
+];
+
+export const products: FullProduct[] = [
+    {
+        id: "p-1",
+        code: "BEB-001",
+        name: "Coca-Cola Lata",
+        description: "Refrigerante de cola 350ml",
+        typeId: "pt-1",
+        isAlcoholic: false,
+        cost: 2.500
+    },
+    {
+        id: "p-2",
+        code: "ALC-001",
+        name: "Cerveja Heineken",
+        description: "Cerveja lager premium 330ml",
+        typeId: "pt-1",
+        isAlcoholic: true,
+        cost: 4.850
+    },
+    {
+        id: "p-3",
+        code: "SNA-001",
+        name: "Batata Pringles",
+        description: "Batata frita sabor original 114g",
+        typeId: "pt-8",
+        isAlcoholic: false,
+        cost: 12.300
+    }
 ];
 
 export const revenueByDay = [
