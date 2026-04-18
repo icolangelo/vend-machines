@@ -31,7 +31,7 @@ export default function Login() {
       {/* Left Pane - Background Image */}
       <div className="hidden md:flex md:w-1/2 relative">
         <img
-          src="/vending-bg.png"
+          src={`${import.meta.env.BASE_URL}vending-bg.png`}
           alt="Vending Machine"
           className="w-full h-full object-cover"
         />
