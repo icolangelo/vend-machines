@@ -1,7 +1,7 @@
-import { machines } from "@/data/mockData";
+import { type Machine } from "@/data/mockData";
 import { CheckCircle2, AlertTriangle, XCircle, Package } from "lucide-react";
 
-export function MachineStatusSummary() {
+export function MachineStatusSummary({ machines }: { machines: Machine[] }) {
     const online = machines.filter((m) => m.status === "online").length;
     const warning = machines.filter((m) => m.status === "warning").length;
     const offline = machines.filter((m) => m.status === "offline").length;

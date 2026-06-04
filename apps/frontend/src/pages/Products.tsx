@@ -3,7 +3,8 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { products as initialProducts, productTypes, FullProduct } from "@/data/mockData";
+import { type FullProduct, type ProductType } from "@/data/mockData";
+import { getProducts, getProductTypes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -37,7 +38,29 @@ import { Textarea } from "@/components/ui/textarea";
 export default function Products() {
     const navigate = useNavigate();
     const { toast } = useToast();
-    const [products, setProducts] = useState<FullProduct[]>(initialProducts);
+    const [products, setProducts] = useState<FullProduct[]>([]);
+    const [productTypes, setProductTypes] = useState<ProductType[]>([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (sessionStorage.getItem("isAuthenticated") !== "true") {
+            navigate("/");
+            return;
+        }
+
+        setLoading(true);
+        Promise.all([getProducts(), getProductTypes()])
+            .then(([pList, ptList]) => {
+                setProducts(pList);
+                setProductTypes(ptList);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao carregar produtos:", err);
+                setLoading(false);
+            });
+    }, [navigate]);
+
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingProduct, setEditingProduct] = useState<FullProduct | null>(null);
     
@@ -50,12 +73,6 @@ export default function Products() {
         isAlcoholic: false,
         cost: 0,
     });
-
-    useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-        }
-    }, [navigate]);
 
     const handleLogout = () => {
         sessionStorage.removeItem("isAuthenticated");
@@ -158,7 +175,13 @@ export default function Products() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        <div className="flex items-center justify-between pb-4 border-b">
+                        {loading ? (
+                            <div className="flex items-center justify-center h-[50vh]">
+                                <p className="text-muted-foreground animate-pulse font-medium">Carregando produtos...</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-between pb-4 border-b">
                             <div>
                                 <h2 className="text-2xl font-bold tracking-tight">Gerenciamento de Produtos</h2>
                                 <p className="text-muted-foreground">
@@ -372,8 +395,9 @@ export default function Products() {
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>
-
-                    </main>
+                    </>
+                )}
+            </main>
                 </div>
             </div>
         </SidebarProvider>

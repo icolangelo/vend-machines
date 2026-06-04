@@ -6,6 +6,7 @@ import {
     BarChart3,
     Settings,
     Bell,
+    Terminal,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -27,11 +28,12 @@ const mainItems = [
     { title: "Máquinas", url: "/machines", icon: Box },
     { title: "Clientes", url: "/clients", icon: Users },
     { title: "Produtos", url: "/products", icon: Package },
-    { title: "Relatórios", url: "/relatorios", icon: BarChart3 },
+    { title: "Relatórios", url: "/reports", icon: BarChart3 },
 ];
 
 const systemItems = [
-    { title: "Alertas", url: "/alertas", icon: Bell },
+    { title: "Alertas", url: "/alerts", icon: Bell },
+    { title: "Telemetria (MDB)", url: "/telemetry", icon: Terminal },
     { title: "Configurações", url: "/settings", icon: Settings },
 ];
 

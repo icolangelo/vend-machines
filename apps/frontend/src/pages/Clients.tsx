@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { KpiCard } from "@/components/dashboard/KpiCard";
-import { clients, type Client } from "@/data/mockData";
+import { type Client } from "@/data/mockData";
+import { getClients } from "@/lib/api";
 import { Users, Box, DollarSign, ShoppingCart, ArrowLeft, ArrowRight, Info, ExternalLink } from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -9,11 +10,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 
 export default function Clients() {
     const navigate = useNavigate();
-    
+    const [clients, setClients] = useState<Client[]>([]);
+    const [loading, setLoading] = useState(true);
+
     useEffect(() => {
         if (sessionStorage.getItem("isAuthenticated") !== "true") {
             navigate("/");
+            return;
         }
+
+        setLoading(true);
+        getClients()
+            .then(data => {
+                setClients(data);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao buscar clientes:", err);
+                setLoading(false);
+            });
     }, [navigate]);
 
     const [currentPage, setCurrentPage] = useState(1);
@@ -31,13 +46,13 @@ export default function Clients() {
             totalRevenue: clients.reduce((acc, c) => acc + c.revenue30d, 0),
             totalSales: clients.reduce((acc, c) => acc + c.totalSales30d, 0)
         };
-    }, []);
+    }, [clients]);
 
     // Pagination
     const totalPages = Math.ceil(clients.length / itemsPerPage);
     const paginatedData = useMemo(() => {
         return clients.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-    }, [currentPage, itemsPerPage]);
+    }, [clients, currentPage, itemsPerPage]);
 
     return (
         <SidebarProvider>
@@ -49,7 +64,13 @@ export default function Clients() {
                         <h1 className="text-sm font-semibold text-foreground">Clientes</h1>
                     </header>
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        <div className="flex items-center justify-between">
+                        {loading ? (
+                            <div className="flex items-center justify-center h-[50vh]">
+                                <p className="text-muted-foreground animate-pulse font-medium">Carregando clientes...</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-between">
                             <h2 className="text-lg font-semibold tracking-tight">Visão Geral</h2>
                         </div>
 
@@ -176,7 +197,9 @@ export default function Clients() {
                                 </div>
                             )}
                         </div>
-                    </main>
+                    </>
+                )}
+            </main>
                 </div>
             </div>
 

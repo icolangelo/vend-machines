@@ -3,7 +3,8 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { productTypes as initialProductTypes, ProductType } from "@/data/mockData";
+import { type ProductType } from "@/data/mockData";
+import { getProductTypes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,16 +28,30 @@ import { useToast } from "@/components/ui/use-toast";
 export default function Settings() {
     const navigate = useNavigate();
     const { toast } = useToast();
-    const [types, setTypes] = useState<ProductType[]>(initialProductTypes);
-    const [isDialogOpen, setIsDialogOpen] = useState(false);
-    const [editingType, setEditingType] = useState<ProductType | null>(null);
-    const [newTypeName, setNewTypeName] = useState("");
+    const [types, setTypes] = useState<ProductType[]>([]);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (sessionStorage.getItem("isAuthenticated") !== "true") {
             navigate("/");
+            return;
         }
+
+        setLoading(true);
+        getProductTypes()
+            .then(data => {
+                setTypes(data);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao buscar tipos de produtos:", err);
+                setLoading(false);
+            });
     }, [navigate]);
+
+    const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [editingType, setEditingType] = useState<ProductType | null>(null);
+    const [newTypeName, setNewTypeName] = useState("");
 
     const handleLogout = () => {
         sessionStorage.removeItem("isAuthenticated");
@@ -118,7 +133,13 @@ export default function Settings() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        <div className="flex items-center justify-between pb-4 border-b">
+                        {loading ? (
+                            <div className="flex items-center justify-center h-[50vh]">
+                                <p className="text-muted-foreground animate-pulse font-medium">Carregando configurações...</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-between pb-4 border-b">
                             <div>
                                 <h2 className="text-2xl font-bold tracking-tight">Configurações do Sistema</h2>
                                 <p className="text-muted-foreground">
@@ -222,7 +243,8 @@ export default function Settings() {
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>
-
+                            </>
+                        )}
                     </main>
                 </div>
             </div>

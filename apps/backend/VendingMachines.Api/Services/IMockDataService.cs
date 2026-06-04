@@ -11,4 +11,6 @@ public interface IMockDataService
     List<FullProduct> GetProducts();
     List<ProductType> GetProductTypes();
     DashboardStats GetDashboardStats();
+    void AddMachine(Machine machine);
+    void UpdateMachine(Machine machine);
 }

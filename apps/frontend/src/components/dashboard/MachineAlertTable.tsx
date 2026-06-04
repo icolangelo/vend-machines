@@ -1,8 +1,8 @@
-import { machines } from "@/data/mockData";
+import { type Machine } from "@/data/mockData";
 import { StatusIndicator } from "./StatusIndicator";
 import { AlertTriangle } from "lucide-react";
 
-export function MachineAlertTable() {
+export function MachineAlertTable({ machines }: { machines: Machine[] }) {
     const alertMachines = machines.filter(
         (m) => m.status === "offline" || m.status === "warning" || m.stockLevel < 25
     );

@@ -1,7 +1,7 @@
-import { clients } from "@/data/mockData";
+import { type Client } from "@/data/mockData";
 import { Trophy } from "lucide-react";
 
-export function ClientRanking() {
+export function ClientRanking({ clients }: { clients: Client[] }) {
     const sorted = [...clients].sort((a, b) => b.revenue30d - a.revenue30d);
     const maxRevenue = sorted[0]?.revenue30d || 1;
 

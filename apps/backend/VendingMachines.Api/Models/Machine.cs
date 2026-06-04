@@ -11,4 +11,6 @@ public class Machine
     public decimal Revenue30d { get; set; }
     public int TotalSales30d { get; set; }
     public string LastSync { get; set; } = string.Empty;
+    public string SerialNumber { get; set; } = string.Empty;
 }
+

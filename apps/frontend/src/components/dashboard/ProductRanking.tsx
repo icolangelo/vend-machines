@@ -1,11 +1,11 @@
-import { topProducts, bottomProducts } from "@/data/mockData";
+import { type Product } from "@/data/mockData";
 import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight } from "lucide-react";
 
 function ProductList({
     products,
     type,
 }: {
-    products: typeof topProducts;
+    products: Product[];
     type: "top" | "bottom";
 }) {
     return (
@@ -50,7 +50,13 @@ function ProductList({
     );
 }
 
-export function ProductRanking() {
+export function ProductRanking({
+    topProducts,
+    bottomProducts,
+}: {
+    topProducts: Product[];
+    bottomProducts: Product[];
+}) {
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="bg-card border rounded-lg animate-slide-up" style={{ animationDelay: "250ms" }}>

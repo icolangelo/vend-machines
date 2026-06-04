@@ -1,1 +1,19 @@
 # vend-machines
+
+## Como iniciar o projeto
+
+Para iniciar a **API (.NET)** e o **Frontend (Vite/React)** juntos, você pode usar um dos scripts fornecidos na raiz do projeto:
+
+### Opção 1: Usando o Script em Lote (Batch) - Recomendado para Windows
+Dê um duplo clique no arquivo [start.bat](file:///d:/projects/vend-machines/start.bat) ou execute o comando abaixo no Prompt de Comando (`cmd`):
+```cmd
+start.bat
+```
+
+### Opção 2: Usando o PowerShell
+Execute o script [start.ps1](file:///d:/projects/vend-machines/start.ps1) no PowerShell:
+```powershell
+.\start.ps1
+```
+
+*(Ambos os scripts abrirão janelas de terminal separadas para a API e o Frontend, permitindo visualizar os logs de cada serviço de forma isolada).*

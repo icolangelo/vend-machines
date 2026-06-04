@@ -28,4 +28,22 @@ public class MachinesController : ControllerBase
         if (machine == null) return NotFound();
         return Ok(machine);
     }
+
+    [HttpPost]
+    public ActionResult Create([FromBody] Machine machine)
+    {
+        _mockDataService.AddMachine(machine);
+        return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
+    }
+
+    [HttpPut("{id}")]
+    public ActionResult Update(string id, [FromBody] Machine machine)
+    {
+        var existing = _mockDataService.GetMachines().FirstOrDefault(m => m.Id == id);
+        if (existing == null) return NotFound();
+        
+        machine.Id = id; // Ensure ID matches URL
+        _mockDataService.UpdateMachine(machine);
+        return NoContent();
+    }
 }

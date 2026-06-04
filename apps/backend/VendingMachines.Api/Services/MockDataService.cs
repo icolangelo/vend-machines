@@ -19,18 +19,18 @@ public class MockDataService : IMockDataService
 
     private readonly List<Machine> _machines = new()
     {
-        new Machine { Id = "VM-001", Name = "Lobby A1", ClientName = "Hospital São Luiz", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230, TotalSales30d = 847, LastSync = "2 min atrás" },
-        new Machine { Id = "VM-002", Name = "Refeitório B2", ClientName = "Hospital São Luiz", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890, TotalSales30d = 778, LastSync = "5 min atrás" },
-        new Machine { Id = "VM-003", Name = "UTI C1", ClientName = "Hospital São Luiz", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150, TotalSales30d = 430, LastSync = "1 min atrás" },
-        new Machine { Id = "VM-004", Name = "Recepção D1", ClientName = "Faculdade Anhanguera", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670, TotalSales30d = 1134, LastSync = "3 min atrás" },
-        new Machine { Id = "VM-005", Name = "Cantina E1", ClientName = "Faculdade Anhanguera", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0, TotalSales30d = 0, LastSync = "2 dias atrás" },
-        new Machine { Id = "VM-006", Name = "Hall F1", ClientName = "Condomínio Alphaville", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890, TotalSales30d = 378, LastSync = "4 min atrás" },
-        new Machine { Id = "VM-007", Name = "Academia G1", ClientName = "Condomínio Alphaville", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420, TotalSales30d = 684, LastSync = "8 min atrás" },
-        new Machine { Id = "VM-008", Name = "Terminal H1", ClientName = "Rodoviária Tietê", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940, TotalSales30d = 1788, LastSync = "1 min atrás" },
-        new Machine { Id = "VM-009", Name = "Embarque I1", ClientName = "Rodoviária Tietê", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230, TotalSales30d = 1446, LastSync = "2 min atrás" },
-        new Machine { Id = "VM-010", Name = "Plataforma J1", ClientName = "Rodoviária Tietê", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180, TotalSales30d = 1236, LastSync = "15 min atrás" },
-        new Machine { Id = "VM-011", Name = "Escritório K1", ClientName = "WeWork Faria Lima", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560, TotalSales30d = 912, LastSync = "1 min atrás" },
-        new Machine { Id = "VM-012", Name = "Lounge L1", ClientName = "WeWork Faria Lima", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230, TotalSales30d = 1046, LastSync = "3 min atrás" },
+        new Machine { Id = "VM-001", Name = "Lobby A1", ClientName = "Hospital São Luiz", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230, TotalSales30d = 847, LastSync = "2 min atrás", SerialNumber = "SN-123456" },
+        new Machine { Id = "VM-002", Name = "Refeitório B2", ClientName = "Hospital São Luiz", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890, TotalSales30d = 778, LastSync = "5 min atrás", SerialNumber = "SN-987654" },
+        new Machine { Id = "VM-003", Name = "UTI C1", ClientName = "Hospital São Luiz", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150, TotalSales30d = 430, LastSync = "1 min atrás", SerialNumber = "SN-555555" },
+        new Machine { Id = "VM-004", Name = "Recepção D1", ClientName = "Faculdade Anhanguera", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670, TotalSales30d = 1134, LastSync = "3 min atrás", SerialNumber = "SN-004" },
+        new Machine { Id = "VM-005", Name = "Cantina E1", ClientName = "Faculdade Anhanguera", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0, TotalSales30d = 0, LastSync = "2 dias atrás", SerialNumber = "SN-005" },
+        new Machine { Id = "VM-006", Name = "Hall F1", ClientName = "Condomínio Alphaville", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890, TotalSales30d = 378, LastSync = "4 min atrás", SerialNumber = "SN-006" },
+        new Machine { Id = "VM-007", Name = "Academia G1", ClientName = "Condomínio Alphaville", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420, TotalSales30d = 684, LastSync = "8 min atrás", SerialNumber = "SN-007" },
+        new Machine { Id = "VM-008", Name = "Terminal H1", ClientName = "Rodoviária Tietê", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940, TotalSales30d = 1788, LastSync = "1 min atrás", SerialNumber = "SN-008" },
+        new Machine { Id = "VM-009", Name = "Embarque I1", ClientName = "Rodoviária Tietê", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230, TotalSales30d = 1446, LastSync = "2 min atrás", SerialNumber = "SN-009" },
+        new Machine { Id = "VM-010", Name = "Plataforma J1", ClientName = "Rodoviária Tietê", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180, TotalSales30d = 1236, LastSync = "15 min atrás", SerialNumber = "SN-010" },
+        new Machine { Id = "VM-011", Name = "Escritório K1", ClientName = "WeWork Faria Lima", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560, TotalSales30d = 912, LastSync = "1 min atrás", SerialNumber = "SN-011" },
+        new Machine { Id = "VM-012", Name = "Lounge L1", ClientName = "WeWork Faria Lima", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230, TotalSales30d = 1046, LastSync = "3 min atrás", SerialNumber = "SN-012" },
     };
 
     private readonly List<Client> _clients = new()
@@ -123,5 +123,27 @@ public class MockDataService : IMockDataService
             });
         }
         return data;
+    }
+
+    public void AddMachine(Machine machine)
+    {
+        _machines.Add(machine);
+    }
+
+    public void UpdateMachine(Machine machine)
+    {
+        var existing = _machines.FirstOrDefault(m => m.Id == machine.Id);
+        if (existing != null)
+        {
+            existing.Name = machine.Name;
+            existing.ClientName = machine.ClientName;
+            existing.Location = machine.Location;
+            existing.Status = machine.Status;
+            existing.StockLevel = machine.StockLevel;
+            existing.Revenue30d = machine.Revenue30d;
+            existing.TotalSales30d = machine.TotalSales30d;
+            existing.LastSync = machine.LastSync;
+            existing.SerialNumber = machine.SerialNumber;
+        }
     }
 }

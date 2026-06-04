@@ -23,6 +23,9 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Register Telemetry Manager for Raw WebSockets
+builder.Services.AddSingleton<TelemetryManager>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -33,6 +36,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseWebSockets();
+app.UseMiddleware<VendingMachines.Api.Middlewares.WebSocketMiddleware>();
 
 app.UseAuthorization();
 

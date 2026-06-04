@@ -6,24 +6,62 @@ import { MachineAlertTable } from "@/components/dashboard/MachineAlertTable";
 import { RevenueChart } from "@/components/dashboard/RevenueChart";
 import { ClientRanking } from "@/components/dashboard/ClientRanking";
 import { ProductRanking } from "@/components/dashboard/ProductRanking";
-import { useEffect } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { machines } from "@/data/mockData";
+import { getMachines, getClients, getTopProducts, getBottomProducts, getDashboardStats } from "@/lib/api";
 import { DollarSign, ShoppingCart, Box, Zap, LogOut } from "lucide-react";
-
-const totalRevenue = machines.reduce((s, m) => s + m.revenue30d, 0);
-const totalSales = machines.reduce((s, m) => s + m.totalSales30d, 0);
-const avgStock = Math.round(machines.reduce((s, m) => s + m.stockLevel, 0) / machines.length);
-const uptime = Math.round((machines.filter((m) => m.status === "online").length / machines.length) * 100);
 
 export default function Index() {
     const navigate = useNavigate();
+    const [machinesList, setMachinesList] = useState<any[]>([]);
+    const [clientsList, setClientsList] = useState<any[]>([]);
+    const [topProductsList, setTopProductsList] = useState<any[]>([]);
+    const [bottomProductsList, setBottomProductsList] = useState<any[]>([]);
+    const [stats, setStats] = useState<any>(null);
+    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (sessionStorage.getItem("isAuthenticated") !== "true") {
             navigate("/");
+            return;
         }
+
+        setLoading(true);
+        Promise.all([
+            getMachines(),
+            getClients(),
+            getTopProducts(),
+            getBottomProducts(),
+            getDashboardStats()
+        ]).then(([mList, cList, topList, bottomList, dashboardStats]) => {
+            setMachinesList(mList);
+            setClientsList(cList);
+            setTopProductsList(topList);
+            setBottomProductsList(bottomList);
+            setStats(dashboardStats);
+            setLoading(false);
+        }).catch(err => {
+            console.error("Erro ao carregar dados do dashboard:", err);
+            setLoading(false);
+        });
     }, [navigate]);
+
+    const kpis = useMemo(() => {
+        if (loading || !stats) {
+            return { totalRevenue: 0, totalSales: 0, avgStock: 0, uptime: 0 };
+        }
+        const mLength = machinesList.length || 1;
+        const avgSt = Math.round(machinesList.reduce((s, m) => s + m.stockLevel, 0) / mLength);
+        const onlineCount = machinesList.filter((m) => m.status === "online").length;
+        const upt = Math.round((onlineCount / mLength) * 100);
+
+        return {
+            totalRevenue: stats.totalRevenue30d || 0,
+            totalSales: stats.totalSales30d || 0,
+            avgStock: avgSt,
+            uptime: upt
+        };
+    }, [machinesList, stats, loading]);
 
     const handleLogout = () => {
         sessionStorage.removeItem("isAuthenticated");
@@ -53,58 +91,66 @@ export default function Index() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {/* KPI Row */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                            <KpiCard
-                                title="Faturamento 30d"
-                                value={`R$ ${totalRevenue.toLocaleString("pt-BR")}`}
-                                icon={DollarSign}
-                                trend={{ value: 7.2, label: "vs mês anterior" }}
-                                subtitle="vs mês anterior"
-                            />
-                            <KpiCard
-                                title="Vendas 30d"
-                                value={totalSales.toLocaleString("pt-BR")}
-                                icon={ShoppingCart}
-                                trend={{ value: 4.8, label: "" }}
-                                subtitle="unidades"
-                            />
-                            <KpiCard
-                                title="Estoque Médio"
-                                value={`${avgStock}%`}
-                                icon={Box}
-                                variant={avgStock < 30 ? "warning" : "default"}
-                                subtitle="todas as máquinas"
-                            />
-                            <KpiCard
-                                title="Disponibilidade"
-                                value={`${uptime}%`}
-                                icon={Zap}
-                                variant={uptime < 90 ? "destructive" : "success"}
-                                subtitle="máquinas online"
-                            />
-                        </div>
-
-                        {/* Chart + Status */}
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                            <div className="lg:col-span-2">
-                                <RevenueChart />
+                        {loading ? (
+                            <div className="flex items-center justify-center h-[50vh]">
+                                <p className="text-muted-foreground animate-pulse font-medium">Carregando painel...</p>
                             </div>
-                            <MachineStatusSummary />
-                        </div>
+                        ) : (
+                            <>
+                                {/* KPI Row */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                                    <KpiCard
+                                        title="Faturamento 30d"
+                                        value={`R$ ${kpis.totalRevenue.toLocaleString("pt-BR")}`}
+                                        icon={DollarSign}
+                                        trend={{ value: 7.2, label: "vs mês anterior" }}
+                                        subtitle="vs mês anterior"
+                                    />
+                                    <KpiCard
+                                        title="Vendas 30d"
+                                        value={kpis.totalSales.toLocaleString("pt-BR")}
+                                        icon={ShoppingCart}
+                                        trend={{ value: 4.8, label: "" }}
+                                        subtitle="unidades"
+                                    />
+                                    <KpiCard
+                                        title="Estoque Médio"
+                                        value={`${kpis.avgStock}%`}
+                                        icon={Box}
+                                        variant={kpis.avgStock < 30 ? "warning" : "default"}
+                                        subtitle="todas as máquinas"
+                                    />
+                                    <KpiCard
+                                        title="Disponibilidade"
+                                        value={`${kpis.uptime}%`}
+                                        icon={Zap}
+                                        variant={kpis.uptime < 90 ? "destructive" : "success"}
+                                        subtitle="máquinas online"
+                                    />
+                                </div>
 
-                        {/* Alert Table */}
-                        <MachineAlertTable />
+                                {/* Chart + Status */}
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <div className="lg:col-span-2">
+                                        <RevenueChart />
+                                    </div>
+                                    <MachineStatusSummary machines={machinesList} />
+                                </div>
 
-                        {/* Rankings */}
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                            <div className="lg:col-span-1">
-                                <ClientRanking />
-                            </div>
-                            <div className="lg:col-span-2">
-                                <ProductRanking />
-                            </div>
-                        </div>
+                                {/* Alert Table */}
+                                <MachineAlertTable machines={machinesList} />
+
+                                {/* Rankings */}
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <div className="lg:col-span-1">
+                                        <ClientRanking clients={clientsList} />
+                                    </div>
+                                    <div className="lg:col-span-2">
+                                        <ProductRanking topProducts={topProductsList} bottomProducts={bottomProductsList} />
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </main>
                 </div>
             </div>

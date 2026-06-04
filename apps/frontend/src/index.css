@@ -121,3 +121,42 @@
         transform: translateY(0);
     }
 }
+
+/* Custom banner styles for Ambiente de Teste */
+.ambiente-teste-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 24px;
+    background-color: #ef4444;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    z-index: 9999;
+    user-select: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.is-test-env {
+    padding-top: 24px;
+}
+
+/* Shift sidebar elements down when banner is present */
+.is-test-env .fixed.inset-y-0 {
+    top: 24px !important;
+    height: calc(100vh - 24px) !important;
+}
+
+.is-test-env .h-svh {
+    height: calc(100vh - 24px) !important;
+}
+
+.is-test-env .min-h-svh {
+    min-height: calc(100vh - 24px) !important;
+}

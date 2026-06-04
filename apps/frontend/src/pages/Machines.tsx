@@ -2,8 +2,10 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { StatusIndicator } from "@/components/dashboard/StatusIndicator";
-import { machines, clients, type Machine } from "@/data/mockData";
-import { Box, Zap, AlertTriangle, ListFilter, ArrowLeft, ArrowRight, Info } from "lucide-react";
+import { type Machine, type Client } from "@/data/mockData";
+import { getMachines, getClients } from "@/lib/api";
+import { Box, Zap, AlertTriangle, ListFilter, ArrowLeft, ArrowRight, Info, Plus, Edit } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -20,16 +22,33 @@ export default function Machines() {
     const navigate = useNavigate();
     const location = useLocation();
     
+    const [machines, setMachines] = useState<Machine[]>([]);
+    const [clients, setClients] = useState<Client[]>([]);
+    const [loading, setLoading] = useState(true);
+
     useEffect(() => {
         if (sessionStorage.getItem("isAuthenticated") !== "true") {
             navigate("/");
+            return;
         }
+
+        setLoading(true);
+        Promise.all([getMachines(), getClients()])
+            .then(([mList, cList]) => {
+                setMachines(mList);
+                setClients(cList);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao carregar máquinas:", err);
+                setLoading(false);
+            });
     }, [navigate]);
 
     const [selectedClient, setSelectedClient] = useState<string>(
         location.state?.selectedClient || "all"
     );
-    const [filterType, setFilterType] = useState<"attention" | "all">("attention");
+    const [filterType, setFilterType] = useState<"attention" | "all">("all");
     const [currentPage, setCurrentPage] = useState(1);
     const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
     
@@ -39,7 +58,7 @@ export default function Machines() {
     const filteredMachinesByClient = useMemo(() => {
         if (selectedClient === "all") return machines;
         return machines.filter(m => m.clientName === selectedClient);
-    }, [selectedClient]);
+    }, [machines, selectedClient]);
 
     const { avgStock, uptime, totalCount, attentionCount } = useMemo(() => {
         const total = filteredMachinesByClient.length;
@@ -89,8 +108,20 @@ export default function Machines() {
                         <h1 className="text-sm font-semibold text-foreground">Máquinas</h1>
                     </header>
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        <div className="flex items-center justify-between">
-                            <h2 className="text-lg font-semibold tracking-tight">Visão Geral</h2>
+                        {loading ? (
+                            <div className="flex items-center justify-center h-[50vh]">
+                                <p className="text-muted-foreground animate-pulse font-medium">Carregando máquinas...</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                                <h2 className="text-lg font-semibold tracking-tight">Visão Geral</h2>
+                                <Button onClick={() => navigate("/machines/new")} size="sm" className="gap-2">
+                                    <Plus className="w-4 h-4" />
+                                    Nova Máquina
+                                </Button>
+                            </div>
                             <div className="w-[280px]">
                                 <Select value={selectedClient} onValueChange={setSelectedClient}>
                                     <SelectTrigger>
@@ -215,16 +246,28 @@ export default function Machines() {
                                                         {machine.lastSync}
                                                     </td>
                                                     <td className="px-5 py-3 text-right">
-                                                        <button 
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                setSelectedMachine(machine);
-                                                            }}
-                                                            className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
-                                                            title="Mais detalhes"
-                                                        >
-                                                            <Info className="w-4 h-4" />
-                                                        </button>
+                                                        <div className="flex items-center justify-end gap-1">
+                                                            <button 
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    navigate(`/machines/${machine.id}/edit`);
+                                                                }}
+                                                                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                                                                title="Editar Equipamento"
+                                                            >
+                                                                <Edit className="w-4 h-4" />
+                                                            </button>
+                                                            <button 
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setSelectedMachine(machine);
+                                                                }}
+                                                                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                                                                title="Mais detalhes"
+                                                            >
+                                                                <Info className="w-4 h-4" />
+                                                            </button>
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             ))
@@ -257,25 +300,48 @@ export default function Machines() {
                                 </div>
                             )}
                         </div>
-                    </main>
-                </div>
-            </div>
+                    </>
+                )}
+            </main>
+        </div>
+    </div>
 
             {/* Modal de Detalhes da Máquina */}
             <Dialog open={!!selectedMachine} onOpenChange={(open) => !open && setSelectedMachine(null)}>
                 <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle className="text-2xl">{selectedMachine?.name}</DialogTitle>
-                        <DialogDescription>
-                            Informações e indicadores completos do equipamento.
-                        </DialogDescription>
+                        <div className="flex items-start justify-between pr-6">
+                            <div>
+                                <DialogTitle className="text-2xl">{selectedMachine?.name}</DialogTitle>
+                                <DialogDescription>
+                                    Informações e indicadores completos do equipamento.
+                                </DialogDescription>
+                            </div>
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="gap-2"
+                                onClick={() => {
+                                    if (selectedMachine) {
+                                        navigate(`/machines/${selectedMachine.id}/edit`);
+                                    }
+                                }}
+                            >
+                                <Edit className="w-4 h-4" />
+                                Editar Configurações
+                            </Button>
+                        </div>
                     </DialogHeader>
                     {selectedMachine && (
                         <div className="space-y-4 py-4">
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-6 bg-muted/30 p-6 rounded-lg border">
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-6 bg-muted/30 p-6 rounded-lg border">
                                 <div>
                                     <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">ID da Máquina</p>
                                     <p className="font-mono-data font-medium text-lg">{selectedMachine.id}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Serial Number</p>
+                                    <p className="font-mono-data font-medium text-lg">{selectedMachine.serialNumber || "-"}</p>
                                 </div>
                                 <div>
                                     <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Nome</p>

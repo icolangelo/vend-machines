@@ -22,7 +22,7 @@ export default function Login() {
       sessionStorage.setItem("isAuthenticated", "true");
       navigate("/dashboard");
     } else {
-      setError("Invalid password. Please use 'teste123'.");
+      setError("Senha incorreta. Por favor, tente novamente.");
     }
   };
 
