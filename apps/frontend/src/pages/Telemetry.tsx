@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Terminal, Send, Trash2, Power, DoorOpen, DoorClosed, CheckCircle2, XCircle, FileText, Settings, RefreshCw } from "lucide-react";
 import { type Machine } from "@/data/mockData";
-import { getMachines } from "@/lib/api";
+import { getMachines, API_BASE_URL } from "@/lib/api";
 
 export default function Telemetry() {
     const [logs, setLogs] = useState<string[]>([]);
@@ -29,9 +29,12 @@ export default function Telemetry() {
     }, [logs]);
 
     useEffect(() => {
-        // Connect to the raw websocket endpoint on the .NET API
-        // In dev, the API runs on port 5118
-        const socket = new WebSocket("ws://localhost:5118/sitehandler.ashx");
+        // Conectar dinamicamente ao endpoint websocket na API .NET
+        const wsUrl = API_BASE_URL
+            .replace(/^http:/, "ws:")
+            .replace(/^https:/, "wss:")
+            .replace(/\/api$/, "/sitehandler.ashx");
+        const socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
             setLogs(prev => [...prev, "[SISTEMA] Conectado ao WebSocket de Telemetria!"]);
