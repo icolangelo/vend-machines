@@ -1,0 +1,9 @@
+bin/
+obj/
+out/
+.git/
+.vs/
+.vscode/
+Dockerfile
+.dockerignore
+appsettings.Development.json

@@ -8,34 +8,34 @@ namespace VendingMachines.Api.Controllers;
 [Route("api/[controller]")]
 public class ProductsController : ControllerBase
 {
-    private readonly IMockDataService _mockDataService;
+    private readonly IDataService _dataService;
 
-    public ProductsController(IMockDataService mockDataService)
+    public ProductsController(IDataService dataService)
     {
-        _mockDataService = mockDataService;
+        _dataService = dataService;
     }
 
     [HttpGet]
     public ActionResult<IEnumerable<FullProduct>> GetAll()
     {
-        return Ok(_mockDataService.GetProducts());
+        return Ok(_dataService.GetProducts());
     }
 
     [HttpGet("top")]
     public ActionResult<IEnumerable<Product>> GetTop()
     {
-        return Ok(_mockDataService.GetTopProducts());
+        return Ok(_dataService.GetTopProducts());
     }
 
     [HttpGet("bottom")]
     public ActionResult<IEnumerable<Product>> GetBottom()
     {
-        return Ok(_mockDataService.GetBottomProducts());
+        return Ok(_dataService.GetBottomProducts());
     }
 
     [HttpGet("types")]
     public ActionResult<IEnumerable<ProductType>> GetTypes()
     {
-        return Ok(_mockDataService.GetProductTypes());
+        return Ok(_dataService.GetProductTypes());
     }
 }

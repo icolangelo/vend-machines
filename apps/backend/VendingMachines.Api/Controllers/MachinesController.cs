@@ -8,23 +8,23 @@ namespace VendingMachines.Api.Controllers;
 [Route("api/[controller]")]
 public class MachinesController : ControllerBase
 {
-    private readonly IMockDataService _mockDataService;
+    private readonly IDataService _dataService;
 
-    public MachinesController(IMockDataService mockDataService)
+    public MachinesController(IDataService dataService)
     {
-        _mockDataService = mockDataService;
+        _dataService = dataService;
     }
 
     [HttpGet]
     public ActionResult<IEnumerable<Machine>> GetAll()
     {
-        return Ok(_mockDataService.GetMachines());
+        return Ok(_dataService.GetMachines());
     }
 
     [HttpGet("{id}")]
     public ActionResult<Machine> GetById(string id)
     {
-        var machine = _mockDataService.GetMachines().FirstOrDefault(m => m.Id == id);
+        var machine = _dataService.GetMachines().FirstOrDefault(m => m.Id == id);
         if (machine == null) return NotFound();
         return Ok(machine);
     }
@@ -32,18 +32,18 @@ public class MachinesController : ControllerBase
     [HttpPost]
     public ActionResult Create([FromBody] Machine machine)
     {
-        _mockDataService.AddMachine(machine);
+        _dataService.AddMachine(machine);
         return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
     }
 
     [HttpPut("{id}")]
     public ActionResult Update(string id, [FromBody] Machine machine)
     {
-        var existing = _mockDataService.GetMachines().FirstOrDefault(m => m.Id == id);
+        var existing = _dataService.GetMachines().FirstOrDefault(m => m.Id == id);
         if (existing == null) return NotFound();
         
-        machine.Id = id; // Ensure ID matches URL
-        _mockDataService.UpdateMachine(machine);
+        machine.Id = id; // Garantir que o ID corresponda à URL
+        _dataService.UpdateMachine(machine);
         return NoContent();
     }
 }

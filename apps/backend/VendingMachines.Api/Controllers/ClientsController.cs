@@ -8,16 +8,16 @@ namespace VendingMachines.Api.Controllers;
 [Route("api/[controller]")]
 public class ClientsController : ControllerBase
 {
-    private readonly IMockDataService _mockDataService;
+    private readonly IDataService _dataService;
 
-    public ClientsController(IMockDataService mockDataService)
+    public ClientsController(IDataService dataService)
     {
-        _mockDataService = mockDataService;
+        _dataService = dataService;
     }
 
     [HttpGet]
     public ActionResult<IEnumerable<Client>> GetAll()
     {
-        return Ok(_mockDataService.GetClients());
+        return Ok(_dataService.GetClients());
     }
 }

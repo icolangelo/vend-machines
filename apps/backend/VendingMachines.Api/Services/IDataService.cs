@@ -2,7 +2,7 @@ using VendingMachines.Api.Models;
 
 namespace VendingMachines.Api.Services;
 
-public interface IMockDataService
+public interface IDataService
 {
     List<Machine> GetMachines();
     List<Client> GetClients();

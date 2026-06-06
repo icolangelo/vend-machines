@@ -8,16 +8,16 @@ namespace VendingMachines.Api.Controllers;
 [Route("api/[controller]")]
 public class DashboardController : ControllerBase
 {
-    private readonly IMockDataService _mockDataService;
+    private readonly IDataService _dataService;
 
-    public DashboardController(IMockDataService mockDataService)
+    public DashboardController(IDataService dataService)
     {
-        _mockDataService = mockDataService;
+        _dataService = dataService;
     }
 
     [HttpGet("stats")]
     public ActionResult<DashboardStats> GetStats()
     {
-        return Ok(_mockDataService.GetDashboardStats());
+        return Ok(_dataService.GetDashboardStats());
     }
 }
