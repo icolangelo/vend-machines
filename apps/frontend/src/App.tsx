@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,14 +18,14 @@ import Alerts from "./pages/Alerts.tsx";
 const queryClient = new QueryClient();
 
 const App = () => {
-    const isTestEnv = import.meta.env.VITE_IS_TEST_ENVIRONMENT !== "false";
+    const isTestEnv = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
     return (
         <QueryClientProvider client={queryClient}>
             <TooltipProvider>
                 <Toaster />
                 <Sonner />
-                <BrowserRouter basename={import.meta.env.BASE_URL}>
+                <HashRouter>
                     <div className={isTestEnv ? "is-test-env" : ""}>
                         {isTestEnv && (
                             <div className="ambiente-teste-banner">
@@ -48,7 +48,7 @@ const App = () => {
                             <Route path="*" element={<NotFound />} />
                         </Routes>
                     </div>
-                </BrowserRouter>
+                </HashRouter>
             </TooltipProvider>
         </QueryClientProvider>
     );

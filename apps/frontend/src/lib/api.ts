@@ -12,9 +12,9 @@ import {
     type ProductType
 } from "@/data/mockData";
 
-const API_BASE_URL = "http://localhost:5118/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5118/api";
 
-const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT !== "false";
+const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
 export async function getMachines(): Promise<Machine[]> {
     if (isTestEnv()) {
