@@ -12,5 +12,7 @@ public class Machine
     public int TotalSales30d { get; set; }
     public string LastSync { get; set; } = string.Empty;
     public string SerialNumber { get; set; } = string.Empty;
+    public Guid? CompanyId { get; set; }
+    public Company? Company { get; set; }
 }
 

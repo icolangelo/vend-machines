@@ -3,6 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { type ProductType } from "@/data/mockData";
 import { getProductTypes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import { useToast } from "@/components/ui/use-toast";
 
 export default function Settings() {
     const navigate = useNavigate();
+    const { logout } = useAuth();
     const { toast } = useToast();
     const [types, setTypes] = useState<ProductType[]>([]);
     const [loading, setLoading] = useState(true);
@@ -54,8 +56,7 @@ export default function Settings() {
     const [newTypeName, setNewTypeName] = useState("");
 
     const handleLogout = () => {
-        sessionStorage.removeItem("isAuthenticated");
-        navigate("/");
+        logout();
     };
 
     const handleSaveType = () => {

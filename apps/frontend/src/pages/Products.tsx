@@ -3,6 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { type FullProduct, type ProductType } from "@/data/mockData";
 import { getProducts, getProductTypes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 export default function Products() {
     const navigate = useNavigate();
+    const { logout } = useAuth();
     const { toast } = useToast();
     const [products, setProducts] = useState<FullProduct[]>([]);
     const [productTypes, setProductTypes] = useState<ProductType[]>([]);
@@ -75,8 +77,7 @@ export default function Products() {
     });
 
     const handleLogout = () => {
-        sessionStorage.removeItem("isAuthenticated");
-        navigate("/");
+        logout();
     };
 
     const handleSaveProduct = () => {

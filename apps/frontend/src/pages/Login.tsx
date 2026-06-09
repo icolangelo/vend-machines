@@ -1,28 +1,34 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Package } from "lucide-react";
+import { Package, Loader2 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { login, token } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (sessionStorage.getItem("isAuthenticated") === "true") {
+    if (token) {
       navigate("/dashboard");
     }
-  }, [navigate]);
+  }, [token, navigate]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setIsSubmitting(true);
 
-    if (password === "teste123") {
-      sessionStorage.setItem("isAuthenticated", "true");
+    try {
+      await login(email, password);
       navigate("/dashboard");
-    } else {
-      setError("Senha incorreta. Por favor, tente novamente.");
+    } catch (err: any) {
+      setError(err.message || "Ocorreu um erro ao tentar entrar. Tente novamente.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -100,9 +106,17 @@ export default function Login() {
 
             <button
               type="submit"
-              className="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-2.5 px-4 rounded-md transition-colors"
+              disabled={isSubmitting}
+              className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-blue-400 text-white font-medium py-2.5 px-4 rounded-md transition-colors flex items-center justify-center gap-2"
             >
-              Log In
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Entrando...
+                </>
+              ) : (
+                "Entrar"
+              )}
             </button>
 
             <div className="relative my-6">

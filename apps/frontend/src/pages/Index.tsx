@@ -10,9 +10,11 @@ import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { getMachines, getClients, getTopProducts, getBottomProducts, getDashboardStats } from "@/lib/api";
 import { DollarSign, ShoppingCart, Box, Zap, LogOut } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Index() {
     const navigate = useNavigate();
+    const { logout } = useAuth();
     const [machinesList, setMachinesList] = useState<any[]>([]);
     const [clientsList, setClientsList] = useState<any[]>([]);
     const [topProductsList, setTopProductsList] = useState<any[]>([]);
@@ -64,8 +66,7 @@ export default function Index() {
     }, [machinesList, stats, loading]);
 
     const handleLogout = () => {
-        sessionStorage.removeItem("isAuthenticated");
-        navigate("/");
+        logout();
     };
 
     return (

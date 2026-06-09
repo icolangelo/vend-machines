@@ -7,8 +7,10 @@ import {
     Settings,
     Bell,
     Terminal,
+    Shield,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
+import { useAuth } from "@/contexts/AuthContext";
 import {
     Sidebar,
     SidebarContent,
@@ -31,28 +33,37 @@ const mainItems = [
     { title: "Relatórios", url: "/reports", icon: BarChart3 },
 ];
 
-const systemItems = [
-    { title: "Alertas", url: "/alerts", icon: Bell },
-    { title: "Telemetria (MDB)", url: "/telemetry", icon: Terminal },
-    { title: "Configurações", url: "/settings", icon: Settings },
-];
-
 export function AppSidebar() {
     const { state } = useSidebar();
     const collapsed = state === "collapsed";
+    const { user } = useAuth();
+
+    const systemItems = [
+        { title: "Alertas", url: "/alerts", icon: Bell },
+        { title: "Telemetria (MDB)", url: "/telemetry", icon: Terminal },
+        ...(user?.role === "Admin" ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
+        { title: "Configurações", url: "/settings", icon: Settings },
+    ];
 
     return (
         <Sidebar collapsible="icon">
-            <SidebarHeader className="px-4 py-5">
+            <SidebarHeader className="px-4 py-5 flex flex-col gap-1.5">
                 {!collapsed && (
-                    <div className="flex items-center gap-2">
-                        <div className="h-7 w-7 rounded bg-sidebar-primary flex items-center justify-center">
-                            <Box className="h-4 w-4 text-sidebar-primary-foreground" />
+                    <>
+                        <div className="flex items-center gap-2">
+                            <div className="h-7 w-7 rounded bg-sidebar-primary flex items-center justify-center">
+                                <Box className="h-4 w-4 text-sidebar-primary-foreground" />
+                            </div>
+                            <span className="text-sm font-semibold text-sidebar-foreground tracking-tight">
+                                VendControl
+                            </span>
                         </div>
-                        <span className="text-sm font-semibold text-sidebar-foreground tracking-tight">
-                            VendControl
-                        </span>
-                    </div>
+                        {user?.companyName && (
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50/70 border border-blue-200/50 px-2 py-0.5 rounded w-fit uppercase tracking-wider select-none">
+                                {user.companyName}
+                            </span>
+                        )}
+                    </>
                 )}
                 {collapsed && (
                     <div className="flex justify-center">

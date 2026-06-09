@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Models;
 
@@ -17,7 +20,25 @@ public static class DbInitializer
             context.Database.Migrate();
         }
 
-        // 1. Seed de ProductTypes
+        // Definição de IDs fixos para garantir relacionamentos consistentes
+        var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var adminUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var joaoUserId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+
+        // 1. Seed de Companies
+        if (!context.Companies.Any())
+        {
+            var defaultCompany = new Company
+            {
+                Id = companyId,
+                Name = "ACME Machines LTDA",
+                CreatedByUserId = adminUserId,
+                CreatedAt = DateTime.UtcNow
+            };
+            context.Companies.Add(defaultCompany);
+        }
+
+        // 2. Seed de ProductTypes
         if (!context.ProductTypes.Any())
         {
             var productTypes = new List<ProductType>
@@ -35,28 +56,28 @@ public static class DbInitializer
             context.ProductTypes.AddRange(productTypes);
         }
 
-        // 2. Seed de Machines
+        // 3. Seed de Machines
         if (!context.Machines.Any())
         {
             var machines = new List<Machine>
             {
-                new() { Id = "VM-001", Name = "Lobby A1", ClientName = "Hospital São Luiz", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230m, TotalSales30d = 847, LastSync = "2 min atrás", SerialNumber = "SN-123456" },
-                new() { Id = "VM-002", Name = "Refeitório B2", ClientName = "Hospital São Luiz", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890m, TotalSales30d = 778, LastSync = "5 min atrás", SerialNumber = "SN-987654" },
-                new() { Id = "VM-003", Name = "UTI C1", ClientName = "Hospital São Luiz", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150m, TotalSales30d = 430, LastSync = "1 min atrás", SerialNumber = "SN-555555" },
-                new() { Id = "VM-004", Name = "Recepção D1", ClientName = "Faculdade Anhanguera", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670m, TotalSales30d = 1134, LastSync = "3 min atrás", SerialNumber = "SN-004" },
-                new() { Id = "VM-005", Name = "Cantina E1", ClientName = "Faculdade Anhanguera", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0m, TotalSales30d = 0, LastSync = "2 dias atrás", SerialNumber = "SN-005" },
-                new() { Id = "VM-006", Name = "Hall F1", ClientName = "Condomínio Alphaville", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890m, TotalSales30d = 378, LastSync = "4 min atrás", SerialNumber = "SN-006" },
-                new() { Id = "VM-007", Name = "Academia G1", ClientName = "Condomínio Alphaville", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420m, TotalSales30d = 684, LastSync = "8 min atrás", SerialNumber = "SN-007" },
-                new() { Id = "VM-008", Name = "Terminal H1", ClientName = "Rodoviária Tietê", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940m, TotalSales30d = 1788, LastSync = "1 min atrás", SerialNumber = "SN-008" },
-                new() { Id = "VM-009", Name = "Embarque I1", ClientName = "Rodoviária Tietê", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230m, TotalSales30d = 1446, LastSync = "2 min atrás", SerialNumber = "SN-009" },
-                new() { Id = "VM-010", Name = "Plataforma J1", ClientName = "Rodoviária Tietê", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180m, TotalSales30d = 1236, LastSync = "15 min atrás", SerialNumber = "SN-010" },
-                new() { Id = "VM-011", Name = "Escritório K1", ClientName = "WeWork Faria Lima", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560m, TotalSales30d = 912, LastSync = "1 min atrás", SerialNumber = "SN-011" },
-                new() { Id = "VM-012", Name = "Lounge L1", ClientName = "WeWork Faria Lima", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230m, TotalSales30d = 1046, LastSync = "3 min atrás", SerialNumber = "SN-012" }
+                new() { Id = "VM-001", Name = "Lobby A1", ClientName = "Hospital São Luiz", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230m, TotalSales30d = 847, LastSync = "2 min atrás", SerialNumber = "SN-123456", CompanyId = companyId },
+                new() { Id = "VM-002", Name = "Refeitório B2", ClientName = "Hospital São Luiz", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890m, TotalSales30d = 778, LastSync = "5 min atrás", SerialNumber = "SN-987654", CompanyId = companyId },
+                new() { Id = "VM-003", Name = "UTI C1", ClientName = "Hospital São Luiz", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150m, TotalSales30d = 430, LastSync = "1 min atrás", SerialNumber = "SN-555555", CompanyId = companyId },
+                new() { Id = "VM-004", Name = "Recepção D1", ClientName = "Faculdade Anhanguera", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670m, TotalSales30d = 1134, LastSync = "3 min atrás", SerialNumber = "SN-004", CompanyId = companyId },
+                new() { Id = "VM-005", Name = "Cantina E1", ClientName = "Faculdade Anhanguera", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0m, TotalSales30d = 0, LastSync = "2 dias atrás", SerialNumber = "SN-005", CompanyId = companyId },
+                new() { Id = "VM-006", Name = "Hall F1", ClientName = "Condomínio Alphaville", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890m, TotalSales30d = 378, LastSync = "4 min atrás", SerialNumber = "SN-006", CompanyId = companyId },
+                new() { Id = "VM-007", Name = "Academia G1", ClientName = "Condomínio Alphaville", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420m, TotalSales30d = 684, LastSync = "8 min atrás", SerialNumber = "SN-007", CompanyId = companyId },
+                new() { Id = "VM-008", Name = "Terminal H1", ClientName = "Rodoviária Tietê", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940m, TotalSales30d = 1788, LastSync = "1 min atrás", SerialNumber = "SN-008", CompanyId = companyId },
+                new() { Id = "VM-009", Name = "Embarque I1", ClientName = "Rodoviária Tietê", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230m, TotalSales30d = 1446, LastSync = "2 min atrás", SerialNumber = "SN-009", CompanyId = companyId },
+                new() { Id = "VM-010", Name = "Plataforma J1", ClientName = "Rodoviária Tietê", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180m, TotalSales30d = 1236, LastSync = "15 min atrás", SerialNumber = "SN-010", CompanyId = companyId },
+                new() { Id = "VM-011", Name = "Escritório K1", ClientName = "WeWork Faria Lima", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560m, TotalSales30d = 912, LastSync = "1 min atrás", SerialNumber = "SN-011", CompanyId = companyId },
+                new() { Id = "VM-012", Name = "Lounge L1", ClientName = "WeWork Faria Lima", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230m, TotalSales30d = 1046, LastSync = "3 min atrás", SerialNumber = "SN-012", CompanyId = companyId }
             };
             context.Machines.AddRange(machines);
         }
 
-        // 3. Seed de Products (FullProduct)
+        // 4. Seed de Products (FullProduct)
         if (!context.Products.Any())
         {
             var products = new List<FullProduct>
@@ -68,7 +89,7 @@ public static class DbInitializer
             context.Products.AddRange(products);
         }
 
-        // 4. Seed de ProductPerformances
+        // 5. Seed de ProductPerformances
         if (!context.ProductPerformances.Any())
         {
             var performances = new List<ProductPerformance>
@@ -88,6 +109,36 @@ public static class DbInitializer
                 new() { Name = "Vitamina Yakult", TotalSold = 203, Revenue = 609m, Trend = -5.1, IsTop = false }
             };
             context.ProductPerformances.AddRange(performances);
+        }
+
+        // 6. Seed de Users (Dono/Criador e Sócio)
+        if (!context.Users.Any())
+        {
+            var hasher = new Microsoft.AspNetCore.Identity.PasswordHasher<User>();
+            
+            var adminUser = new User
+            {
+                Id = adminUserId,
+                Name = "Admin Ivan",
+                Email = "dev.ivan@gmail.com",
+                Role = "Admin",
+                CompanyId = companyId,
+                CreatedAt = DateTime.UtcNow
+            };
+            adminUser.PasswordHash = hasher.HashPassword(adminUser, "admin123");
+            context.Users.Add(adminUser);
+
+            var partnerUser = new User
+            {
+                Id = joaoUserId,
+                Name = "João da Silva",
+                Email = "joao@vmmanager.com",
+                Role = "Operator",
+                CompanyId = companyId,
+                CreatedAt = DateTime.UtcNow
+            };
+            partnerUser.PasswordHash = hasher.HashPassword(partnerUser, "teste123");
+            context.Users.Add(partnerUser);
         }
 
         context.SaveChanges();

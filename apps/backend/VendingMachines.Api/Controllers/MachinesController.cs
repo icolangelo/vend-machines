@@ -1,9 +1,11 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VendingMachines.Api.Models;
 using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/[controller]")]
 public class MachinesController : ControllerBase
