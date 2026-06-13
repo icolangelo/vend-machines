@@ -51,6 +51,7 @@ public class CompaniesController : ControllerBase
             {
                 Id = c.Id,
                 Name = c.Name,
+                Cnpj = c.Cnpj,
                 CreatedAt = c.CreatedAt,
                 // Nome do criador/dono original
                 CreatedBy = _context.Users
@@ -80,6 +81,7 @@ public class CompanyDto
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    public string Cnpj { get; set; } = string.Empty;
     public string CreatedBy { get; set; } = string.Empty;
     public List<string> Partners { get; set; } = new();
     public DateTime CreatedAt { get; set; }

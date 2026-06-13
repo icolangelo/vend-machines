@@ -65,6 +65,105 @@ public class AuthController : ControllerBase
         });
     }
 
+    [HttpPost("register")]
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
+    {
+        if (request == null || 
+            string.IsNullOrWhiteSpace(request.Name) || 
+            string.IsNullOrWhiteSpace(request.Email) || 
+            string.IsNullOrWhiteSpace(request.Password) ||
+            string.IsNullOrWhiteSpace(request.Cpf) ||
+            string.IsNullOrWhiteSpace(request.CompanyName) ||
+            string.IsNullOrWhiteSpace(request.CompanyCnpj))
+        {
+            return BadRequest(new { message = "Todos os campos são obrigatórios." });
+        }
+
+        if (!request.AcceptedPrivacyPolicy)
+        {
+            return BadRequest(new { message = "Você precisa aceitar a Política de Privacidade para se cadastrar." });
+        }
+
+        // Validar e-mail único
+        if (await _context.Users.AnyAsync(u => u.Email.ToLower() == request.Email.ToLower()))
+        {
+            return BadRequest(new { message = "Este e-mail já está sendo utilizado por outro usuário." });
+        }
+
+        // Validar CPF único
+        if (await _context.Users.AnyAsync(u => u.Cpf == request.Cpf))
+        {
+            return BadRequest(new { message = "Este CPF já está cadastrado no sistema." });
+        }
+
+        // Validar CNPJ único
+        if (await _context.Companies.AnyAsync(c => c.Cnpj == request.CompanyCnpj))
+        {
+            return BadRequest(new { message = "Este CNPJ já está cadastrado no sistema." });
+        }
+
+        using var transaction = await _context.Database.BeginTransactionAsync();
+        try
+        {
+            // Criar a empresa primeiro
+            var company = new Company
+            {
+                Name = request.CompanyName,
+                Cnpj = request.CompanyCnpj,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.Companies.Add(company);
+            await _context.SaveChangesAsync();
+
+            // Criar o usuário
+            var user = new User
+            {
+                Name = request.Name,
+                Email = request.Email,
+                Cpf = request.Cpf,
+                Role = "Admin", // O criador original da empresa é o Administrador
+                CompanyId = company.Id,
+                CreatedAt = DateTime.UtcNow,
+                AcceptedPrivacyPolicy = true,
+                PrivacyPolicyAcceptedAt = DateTime.UtcNow
+            };
+
+            var hasher = new PasswordHasher<User>();
+            user.PasswordHash = hasher.HashPassword(user, request.Password);
+
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
+
+            // Definir o ID do criador da empresa
+            company.CreatedByUserId = user.Id;
+            await _context.SaveChangesAsync();
+
+            await transaction.CommitAsync();
+
+            // Gerar token JWT e realizar login automático
+            var token = GenerateJwtToken(user);
+
+            return Ok(new
+            {
+                token,
+                user = new
+                {
+                    id = user.Id,
+                    name = user.Name,
+                    email = user.Email,
+                    role = user.Role,
+                    companyId = user.CompanyId,
+                    companyName = company.Name
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            await transaction.RollbackAsync();
+            return StatusCode(500, new { message = "Erro ao processar o cadastro: " + ex.Message });
+        }
+    }
+
     [Authorize]
     [HttpGet("me")]
     public IActionResult GetCurrentUser()
@@ -134,4 +233,15 @@ public class LoginRequest
 {
     public string Email { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+}
+
+public class RegisterRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string Cpf { get; set; } = string.Empty;
+    public string CompanyName { get; set; } = string.Empty;
+    public string CompanyCnpj { get; set; } = string.Empty;
+    public bool AcceptedPrivacyPolicy { get; set; }
 }

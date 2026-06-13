@@ -1,3 +1,4 @@
+import React, { useState } from "react";
 import {
     LayoutDashboard,
     Box,
@@ -24,6 +25,7 @@ import {
     SidebarFooter,
     useSidebar,
 } from "@/components/ui/sidebar";
+import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
 
 const mainItems = [
     { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -37,6 +39,7 @@ export function AppSidebar() {
     const { state } = useSidebar();
     const collapsed = state === "collapsed";
     const { user } = useAuth();
+    const [isPolicyOpen, setIsPolicyOpen] = useState(false);
 
     const systemItems = [
         { title: "Alertas", url: "/alerts", icon: Bell },
@@ -125,12 +128,21 @@ export function AppSidebar() {
                 </SidebarGroup>
             </SidebarContent>
 
-            <SidebarFooter className="px-4 py-3">
+            <SidebarFooter className="px-4 py-3 flex flex-col gap-2">
                 {!collapsed && (
-                    <p className="text-[0.65rem] text-sidebar-foreground/30">
-                        Sistema operacional
-                    </p>
+                    <>
+                        <button
+                            onClick={() => setIsPolicyOpen(true)}
+                            className="text-[0.7rem] text-sidebar-foreground/50 hover:text-sidebar-foreground/80 hover:underline transition-colors flex items-center gap-1 w-full text-left bg-transparent border-0 p-0 cursor-pointer font-sans"
+                        >
+                            Política de Privacidade
+                        </button>
+                        <p className="text-[0.65rem] text-sidebar-foreground/30">
+                            Sistema operacional
+                        </p>
+                    </>
                 )}
+                <PrivacyPolicyModal isOpen={isPolicyOpen} onClose={() => setIsPolicyOpen(false)} />
             </SidebarFooter>
         </Sidebar>
     );

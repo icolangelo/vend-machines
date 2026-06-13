@@ -169,6 +169,7 @@ export interface PaginatedUsers {
         name: string;
         email: string;
         role: string;
+        cpf?: string;
         companyId?: string | null;
         companyName?: string | null;
         createdAt: string;
@@ -186,6 +187,7 @@ export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): 
             name: i === 0 ? "Admin Ivan" : i === 1 ? "João da Silva" : `Usuário Operador ${i + 1}`,
             email: i === 0 ? "dev.ivan@gmail.com" : i === 1 ? "joao@vmmanager.com" : `operador${i + 1}@vmmanager.com`,
             role: i === 0 ? "Admin" : "Operator",
+            cpf: i === 0 ? "123.456.789-00" : i === 1 ? "987.654.321-99" : `000.000.000-${String(i).padStart(2, '0')}`,
             companyId: i % 2 === 0 ? "11111111-1111-1111-1111-111111111111" : "55555555-5555-5555-5555-555555555555",
             companyName: i % 2 === 0 ? "ACME Machines LTDA" : "Sabor & Cia Vending",
             createdAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString()
@@ -220,6 +222,7 @@ export interface PaginatedCompanies {
     items: {
         id: string;
         name: string;
+        cnpj?: string;
         createdBy: string;
         partners: string[];
         createdAt: string;
@@ -236,6 +239,7 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
             {
                 id: "11111111-1111-1111-1111-111111111111",
                 name: "ACME Machines LTDA",
+                cnpj: "12.345.678/0001-99",
                 createdBy: "Admin Ivan",
                 partners: ["João da Silva", "Maria Santos"],
                 createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -243,6 +247,7 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
             {
                 id: "55555555-5555-5555-5555-555555555555",
                 name: "Sabor & Cia Vending",
+                cnpj: "98.765.432/0001-00",
                 createdBy: "Eduardo Souza",
                 partners: ["Ana Julia", "Pedro Mendes"],
                 createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString()
@@ -250,6 +255,7 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
             {
                 id: "99999999-9999-9999-9999-999999999999",
                 name: "Express Café Vending",
+                cnpj: "11.222.333/0001-44",
                 createdBy: "Roberto Lima",
                 partners: [],
                 createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()

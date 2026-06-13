@@ -9,6 +9,7 @@ public class Company
     public string Name { get; set; } = string.Empty;
     public Guid CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string Cnpj { get; set; } = string.Empty;
 
     // Coleção de usuários (sócios) vinculados a esta empresa
     public ICollection<User> Users { get; set; } = new List<User>();

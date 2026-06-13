@@ -33,7 +33,8 @@ public static class DbInitializer
                 Id = companyId,
                 Name = "ACME Machines LTDA",
                 CreatedByUserId = adminUserId,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Cnpj = "12.345.678/0001-99"
             };
             context.Companies.Add(defaultCompany);
         }
@@ -123,7 +124,10 @@ public static class DbInitializer
                 Email = "dev.ivan@gmail.com",
                 Role = "Admin",
                 CompanyId = companyId,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Cpf = "123.456.789-00",
+                AcceptedPrivacyPolicy = true,
+                PrivacyPolicyAcceptedAt = DateTime.UtcNow
             };
             adminUser.PasswordHash = hasher.HashPassword(adminUser, "admin123");
             context.Users.Add(adminUser);
@@ -135,7 +139,10 @@ public static class DbInitializer
                 Email = "joao@vmmanager.com",
                 Role = "Operator",
                 CompanyId = companyId,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                Cpf = "987.654.321-99",
+                AcceptedPrivacyPolicy = true,
+                PrivacyPolicyAcceptedAt = DateTime.UtcNow
             };
             partnerUser.PasswordHash = hasher.HashPassword(partnerUser, "teste123");
             context.Users.Add(partnerUser);

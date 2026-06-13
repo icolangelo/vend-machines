@@ -16,6 +16,14 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  register: (
+    name: string,
+    email: string,
+    cpf: string,
+    password: string,
+    companyName: string,
+    companyCnpj: string
+  ) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -115,6 +123,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     sessionStorage.setItem("isAuthenticated", "true");
   };
 
+  const register = async (
+    name: string,
+    email: string,
+    cpf: string,
+    password: string,
+    companyName: string,
+    companyCnpj: string
+  ) => {
+    if (isTestEnv()) {
+      const mockUser = {
+        id: "usr-admin-registered",
+        name: name,
+        email: email,
+        role: "Admin",
+        companyId: "11111111-1111-1111-1111-111111111111",
+        companyName: companyName
+      };
+      const mockToken = "mock-jwt-token-string";
+      setUser(mockUser);
+      setToken(mockToken);
+      sessionStorage.setItem("token", mockToken);
+      sessionStorage.setItem("user", JSON.stringify(mockUser));
+      sessionStorage.setItem("isAuthenticated", "true");
+      return;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/auth/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ 
+        name, 
+        email, 
+        cpf, 
+        password, 
+        companyName, 
+        companyCnpj,
+        acceptedPrivacyPolicy: true 
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.message || "Erro ao realizar o cadastro. Verifique os dados.");
+    }
+
+    const data = await response.json();
+    setUser(data.user);
+    setToken(data.token);
+    sessionStorage.setItem("token", data.token);
+    sessionStorage.setItem("user", JSON.stringify(data.user));
+    sessionStorage.setItem("isAuthenticated", "true");
+  };
+
   const logout = () => {
     setUser(null);
     setToken(null);
@@ -126,7 +189,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, register }}>
       {children}
     </AuthContext.Provider>
   );

@@ -12,4 +12,7 @@ public class User
     public Guid? CompanyId { get; set; }
     public Company? Company { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string Cpf { get; set; } = string.Empty;
+    public bool AcceptedPrivacyPolicy { get; set; } = false;
+    public DateTime? PrivacyPolicyAcceptedAt { get; set; }
 }

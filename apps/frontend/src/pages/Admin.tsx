@@ -187,6 +187,7 @@ export default function Admin() {
                                                 <TableRow>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Nome</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">E-mail</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">CPF</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Empresa</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Perfil</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Cadastrado em</TableHead>
@@ -198,6 +199,7 @@ export default function Admin() {
                                                         <TableRow key={idx}>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-48" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-28" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-36" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-5 w-16 rounded-full" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
@@ -205,15 +207,16 @@ export default function Admin() {
                                                     ))
                                                 ) : !userData || userData.items.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={5} className="text-center py-12 text-slate-400 font-medium font-sans">
+                                                        <TableCell colSpan={6} className="text-center py-12 text-slate-400 font-medium font-sans">
                                                             Nenhum usuário localizado.
-                                                        </TableCell>
+                                                         </TableCell>
                                                     </TableRow>
                                                 ) : (
                                                     userData.items.map((usr) => (
                                                         <TableRow key={usr.id} className="hover:bg-slate-50/50 transition-colors">
                                                             <TableCell className="px-6 py-3.5 font-medium text-slate-900">{usr.name}</TableCell>
                                                             <TableCell className="px-6 py-3.5 font-mono text-xs text-slate-600">{usr.email}</TableCell>
+                                                            <TableCell className="px-6 py-3.5 font-mono text-xs text-slate-600">{usr.cpf || "-"}</TableCell>
                                                             <TableCell className="px-6 py-3.5 text-sm text-slate-600 font-medium">
                                                                 {usr.companyName ? (
                                                                     <span className="text-slate-800">{usr.companyName}</span>
@@ -319,6 +322,7 @@ export default function Admin() {
                                             <TableHeader className="bg-slate-50/70">
                                                 <TableRow>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Nome da Empresa</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">CNPJ</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Dono / Criador</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Sócios Vinculados</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Data de Criação</TableHead>
@@ -330,13 +334,14 @@ export default function Admin() {
                                                         <TableRow key={idx}>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-40" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-48" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
                                                         </TableRow>
                                                     ))
                                                 ) : !companyData || companyData.items.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={4} className="text-center py-12 text-slate-400 font-medium font-sans">
+                                                        <TableCell colSpan={5} className="text-center py-12 text-slate-400 font-medium font-sans">
                                                             Nenhuma empresa localizada.
                                                         </TableCell>
                                                     </TableRow>
@@ -344,6 +349,7 @@ export default function Admin() {
                                                     companyData.items.map((comp) => (
                                                         <TableRow key={comp.id} className="hover:bg-slate-50/50 transition-colors">
                                                             <TableCell className="px-6 py-3.5 font-bold text-slate-900">{comp.name}</TableCell>
+                                                            <TableCell className="px-6 py-3.5 font-mono text-xs text-slate-600">{comp.cnpj || "-"}</TableCell>
                                                             <TableCell className="px-6 py-3.5 font-semibold text-blue-600">{comp.createdBy}</TableCell>
                                                             <TableCell className="px-6 py-3.5">
                                                                 <div className="flex flex-wrap gap-1.5 max-w-md">

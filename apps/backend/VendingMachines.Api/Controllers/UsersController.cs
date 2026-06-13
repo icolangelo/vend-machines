@@ -52,6 +52,7 @@ public class UsersController : ControllerBase
                 Id = u.Id,
                 Name = u.Name,
                 Email = u.Email,
+                Cpf = u.Cpf,
                 Role = u.Role,
                 CompanyId = u.CompanyId,
                 CompanyName = u.Company != null ? u.Company.Name : null,
@@ -75,6 +76,7 @@ public class UserDto
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
+    public string Cpf { get; set; } = string.Empty;
     public string Role { get; set; } = string.Empty;
     public Guid? CompanyId { get; set; }
     public string? CompanyName { get; set; }
