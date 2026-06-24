@@ -12,7 +12,8 @@ import {
     type ProductType
 } from "@/data/mockData";
 
-export const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5118/api";
+const rawApiUrl = import.meta.env.VITE_API_URL || "http://localhost:5118/api";
+export const API_BASE_URL = rawApiUrl.endsWith("/") ? rawApiUrl.slice(0, -1) : rawApiUrl;
 
 const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
