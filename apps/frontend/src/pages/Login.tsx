@@ -128,7 +128,7 @@ export default function Login() {
           {/* Header/Logo */}
           <div className="flex items-center gap-2 mb-4 text-blue-600">
             <Package className="w-8 h-8" />
-            <span className="text-2xl font-bold tracking-tight text-gray-900">VM Manager</span>
+            <span className="text-2xl font-bold tracking-tight text-gray-900">VendMachine.com.br</span>
           </div>
 
           <div className="space-y-1">
@@ -415,7 +415,7 @@ export default function Login() {
           </p>
 
           <p className="text-xs text-gray-400 mt-6 text-center pt-4">
-            © 2026 VM Manager - All Rights Reserved.
+            © 2026 VendMachine.com.br - All Rights Reserved.
           </p>
         </div>
       </div>

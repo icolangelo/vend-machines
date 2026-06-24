@@ -186,7 +186,7 @@ export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): 
         const allMockUsers = Array.from({ length: 45 }, (_, i) => ({
             id: `usr-${i + 1}`,
             name: i === 0 ? "Admin Ivan" : i === 1 ? "João da Silva" : `Usuário Operador ${i + 1}`,
-            email: i === 0 ? "dev.ivan@gmail.com" : i === 1 ? "joao@vmmanager.com" : `operador${i + 1}@vmmanager.com`,
+            email: i === 0 ? "dev.ivan@gmail.com" : i === 1 ? "joao@vendmachine.com.br" : `operador${i + 1}@vendmachine.com.br`,
             role: i === 0 ? "Admin" : "Operator",
             cpf: i === 0 ? "123.456.789-00" : i === 1 ? "987.654.321-99" : `000.000.000-${String(i).padStart(2, '0')}`,
             companyId: i % 2 === 0 ? "11111111-1111-1111-1111-111111111111" : "55555555-5555-5555-5555-555555555555",

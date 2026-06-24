@@ -29,7 +29,7 @@ export function PrivacyPolicyModal({ isOpen, onClose }: PrivacyPolicyModalProps)
           </p>
           
           <p>
-            Esta Política de Privacidade explica como o <strong>VM Manager</strong> coleta, usa, 
+            Esta Política de Privacidade explica como o <strong>VendMachine.com.br</strong> coleta, usa, 
             compartilha e protege as informações dos usuários cadastrados na nossa plataforma, em conformidade com a 
             <strong> Lei Geral de Proteção de Dados Pessoais (LGPD - Lei nº 13.709/2018)</strong>.
           </p>
@@ -99,8 +99,8 @@ export function PrivacyPolicyModal({ isOpen, onClose }: PrivacyPolicyModalProps)
             <p>
               Caso queira exercer quaisquer dos seus direitos de titular de dados ou esclarecer dúvidas sobre esta Política, 
               entre em contato com nosso Encarregado pelo Tratamento de Dados Pessoais (DPO) através do e-mail: 
-              <a href="mailto:dpo@vmmanager.com.br" className="text-blue-600 font-semibold hover:underline ml-1">
-                dpo@vmmanager.com.br
+              <a href="mailto:dpo@vendmachine.com.br" className="text-blue-600 font-semibold hover:underline ml-1">
+                dpo@vendmachine.com.br
               </a>.
             </p>
           </div>
