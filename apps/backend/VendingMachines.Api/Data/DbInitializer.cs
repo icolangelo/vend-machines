@@ -25,6 +25,18 @@ public static class DbInitializer
         var adminUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
         var joaoUserId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+        // 0. Seed de SystemSettings
+        if (!context.SystemSettings.Any())
+        {
+            var defaultSettings = new SystemSettings
+            {
+                Id = Guid.NewGuid(),
+                ApplicationFeePercent = 5.0m,
+                UpdatedAt = DateTime.UtcNow
+            };
+            context.SystemSettings.Add(defaultSettings);
+        }
+
         // 1. Seed de Companies
         if (!context.Companies.Any())
         {
@@ -137,7 +149,7 @@ public static class DbInitializer
                 Id = joaoUserId,
                 Name = "João da Silva",
                 Email = "joao@vmmanager.com",
-                Role = "Operator",
+                Role = "Admin",
                 CompanyId = companyId,
                 CreatedAt = DateTime.UtcNow,
                 Cpf = "987.654.321-99",

@@ -226,6 +226,7 @@ export interface PaginatedCompanies {
         createdBy: string;
         partners: string[];
         createdAt: string;
+        enabledIntegrations?: string[];
     }[];
     pageNumber: number;
     pageSize: number;
@@ -242,7 +243,8 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 cnpj: "12.345.678/0001-99",
                 createdBy: "Admin Ivan",
                 partners: ["João da Silva", "Maria Santos"],
-                createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+                createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+                enabledIntegrations: ["Mercado Pago"]
             },
             {
                 id: "55555555-5555-5555-5555-555555555555",
@@ -250,7 +252,8 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 cnpj: "98.765.432/0001-00",
                 createdBy: "Eduardo Souza",
                 partners: ["Ana Julia", "Pedro Mendes"],
-                createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString()
+                createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
+                enabledIntegrations: []
             },
             {
                 id: "99999999-9999-9999-9999-999999999999",
@@ -258,7 +261,8 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 cnpj: "11.222.333/0001-44",
                 createdBy: "Roberto Lima",
                 partners: [],
-                createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()
+                createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+                enabledIntegrations: []
             }
         ];
 
@@ -284,5 +288,270 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
 
     const response = await authFetch(`${API_BASE_URL}/companies?pageNumber=${pageNumber}&pageSize=${pageSize}&searchTerm=${encodeURIComponent(searchTerm)}`);
     if (!response.ok) throw new Error("Erro ao buscar empresas");
+    return response.json();
+}
+
+export interface SystemSettings {
+    id?: string;
+    applicationFeePercent: number;
+    updatedAt?: string;
+}
+
+export interface MercadoPagoIntegration {
+    id?: string;
+    companyId: string;
+    ownerName: string;
+    ownerCpf: string;
+    ownerEmail: string;
+    ownerPhone: string;
+    businessName: string;
+    tradeName: string;
+    cnpj: string;
+    businessEmail: string;
+    businessPhone: string;
+    accessToken: string;
+    publicKey: string;
+    clientId?: string;
+    clientSecret?: string;
+    isActive: boolean;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+export interface PaymentTransaction {
+    id: string;
+    machineId: string;
+    machine?: Machine;
+    amount: number;
+    applicationFee: number;
+    status: "Pending" | "Approved" | "Rejected" | "Failed" | "Refunded";
+    mercadoPagoPaymentId?: string;
+    mercadoPagoStatus?: string;
+    mercadoPagoStatusDetail?: string;
+    qrCode: string;
+    qrCodeBase64: string;
+    createdAt: string;
+    completedAt?: string;
+}
+
+export interface TransactionTelemetryLog {
+    id: string;
+    transactionId: string;
+    timestamp: string;
+    logType: "Info" | "CommandSent" | "AckReceived" | "Error" | "RefundTriggered";
+    message: string;
+}
+
+export async function getGlobalSettings(): Promise<SystemSettings> {
+    if (isTestEnv()) {
+        const local = localStorage.getItem("mock_global_settings");
+        return local ? JSON.parse(local) : { applicationFeePercent: 5.0 };
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/global-settings`);
+    if (!response.ok) throw new Error("Erro ao carregar configurações de pagamento globais.");
+    return response.json();
+}
+
+export async function updateGlobalSettings(settings: SystemSettings): Promise<void> {
+    if (isTestEnv()) {
+        localStorage.setItem("mock_global_settings", JSON.stringify(settings));
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/global-settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings)
+    });
+    if (!response.ok) throw new Error("Erro ao salvar taxa global.");
+}
+
+export async function getIntegration(): Promise<MercadoPagoIntegration> {
+    if (isTestEnv()) {
+        const local = localStorage.getItem("mock_mp_integration");
+        const userStr = sessionStorage.getItem("user");
+        const companyId = userStr ? JSON.parse(userStr).companyId : "11111111-1111-1111-1111-111111111111";
+        return local ? JSON.parse(local) : {
+            companyId,
+            ownerName: "", ownerCpf: "", ownerEmail: "", ownerPhone: "",
+            businessName: "", tradeName: "", cnpj: "", businessEmail: "", businessPhone: "",
+            accessToken: "", publicKey: "", isActive: false
+        };
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/integration`);
+    if (!response.ok) throw new Error("Erro ao carregar integração do Mercado Pago.");
+    return response.json();
+}
+
+export async function saveIntegration(integration: MercadoPagoIntegration): Promise<void> {
+    if (isTestEnv()) {
+        localStorage.setItem("mock_mp_integration", JSON.stringify(integration));
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/integration`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(integration)
+    });
+    if (!response.ok) throw new Error("Erro ao salvar integração.");
+}
+
+export async function toggleIntegration(isActive: boolean): Promise<void> {
+    if (isTestEnv()) {
+        const local = localStorage.getItem("mock_mp_integration");
+        if (local) {
+            const parsed = JSON.parse(local);
+            parsed.isActive = isActive;
+            localStorage.setItem("mock_mp_integration", JSON.stringify(parsed));
+        }
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/integration/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive })
+    });
+    if (!response.ok) throw new Error("Erro ao alterar status da integração.");
+}
+
+export async function getCompanyIntegration(companyId: string): Promise<MercadoPagoIntegration> {
+    if (isTestEnv()) {
+        const local = localStorage.getItem("mock_mp_integration");
+        if (local) {
+            const parsed = JSON.parse(local);
+            if (parsed.companyId === companyId) {
+                return parsed;
+            }
+        }
+        return {
+            companyId,
+            ownerName: "João da Silva",
+            ownerCpf: "123.456.789-00",
+            ownerEmail: "joao@acmemachines.com",
+            ownerPhone: "(11) 98765-4321",
+            businessName: "ACME Machines LTDA",
+            tradeName: "ACME Vending",
+            cnpj: "12.345.678/0001-99",
+            businessEmail: "financeiro@acmemachines.com",
+            businessPhone: "(11) 5555-1234",
+            accessToken: "APP_USR-1234••••••••ABCD",
+            publicKey: "APP_USR-9876••••••••XYZ",
+            clientId: "acme_client_id",
+            clientSecret: "acme_••••••••secret",
+            isActive: true
+        };
+    }
+    const response = await authFetch(`${API_BASE_URL}/companies/${companyId}/integration`);
+    if (!response.ok) throw new Error("Erro ao carregar detalhes da integração da empresa.");
+    return response.json();
+}
+
+export async function createPixQrCode(params: {
+    machineId: string;
+    amount: number;
+    description?: string;
+    payerEmail?: string;
+    payerFirstName?: string;
+    payerLastName?: string;
+    payerCpf?: string;
+    useRealMercadoPago?: boolean;
+}): Promise<{ transactionId: string; qrCode: string; qrCodeBase64: string; status: string }> {
+    if (isTestEnv()) {
+        const mockTxId = `tx-${Date.now()}`;
+        const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
+        const newTx = {
+            id: mockTxId,
+            machineId: params.machineId,
+            amount: params.amount,
+            applicationFee: params.amount * 0.05,
+            status: "Pending",
+            qrCode: `00020101021226870014br.gov.bcb.pix2572pix.example.com/qr/v2/mock-${mockTxId}`,
+            qrCodeBase64: "iVBORw0KGgoAAAANSUhEUgAAAJYAAACWAQAAAAAUekxPAAABUklEQVR4nNWWQWrDMBBFnxKD2pVyAwV6Dzvd9FQGp6SLHsu+iX0DZWeD4t+FnbSkBEpjQauV+QzzGP3RjI24PqfVNwn+uoZqgNxFb2tKwMblGY0UyCkB8FISRjChqp3a3ih6/PKMSXs3XeYftHlbKN8N7bS19fyZgRuPnzHi4S5GBsCwG+NTr2OcNZkvIZ3BLtNXUl8oAjZmFIIzZi3ufDNIkmyjg8hZS1KCvpKkHhcBp4QMoKQvlJJhR8DWSe+KQpE+7V1ZBbxGd0jCuGhVY1Y/ifuFNtdRA3akSulHPjFSei6Fkj5P6ocx3raYbr9QvqtzrgOUyo957j6O6oaXBfLdnrvTKi8kkbsEfhgpDM/K6LV53aoJCeqY9vnUtmlmyaQNO+iQyTBmk6gO2wS8rd3ea3RxBW5cliEFK6nFhKpVozjtc7sgo4bpXVz8MP/wH/gDo7EYHNztgj4AAAAASUVORK5CYII=",
+            createdAt: new Date().toISOString()
+        };
+        mockTransactions.push(newTx);
+        localStorage.setItem("mock_transactions", JSON.stringify(mockTransactions));
+        
+        // Mock Logs
+        const mockLogs = [
+            { id: `log-1`, transactionId: mockTxId, timestamp: new Date().toISOString(), logType: "Info", message: `Solicitada cobrança Pix de R$ ${params.amount} na máquina.` },
+            { id: `log-2`, transactionId: mockTxId, timestamp: new Date(Date.now() + 500).toISOString(), logType: "Info", message: "QR Code Pix gerado em modo simulado." }
+        ];
+        localStorage.setItem(`mock_logs_${mockTxId}`, JSON.stringify(mockLogs));
+        
+        return {
+            transactionId: mockTxId,
+            qrCode: newTx.qrCode,
+            qrCodeBase64: newTx.qrCodeBase64,
+            status: "Pending"
+        };
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/pix-qr`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params)
+    });
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Erro ao gerar QR Code Pix.");
+    }
+    return response.json();
+}
+
+export async function simulateWebhook(transactionId: string, approved: boolean): Promise<void> {
+    if (isTestEnv()) {
+        const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
+        const idx = mockTransactions.findIndex(t => t.id == transactionId);
+        if (idx > -1) {
+            mockTransactions[idx].status = approved ? "Approved" : "Rejected";
+            localStorage.setItem("mock_transactions", JSON.stringify(mockTransactions));
+            
+            // Append Simulated Telemetry Logs
+            const logs = JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]");
+            logs.push({ id: `log-3`, transactionId, timestamp: new Date().toISOString(), logType: "Info", message: `Webhook Simulado: Pagamento ${(approved ? "APROVADO" : "RECUSADO")}` });
+            
+            // Simular sequencia de telemetria local
+            setTimeout(() => {
+                logs.push({ id: `log-4`, transactionId, timestamp: new Date().toISOString(), logType: "CommandSent", message: "Enviando comando: ABRIR_SESSAO" });
+                localStorage.setItem(`mock_logs_${transactionId}`, JSON.stringify(logs));
+            }, 1000);
+            
+            setTimeout(() => {
+                logs.push({ id: `log-5`, transactionId, timestamp: new Date().toISOString(), logType: "CommandSent", message: approved ? "Enviando comando: VENDA_APROVADA" : "Enviando comando: VENDA_NEGADA" });
+                localStorage.setItem(`mock_logs_${transactionId}`, JSON.stringify(logs));
+            }, 3000);
+
+            setTimeout(() => {
+                logs.push({ id: `log-6`, transactionId, timestamp: new Date().toISOString(), logType: "CommandSent", message: "Enviando comando: FECHAR_SESSAO" });
+                logs.push({ id: `log-7`, transactionId, timestamp: new Date().toISOString(), logType: "Info", message: "Sequência de telemetria MDB remota concluída." });
+                localStorage.setItem(`mock_logs_${transactionId}`, JSON.stringify(logs));
+            }, 5000);
+        }
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/simulate-webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transactionId, approved })
+    });
+    if (!response.ok) throw new Error("Erro ao simular webhook de pagamento.");
+}
+
+export async function getTransactions(machineId?: string): Promise<PaymentTransaction[]> {
+    if (isTestEnv()) {
+        const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
+        return list.filter((t: any) => !machineId || t.machineId === machineId);
+    }
+    const url = machineId ? `${API_BASE_URL}/payments/transactions?machineId=${machineId}` : `${API_BASE_URL}/payments/transactions`;
+    const response = await authFetch(url);
+    if (!response.ok) throw new Error("Erro ao buscar transações.");
+    return response.json();
+}
+
+export async function getTransactionLogs(transactionId: string): Promise<TransactionTelemetryLog[]> {
+    if (isTestEnv()) {
+        return JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]");
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/transactions/${transactionId}/logs`);
+    if (!response.ok) throw new Error("Erro ao buscar logs da transação.");
     return response.json();
 }

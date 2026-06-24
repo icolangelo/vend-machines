@@ -28,10 +28,12 @@ import { useToast } from "@/components/ui/use-toast";
 
 export default function Settings() {
     const navigate = useNavigate();
-    const { logout } = useAuth();
+    const { logout, user } = useAuth();
     const { toast } = useToast();
     const [types, setTypes] = useState<ProductType[]>([]);
     const [loading, setLoading] = useState(true);
+
+
 
     useEffect(() => {
         if (sessionStorage.getItem("isAuthenticated") !== "true") {
@@ -208,6 +210,7 @@ export default function Settings() {
                                     </Table>
                                 </CardContent>
                             </Card>
+
                         </div>
                         
                         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>

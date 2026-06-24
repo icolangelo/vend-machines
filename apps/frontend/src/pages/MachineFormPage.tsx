@@ -25,8 +25,8 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { useEffect } from "react";
-import { getMachine, createMachine, updateMachine } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { getMachine, createMachine, updateMachine, getIntegration } from "@/lib/api";
 
 const machineFormSchema = z.object({
     id: z.string().optional(),
@@ -74,6 +74,7 @@ const machineFormSchema = z.object({
     ftpUsername: z.string().optional(),
     ftpPassword: z.string().optional(),
     ftpDirectoryPath: z.string().default("/evadts/"),
+    mercadoPagoEnabled: z.boolean().default(false),
 });
 
 type MachineFormValues = z.infer<typeof machineFormSchema>;
@@ -82,6 +83,7 @@ export default function MachineFormPage() {
     const navigate = useNavigate();
     const { id } = useParams();
     const isEditMode = !!id;
+    const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
 
     const form = useForm<MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
@@ -95,7 +97,8 @@ export default function MachineFormPage() {
             isFtpEnabled: false,
             ftpServerPort: 21,
             ftpDirectoryPath: "/evadts/",
-            evaBaudRateOption: "0"
+            evaBaudRateOption: "0",
+            mercadoPagoEnabled: false
         },
     });
 
@@ -103,6 +106,15 @@ export default function MachineFormPage() {
     const useGsm = watch("useGsm");
     const useWifi = watch("useWifi");
     const useEthernet = watch("useEthernet");
+
+    useEffect(() => {
+        // Buscar se integração está ativa
+        getIntegration().then(data => {
+            setIsMpIntegrationActive(data.isActive);
+        }).catch(err => {
+            console.error("Erro ao buscar integracao para a maquina:", err);
+        });
+    }, []);
 
     useEffect(() => {
         if (isEditMode && id) {
@@ -119,7 +131,8 @@ export default function MachineFormPage() {
                         useHttps: true,
                         ftpServerPort: 21,
                         ftpDirectoryPath: "/evadts/",
-                        evaBaudRateOption: "0"
+                        evaBaudRateOption: "0",
+                        mercadoPagoEnabled: machine.mercadoPagoEnabled || false
                     });
                 }
             }).catch(err => {
@@ -136,7 +149,8 @@ export default function MachineFormPage() {
             serialNumber: data.serialNumber,
             status: (data.ativo ? "online" : "offline") as any,
             location: "Lobby Central",
-            clientName: "Hospital São Luiz"
+            clientName: "Hospital São Luiz",
+            mercadoPagoEnabled: data.mercadoPagoEnabled
         };
 
         const savePromise = isEditMode && id
@@ -298,6 +312,28 @@ export default function MachineFormPage() {
                                                         <FormLabel className="font-semibold cursor-pointer">Localização ativa</FormLabel>
                                                     </FormItem>
                                                 )} />
+                                            </div>
+
+                                            {/* CONFIGURAÇÃO DE PAGAMENTO */}
+                                            <div className="p-4 border rounded-md bg-muted/10 mt-6">
+                                                <h3 className="text-sm font-semibold mb-4 text-foreground">Configuração de Pagamento</h3>
+                                                {isMpIntegrationActive ? (
+                                                    <FormField control={form.control} name="mercadoPagoEnabled" render={({ field }) => (
+                                                        <FormItem className="flex flex-row items-center space-x-3 space-y-0">
+                                                            <FormControl>
+                                                                <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                                                            </FormControl>
+                                                            <div>
+                                                                <FormLabel className="font-semibold cursor-pointer">Habilitar Cobrança via Mercado Pago (Pix)</FormLabel>
+                                                                <p className="text-xs text-muted-foreground mt-0.5">Permite que compradores façam pagamentos via Pix por esta máquina.</p>
+                                                            </div>
+                                                        </FormItem>
+                                                    )} />
+                                                ) : (
+                                                    <div className="text-sm text-yellow-600 bg-yellow-50 border border-yellow-200 rounded p-3 select-none">
+                                                        A integração com o Mercado Pago está inativa para a sua empresa. Ative-a nas <strong>Configurações</strong> do sistema para poder habilitar cobranças nesta máquina.
+                                                    </div>
+                                                )}
                                             </div>
                                         </TabsContent>
 

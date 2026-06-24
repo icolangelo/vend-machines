@@ -334,7 +334,7 @@ export default function Machines() {
                     </DialogHeader>
                     {selectedMachine && (
                         <div className="space-y-4 py-4">
-                            <div className="grid grid-cols-2 md:grid-cols-5 gap-6 bg-muted/30 p-6 rounded-lg border">
+                            <div className="grid grid-cols-2 md:grid-cols-6 gap-6 bg-muted/30 p-6 rounded-lg border">
                                 <div>
                                     <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">ID da Máquina</p>
                                     <p className="font-mono-data font-medium text-lg">{selectedMachine.id}</p>
@@ -354,6 +354,16 @@ export default function Machines() {
                                 <div>
                                     <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Localização</p>
                                     <p className="font-medium text-base">{selectedMachine.location}</p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Mercado Pago</p>
+                                    <p className="font-medium text-sm">
+                                        {selectedMachine.mercadoPagoEnabled ? (
+                                            <span className="text-green-600 font-semibold flex items-center gap-1"><Zap className="w-3.5 h-3.5" /> Ativo</span>
+                                        ) : (
+                                            <span className="text-muted-foreground">Inativo</span>
+                                        )}
+                                    </p>
                                 </div>
                             </div>
 

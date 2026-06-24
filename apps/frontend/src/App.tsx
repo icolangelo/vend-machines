@@ -13,11 +13,13 @@ import Machines from "./pages/Machines.tsx";
 import Clients from "./pages/Clients.tsx";
 import Products from "./pages/Products.tsx";
 import Settings from "./pages/Settings.tsx";
+import Integrations from "./pages/Integrations.tsx";
 import MachineFormPage from "./pages/MachineFormPage.tsx";
 import Telemetry from "./pages/Telemetry.tsx";
 import Reports from "./pages/Reports.tsx";
 import Alerts from "./pages/Alerts.tsx";
 import Admin from "./pages/Admin.tsx";
+import PaymentSimulator from "./pages/PaymentSimulator.tsx";
 
 const queryClient = new QueryClient();
 
@@ -47,10 +49,12 @@ const App = () => {
                                 <Route path="/clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
                                 <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
                                 <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+                                <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
                                 <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
                                 <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
                                 <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
                                 <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+                                <Route path="/payment-simulator" element={<ProtectedRoute><PaymentSimulator /></ProtectedRoute>} />
                                 {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
                                 <Route path="*" element={<NotFound />} />
                             </Routes>

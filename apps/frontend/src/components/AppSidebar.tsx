@@ -9,6 +9,9 @@ import {
     Bell,
     Terminal,
     Shield,
+    QrCode,
+    CreditCard,
+    Blocks,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
@@ -36,7 +39,7 @@ const mainItems = [
 ];
 
 export function AppSidebar() {
-    const { state } = useSidebar();
+    const state = useSidebar().state;
     const collapsed = state === "collapsed";
     const { user } = useAuth();
     const [isPolicyOpen, setIsPolicyOpen] = useState(false);
@@ -44,7 +47,9 @@ export function AppSidebar() {
     const systemItems = [
         { title: "Alertas", url: "/alerts", icon: Bell },
         { title: "Telemetria (MDB)", url: "/telemetry", icon: Terminal },
-        ...(user?.role === "Admin" ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
+        { title: "Simulador Pix", url: "/payment-simulator", icon: QrCode },
+        ...(user?.email === "dev.ivan@gmail.com" ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
+        { title: "Integrações", url: "/integrations", icon: Blocks },
         { title: "Configurações", url: "/settings", icon: Settings },
     ];
 

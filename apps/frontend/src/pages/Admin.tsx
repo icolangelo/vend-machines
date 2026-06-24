@@ -3,7 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { getUsers, getCompanies, type PaginatedUsers, type PaginatedCompanies } from "@/lib/api";
+import { getUsers, getCompanies, getGlobalSettings, updateGlobalSettings, getCompanyIntegration, type PaginatedUsers, type PaginatedCompanies, type SystemSettings, type MercadoPagoIntegration } from "@/lib/api";
 import { 
     Users as UsersIcon, 
     ShieldAlert, 
@@ -12,7 +12,8 @@ import {
     ChevronLeft, 
     ChevronRight,
     Building2,
-    Activity
+    Activity,
+    CreditCard
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,6 +21,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 
 export default function Admin() {
     const { user, logout } = useAuth();
@@ -39,7 +42,69 @@ export default function Admin() {
     const [companySearchInput, setCompanySearchInput] = useState("");
     const [companiesLoading, setCompaniesLoading] = useState(true);
 
-    const isAdmin = user?.role === "Admin";
+    const isAdmin = user?.email === "dev.ivan@gmail.com";
+
+    const [globalSettings, setGlobalSettings] = useState<SystemSettings | null>(null);
+    const [settingsLoading, setSettingsLoading] = useState(false);
+    const [savingSettings, setSavingSettings] = useState(false);
+    const [feeInput, setFeeInput] = useState<number>(5.0);
+
+    // Detalhes da Integração da Empresa (Admin)
+    const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+    const [selectedCompanyForDetails, setSelectedCompanyForDetails] = useState<{ id: string, name: string } | null>(null);
+    const [companyIntegration, setCompanyIntegration] = useState<MercadoPagoIntegration | null>(null);
+    const [loadingDetails, setLoadingDetails] = useState(false);
+
+    const handleViewIntegrationDetails = async (companyId: string, companyName: string) => {
+        setSelectedCompanyForDetails({ id: companyId, name: companyName });
+        setIsDetailsOpen(true);
+        setLoadingDetails(true);
+        try {
+            const data = await getCompanyIntegration(companyId);
+            setCompanyIntegration(data);
+        } catch (err) {
+            console.error("Erro ao carregar detalhes da integração da empresa:", err);
+            setCompanyIntegration(null);
+        } finally {
+            setLoadingDetails(false);
+        }
+    };
+
+    // Efeito para carregar as configurações de pagamento globais
+    useEffect(() => {
+        if (!isAdmin) return;
+        setSettingsLoading(true);
+        getGlobalSettings()
+            .then(data => {
+                setGlobalSettings(data);
+                setFeeInput(data.applicationFeePercent);
+                setSettingsLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao carregar configurações de pagamento:", err);
+                setSettingsLoading(false);
+            });
+    }, [isAdmin]);
+
+    const handleSaveGlobalSettings = async () => {
+        if (feeInput < 0 || feeInput > 100) {
+            alert("A taxa da plataforma deve estar entre 0% e 100%.");
+            return;
+        }
+
+        setSavingSettings(true);
+        try {
+            await updateGlobalSettings({
+                applicationFeePercent: feeInput
+            });
+            alert("Configurações de pagamento atualizadas com sucesso!");
+        } catch (err) {
+            console.error("Erro ao salvar taxa global:", err);
+            alert("Erro ao salvar taxa global.");
+        } finally {
+            setSavingSettings(false);
+        }
+    };
 
     // Efeito para carregar usuários
     useEffect(() => {
@@ -146,6 +211,9 @@ export default function Admin() {
                                 </TabsTrigger>
                                 <TabsTrigger value="companies" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
                                     Empresas
+                                </TabsTrigger>
+                                <TabsTrigger value="payments" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                    Pagamentos
                                 </TabsTrigger>
                             </TabsList>
 
@@ -326,6 +394,8 @@ export default function Admin() {
                                                     <TableHead className="px-6 font-semibold text-slate-700">Dono / Criador</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Sócios Vinculados</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Data de Criação</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Integrações</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700 text-right">Ações</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
@@ -337,11 +407,13 @@ export default function Admin() {
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-48" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
+                                                            <TableCell className="px-6 py-4 text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
                                                         </TableRow>
                                                     ))
                                                 ) : !companyData || companyData.items.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={5} className="text-center py-12 text-slate-400 font-medium font-sans">
+                                                        <TableCell colSpan={7} className="text-center py-12 text-slate-400 font-medium font-sans">
                                                             Nenhuma empresa localizada.
                                                         </TableCell>
                                                     </TableRow>
@@ -370,6 +442,29 @@ export default function Admin() {
                                                                     month: "2-digit",
                                                                     year: "numeric"
                                                                 })}
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5">
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {comp.enabledIntegrations && comp.enabledIntegrations.length > 0 ? (
+                                                                        comp.enabledIntegrations.map((integrationName, idx) => (
+                                                                            <span key={idx} className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold uppercase">
+                                                                                {integrationName}
+                                                                            </span>
+                                                                        ))
+                                                                    ) : (
+                                                                        <span className="text-slate-400 italic text-xs">Nenhuma</span>
+                                                                    )}
+                                                                </div>
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5 text-right">
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    onClick={() => handleViewIntegrationDetails(comp.id, comp.name)}
+                                                                    className="h-8 text-xs font-semibold"
+                                                                >
+                                                                    Detalhes
+                                                                </Button>
                                                             </TableCell>
                                                         </TableRow>
                                                     ))
@@ -413,7 +508,155 @@ export default function Admin() {
                                     </CardContent>
                                 </Card>
                             </TabsContent>
+                            
+                            {/* ABA DE CONFIGURAÇÃO DE PAGAMENTO (Taxa Global) */}
+                            <TabsContent value="payments" className="space-y-4 outline-none">
+                                <Card className="border border-slate-200 bg-white shadow-sm max-w-2xl">
+                                    <CardHeader className="pb-4 border-b border-slate-100">
+                                        <CardTitle className="text-lg font-bold flex items-center gap-2">
+                                            <CreditCard className="w-5 h-5 text-indigo-600" />
+                                            Configurações de Taxa de Pagamento
+                                        </CardTitle>
+                                        <CardDescription>
+                                            Defina a taxa global cobrada pela plataforma sobre as transações de Checkout Transparente.
+                                        </CardDescription>
+                                    </CardHeader>
+                                    <CardContent className="p-6 space-y-6">
+                                        {settingsLoading ? (
+                                            <div className="space-y-2 py-4">
+                                                <Skeleton className="h-4 w-1/3" />
+                                                <Skeleton className="h-10 w-full" />
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                <div className="space-y-1.5">
+                                                    <label htmlFor="platform-fee" className="text-sm font-semibold text-slate-700">
+                                                        Taxa de Comissão do Site (%)
+                                                    </label>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Esta porcentagem será aplicada como comissão da plataforma (`application_fee`) em cada cobrança Pix gerada.
+                                                    </p>
+                                                    <div className="flex items-center gap-3 mt-2">
+                                                        <div className="relative max-w-[150px] w-full">
+                                                            <Input
+                                                                id="platform-fee"
+                                                                type="number"
+                                                                step="0.1"
+                                                                min="0"
+                                                                max="100"
+                                                                className="pr-8 text-lg font-mono-data text-right focus:border-indigo-500"
+                                                                value={feeInput}
+                                                                onChange={(e) => setFeeInput(parseFloat(e.target.value) || 0)}
+                                                            />
+                                                            <span className="absolute right-3 top-2.5 text-slate-400 font-semibold text-sm">%</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-4 flex gap-3 text-indigo-800 text-sm mt-4 select-none">
+                                                    <Activity className="w-5 h-5 shrink-0 mt-0.5" />
+                                                    <div>
+                                                        <strong className="font-semibold block mb-0.5">Exemplo Prático:</strong>
+                                                        Se a taxa for configurada em <strong className="font-mono-data">{feeInput}%</strong>, uma venda de <strong className="font-mono-data">R$ 10,00</strong> gerará uma comissão de <strong className="font-mono-data">R$ {(10 * (feeInput / 100)).toFixed(2)}</strong> para o site, e o cliente/vendedor receberá o valor restante líquido.
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className="pt-4 border-t border-slate-100 flex justify-end">
+                                            <Button
+                                                onClick={handleSaveGlobalSettings}
+                                                disabled={settingsLoading || savingSettings}
+                                                className="bg-indigo-600 hover:bg-indigo-700 font-medium px-5 gap-2"
+                                            >
+                                                {savingSettings ? "Salvando..." : "Salvar Configurações"}
+                                            </Button>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </TabsContent>
                         </Tabs>
+
+                        {/* MODAL DETALHES DE INTEGRAÇÃO (ADMIN) */}
+                        <Dialog open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
+                            <DialogContent className="max-w-xl bg-white rounded-xl shadow-xl p-0 overflow-hidden">
+                                <DialogHeader className="p-6 pb-4 border-b bg-slate-50/70">
+                                    <DialogTitle className="text-lg font-bold">
+                                        Integração Mercado Pago - {selectedCompanyForDetails?.name}
+                                    </DialogTitle>
+                                </DialogHeader>
+                                <div className="p-6 space-y-5 text-sm">
+                                    {loadingDetails ? (
+                                        <p className="text-muted-foreground animate-pulse text-center py-6 font-medium">Carregando detalhes...</p>
+                                    ) : companyIntegration ? (
+                                        <>
+                                            <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                                                <span className="font-semibold text-slate-700">Status da Integração:</span>
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                                                    companyIntegration.isActive 
+                                                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200" 
+                                                        : "bg-slate-100 text-slate-700 border border-slate-200"
+                                                }`}>
+                                                    {companyIntegration.isActive ? "Ativo" : "Inativo"}
+                                                </span>
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">1. Dados do Responsável</h4>
+                                                <div className="grid grid-cols-2 gap-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
+                                                    <div><strong className="text-slate-600">Nome:</strong> {companyIntegration.ownerName}</div>
+                                                    <div><strong className="text-slate-600">CPF:</strong> {companyIntegration.ownerCpf}</div>
+                                                    <div><strong className="text-slate-600">E-mail:</strong> {companyIntegration.ownerEmail || "-"}</div>
+                                                    <div><strong className="text-slate-600">Telefone:</strong> {companyIntegration.ownerPhone || "-"}</div>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">2. Dados da Empresa (PJ)</h4>
+                                                <div className="grid grid-cols-2 gap-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
+                                                    <div><strong className="text-slate-600">Razão Social:</strong> {companyIntegration.businessName}</div>
+                                                    <div><strong className="text-slate-600">Nome Fantasia:</strong> {companyIntegration.tradeName || "-"}</div>
+                                                    <div><strong className="text-slate-600">CNPJ:</strong> {companyIntegration.cnpj}</div>
+                                                    <div><strong className="text-slate-600">E-mail:</strong> {companyIntegration.businessEmail || "-"}</div>
+                                                </div>
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">3. Credenciais de API (Mascaradas)</h4>
+                                                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2 text-xs">
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <span className="font-semibold text-slate-600">Access Token:</span>
+                                                        <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.accessToken}</span>
+                                                    </div>
+                                                    <div className="flex flex-col gap-0.5">
+                                                        <span className="font-semibold text-slate-600">Public Key:</span>
+                                                        <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.publicKey}</span>
+                                                    </div>
+                                                    {companyIntegration.clientId && (
+                                                        <div className="flex flex-col gap-0.5">
+                                                            <span className="font-semibold text-slate-600">Client ID:</span>
+                                                            <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.clientId}</span>
+                                                        </div>
+                                                    )}
+                                                    {companyIntegration.clientSecret && (
+                                                        <div className="flex flex-col gap-0.5">
+                                                            <span className="font-semibold text-slate-600">Client Secret:</span>
+                                                            <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.clientSecret}</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <p className="text-muted-foreground text-center py-6">Esta empresa não possui nenhuma integração com o Mercado Pago configurada.</p>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t bg-slate-50/70 flex justify-end">
+                                    <Button onClick={() => setIsDetailsOpen(false)} className="px-5 h-9 font-semibold">
+                                        Fechar
+                                    </Button>
+                                </div>
+                            </DialogContent>
+                        </Dialog>
                     </main>
                 </div>
             </div>

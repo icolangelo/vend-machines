@@ -132,6 +132,8 @@ public class DatabaseDataService : IDataService
             existing.TotalSales30d = machine.TotalSales30d;
             existing.LastSync = machine.LastSync;
             existing.SerialNumber = machine.SerialNumber;
+            existing.CompanyId = machine.CompanyId;
+            existing.MercadoPagoEnabled = machine.MercadoPagoEnabled;
             _context.SaveChanges();
         }
     }

@@ -81,7 +81,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password: string) => {
     if (isTestEnv()) {
       if (password === "teste123" || password === "admin123") {
-        const isOperator = email.toLowerCase().includes("joao");
+        const isOperator = email.toLowerCase().includes("operador") || email.toLowerCase().includes("operator");
         const mockUser = {
           id: isOperator ? "usr-joao" : "usr-admin",
           name: isOperator ? "João da Silva" : "Admin Ivan",

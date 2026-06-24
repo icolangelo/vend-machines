@@ -15,6 +15,12 @@ public class AppDbContext : DbContext
     public DbSet<ProductPerformance> ProductPerformances { get; set; } = null!;
     public DbSet<User> Users { get; set; } = null!;
     public DbSet<Company> Companies { get; set; } = null!;
+    
+    // Novas tabelas Mercado Pago
+    public DbSet<SystemSettings> SystemSettings { get; set; } = null!;
+    public DbSet<MercadoPagoIntegration> MercadoPagoIntegrations { get; set; } = null!;
+    public DbSet<PaymentTransaction> PaymentTransactions { get; set; } = null!;
+    public DbSet<TransactionTelemetryLog> TransactionTelemetryLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -27,6 +33,10 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<ProductPerformance>().HasKey(pp => pp.Name);
         modelBuilder.Entity<User>().HasKey(u => u.Id);
         modelBuilder.Entity<Company>().HasKey(c => c.Id);
+        modelBuilder.Entity<SystemSettings>().HasKey(s => s.Id);
+        modelBuilder.Entity<MercadoPagoIntegration>().HasKey(mpi => mpi.Id);
+        modelBuilder.Entity<PaymentTransaction>().HasKey(t => t.Id);
+        modelBuilder.Entity<TransactionTelemetryLog>().HasKey(tl => tl.Id);
 
         // Relacionamento Empresa -> Usuários (Sócios)
         modelBuilder.Entity<User>()
@@ -42,12 +52,39 @@ public class AppDbContext : DbContext
             .HasForeignKey(m => m.CompanyId)
             .OnDelete(DeleteBehavior.SetNull);
 
+        // Relacionamento Empresa -> Integração Mercado Pago
+        modelBuilder.Entity<MercadoPagoIntegration>()
+            .HasOne(mpi => mpi.Company)
+            .WithMany()
+            .HasForeignKey(mpi => mpi.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Relacionamento Transações
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasOne(t => t.Machine)
+            .WithMany()
+            .HasForeignKey(t => t.MachineId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .HasOne(t => t.Company)
+            .WithMany()
+            .HasForeignKey(t => t.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Relacionamento Logs
+        modelBuilder.Entity<TransactionTelemetryLog>()
+            .HasOne(tl => tl.Transaction)
+            .WithMany(t => t.TelemetryLogs)
+            .HasForeignKey(tl => tl.TransactionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         // Índice único no e-mail
         modelBuilder.Entity<User>()
             .HasIndex(u => u.Email)
             .IsUnique();
 
-        // Configurações adicionais de precisão/tipo de dados para PostgreSQL (opcional, mas boa prática)
+        // Configurações adicionais de precisão
         modelBuilder.Entity<Machine>()
             .Property(m => m.Revenue30d)
             .HasPrecision(18, 2);
@@ -58,6 +95,18 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<ProductPerformance>()
             .Property(pp => pp.Revenue)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<SystemSettings>()
+            .Property(s => s.ApplicationFeePercent)
+            .HasPrecision(5, 2);
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .Property(t => t.Amount)
+            .HasPrecision(18, 2);
+
+        modelBuilder.Entity<PaymentTransaction>()
+            .Property(t => t.ApplicationFee)
             .HasPrecision(18, 2);
     }
 }

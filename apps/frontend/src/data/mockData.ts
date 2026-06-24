@@ -9,6 +9,7 @@ export interface Machine {
   totalSales30d: number;
   lastSync: string;
   serialNumber: string;
+  mercadoPagoEnabled?: boolean;
 }
 
 export interface Client {
