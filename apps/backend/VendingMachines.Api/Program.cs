@@ -33,6 +33,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     {
         options.UseNpgsql(connectionString);
     }
+
+    // Ignore pending model changes warning when dynamically switching providers between SQLite and PostgreSQL
+    options.ConfigureWarnings(warnings => warnings.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
 });
 
 // Register Database Data Service
