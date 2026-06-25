@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -11,7 +11,142 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AlterColumn<string>(
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                migrationBuilder.AddColumn<bool>(
+                    name: "MercadoPagoEnabled",
+                    table: "Machines",
+                    type: "boolean",
+                    nullable: false,
+                    defaultValue: false);
+
+                migrationBuilder.CreateTable(
+                    name: "SystemSettings",
+                    columns: table => new
+                    {
+                        Id = table.Column<Guid>(type: "uuid", nullable: false),
+                        ApplicationFeePercent = table.Column<decimal>(type: "numeric(5,2)", precision: 5, scale: 2, nullable: false),
+                        UpdatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                    },
+                    constraints: table =>
+                    {
+                        table.PrimaryKey("PK_SystemSettings", x => x.Id);
+                    });
+
+                migrationBuilder.CreateTable(
+                    name: "MercadoPagoIntegrations",
+                    columns: table => new
+                    {
+                        Id = table.Column<Guid>(type: "uuid", nullable: false),
+                        CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
+                        OwnerName = table.Column<string>(type: "text", nullable: false),
+                        OwnerCpf = table.Column<string>(type: "text", nullable: false),
+                        OwnerEmail = table.Column<string>(type: "text", nullable: false),
+                        OwnerPhone = table.Column<string>(type: "text", nullable: false),
+                        BusinessName = table.Column<string>(type: "text", nullable: false),
+                        TradeName = table.Column<string>(type: "text", nullable: false),
+                        Cnpj = table.Column<string>(type: "text", nullable: false),
+                        BusinessEmail = table.Column<string>(type: "text", nullable: false),
+                        BusinessPhone = table.Column<string>(type: "text", nullable: false),
+                        AccessToken = table.Column<string>(type: "text", nullable: false),
+                        PublicKey = table.Column<string>(type: "text", nullable: false),
+                        ClientId = table.Column<string>(type: "text", nullable: false),
+                        ClientSecret = table.Column<string>(type: "text", nullable: false),
+                        IsActive = table.Column<bool>(type: "boolean", nullable: false),
+                        CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                        UpdatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
+                    },
+                    constraints: table =>
+                    {
+                        table.PrimaryKey("PK_MercadoPagoIntegrations", x => x.Id);
+                        table.ForeignKey(
+                            name: "FK_MercadoPagoIntegrations_Companies_CompanyId",
+                            column: x => x.CompanyId,
+                            principalTable: "Companies",
+                            principalColumn: "Id",
+                            onDelete: ReferentialAction.Cascade);
+                    });
+
+                migrationBuilder.CreateTable(
+                    name: "PaymentTransactions",
+                    columns: table => new
+                    {
+                        Id = table.Column<Guid>(type: "uuid", nullable: false),
+                        MachineId = table.Column<string>(type: "text", nullable: false),
+                        CompanyId = table.Column<Guid>(type: "uuid", nullable: false),
+                        Amount = table.Column<decimal>(type: "numeric(18,2)", precision: 18, scale: 2, nullable: false),
+                        ApplicationFee = table.Column<decimal>(type: "numeric(18,2)", precision: 18, scale: 2, nullable: false),
+                        Status = table.Column<string>(type: "text", nullable: false),
+                        MercadoPagoPaymentId = table.Column<string>(type: "text", nullable: true),
+                        MercadoPagoStatus = table.Column<string>(type: "text", nullable: true),
+                        MercadoPagoStatusDetail = table.Column<string>(type: "text", nullable: true),
+                        RawResponse = table.Column<string>(type: "text", nullable: true),
+                        QrCode = table.Column<string>(type: "text", nullable: false),
+                        QrCodeBase64 = table.Column<string>(type: "text", nullable: false),
+                        CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                        CompletedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: true)
+                    },
+                    constraints: table =>
+                    {
+                        table.PrimaryKey("PK_PaymentTransactions", x => x.Id);
+                        table.ForeignKey(
+                            name: "FK_PaymentTransactions_Companies_CompanyId",
+                            column: x => x.CompanyId,
+                            principalTable: "Companies",
+                            principalColumn: "Id",
+                            onDelete: ReferentialAction.Cascade);
+                        table.ForeignKey(
+                            name: "FK_PaymentTransactions_Machines_MachineId",
+                            column: x => x.MachineId,
+                            principalTable: "Machines",
+                            principalColumn: "Id",
+                            onDelete: ReferentialAction.Cascade);
+                    });
+
+                migrationBuilder.CreateTable(
+                    name: "TransactionTelemetryLogs",
+                    columns: table => new
+                    {
+                        Id = table.Column<Guid>(type: "uuid", nullable: false),
+                        TransactionId = table.Column<Guid>(type: "uuid", nullable: false),
+                        Timestamp = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                        LogType = table.Column<string>(type: "text", nullable: false),
+                        Message = table.Column<string>(type: "text", nullable: false)
+                    },
+                    constraints: table =>
+                    {
+                        table.PrimaryKey("PK_TransactionTelemetryLogs", x => x.Id);
+                        table.ForeignKey(
+                            name: "FK_TransactionTelemetryLogs_PaymentTransactions_TransactionId",
+                            column: x => x.TransactionId,
+                            principalTable: "PaymentTransactions",
+                            principalColumn: "Id",
+                            onDelete: ReferentialAction.Cascade);
+                    });
+
+                migrationBuilder.CreateIndex(
+                    name: "IX_MercadoPagoIntegrations_CompanyId",
+                    table: "MercadoPagoIntegrations",
+                    column: "CompanyId");
+
+                migrationBuilder.CreateIndex(
+                    name: "IX_PaymentTransactions_CompanyId",
+                    table: "PaymentTransactions",
+                    column: "CompanyId");
+
+                migrationBuilder.CreateIndex(
+                    name: "IX_PaymentTransactions_MachineId",
+                    table: "PaymentTransactions",
+                    column: "MachineId");
+
+                migrationBuilder.CreateIndex(
+                    name: "IX_TransactionTelemetryLogs_TransactionId",
+                    table: "TransactionTelemetryLogs",
+                    column: "TransactionId");
+            }
+            else
+            {
+                migrationBuilder.AlterColumn<string>(
                 name: "Role",
                 table: "Users",
                 type: "TEXT",
@@ -476,12 +611,33 @@ namespace VendingMachines.Api.Migrations
                 name: "IX_TransactionTelemetryLogs_TransactionId",
                 table: "TransactionTelemetryLogs",
                 column: "TransactionId");
+            }
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                migrationBuilder.DropTable(
+                    name: "MercadoPagoIntegrations");
+
+                migrationBuilder.DropTable(
+                    name: "SystemSettings");
+
+                migrationBuilder.DropTable(
+                    name: "TransactionTelemetryLogs");
+
+                migrationBuilder.DropTable(
+                    name: "PaymentTransactions");
+
+                migrationBuilder.DropColumn(
+                    name: "MercadoPagoEnabled",
+                    table: "Machines");
+            }
+            else
+            {
+                migrationBuilder.DropTable(
                 name: "MercadoPagoIntegrations");
 
             migrationBuilder.DropTable(
@@ -831,6 +987,7 @@ namespace VendingMachines.Api.Migrations
                 nullable: false,
                 oldClrType: typeof(Guid),
                 oldType: "TEXT");
+            }
         }
     }
 }
