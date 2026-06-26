@@ -21,7 +21,71 @@ import Alerts from "./pages/Alerts.tsx";
 import Admin from "./pages/Admin.tsx";
 import PaymentSimulator from "./pages/PaymentSimulator.tsx";
 
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { exchangeOauthCode } from "@/lib/api";
+import { useToast } from "@/components/ui/use-toast";
+import { RefreshCw } from "lucide-react";
+
 const queryClient = new QueryClient();
+
+const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
+    const navigate = useNavigate();
+    const { toast } = useToast();
+    const [processing, setProcessing] = useState(false);
+
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get("code");
+
+        if (code) {
+            const token = sessionStorage.getItem("token") || localStorage.getItem("token");
+            if (!token) return;
+
+            setProcessing(true);
+            const redirectUri = window.location.origin + "/";
+
+            exchangeOauthCode(code, redirectUri)
+                .then(() => {
+                    toast({
+                        title: "Integração Conectada",
+                        description: "Sua conta do Mercado Pago foi integrada com sucesso!"
+                    });
+                    
+                    const url = new URL(window.location.href);
+                    url.search = "";
+                    window.history.replaceState({}, document.title, url.toString());
+                    navigate("/integrations");
+                })
+                .catch((err) => {
+                    console.error("Erro no callback do OAuth:", err);
+                    toast({
+                        title: "Erro na Integração",
+                        description: err.message || "Não foi possível vincular sua conta.",
+                        variant: "destructive"
+                    });
+                    const url = new URL(window.location.href);
+                    url.search = "";
+                    window.history.replaceState({}, document.title, url.toString());
+                })
+                .finally(() => {
+                    setProcessing(false);
+                });
+        }
+    }, [navigate, toast]);
+
+    if (processing) {
+        return (
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-50 text-white">
+                <RefreshCw className="w-10 h-10 text-sky-400 animate-spin" />
+                <p className="font-semibold text-lg">Conectando sua conta Mercado Pago...</p>
+                <p className="text-xs text-slate-300">Por favor, aguarde a sincronização.</p>
+            </div>
+        );
+    }
+
+    return <>{children}</>;
+};
 
 const App = () => {
     const isTestEnv = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
@@ -34,31 +98,33 @@ const App = () => {
                     <Sonner />
                     <CookieConsent />
                     <HashRouter>
-                        <div className={isTestEnv ? "is-test-env" : ""}>
-                            {isTestEnv && (
-                                <div className="ambiente-teste-banner">
-                                    Ambiente de Teste
-                                </div>
-                            )}
-                            <Routes>
-                                <Route path="/" element={<Login />} />
-                                <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
-                                <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
-                                <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
-                                <Route path="/machines/:id/edit" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
-                                <Route path="/clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
-                                <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
-                                <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-                                <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
-                                <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
-                                <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
-                                <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
-                                <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
-                                <Route path="/payment-simulator" element={<ProtectedRoute><PaymentSimulator /></ProtectedRoute>} />
-                                {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-                                <Route path="*" element={<NotFound />} />
-                            </Routes>
-                        </div>
+                        <OauthInterceptor>
+                            <div className={isTestEnv ? "is-test-env" : ""}>
+                                {isTestEnv && (
+                                    <div className="ambiente-teste-banner">
+                                        Ambiente de Teste
+                                    </div>
+                                )}
+                                <Routes>
+                                    <Route path="/" element={<Login />} />
+                                    <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
+                                    <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
+                                    <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
+                                    <Route path="/machines/:id/edit" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
+                                    <Route path="/clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
+                                    <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
+                                    <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+                                    <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
+                                    <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
+                                    <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+                                    <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
+                                    <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+                                    <Route path="/payment-simulator" element={<ProtectedRoute><PaymentSimulator /></ProtectedRoute>} />
+                                    {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                                    <Route path="*" element={<NotFound />} />
+                                </Routes>
+                            </div>
+                        </OauthInterceptor>
                     </HashRouter>
                 </AuthProvider>
             </TooltipProvider>

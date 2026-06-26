@@ -414,6 +414,71 @@ export async function toggleIntegration(isActive: boolean): Promise<void> {
     if (!response.ok) throw new Error("Erro ao alterar status da integração.");
 }
 
+export interface OauthConfig {
+    clientId: string;
+    redirectUri: string;
+}
+
+export async function getOauthConfig(): Promise<OauthConfig> {
+    if (isTestEnv()) {
+        return {
+            clientId: "8274025178652391",
+            redirectUri: window.location.origin + "/"
+        };
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/oauth/config`);
+    if (!response.ok) throw new Error("Erro ao carregar configurações do OAuth.");
+    return response.json();
+}
+
+export async function exchangeOauthCode(code: string, redirectUri: string): Promise<MercadoPagoIntegration> {
+    if (isTestEnv()) {
+        const userStr = sessionStorage.getItem("user");
+        const companyId = userStr ? JSON.parse(userStr).companyId : "11111111-1111-1111-1111-111111111111";
+        const mockIntegration: MercadoPagoIntegration = {
+            companyId,
+            ownerName: "Admin Ivan (Mock)",
+            ownerCpf: "123.456.789-00",
+            ownerEmail: "dev.ivan@gmail.com",
+            ownerPhone: "11999999999",
+            businessName: "ACME Machines LTDA (Mock)",
+            tradeName: "ACME Machines LTDA",
+            cnpj: "12.345.678/0001-99",
+            businessEmail: "dev.ivan@gmail.com",
+            businessPhone: "11999999999",
+            accessToken: "APP_USR-DUMMY-OAUTH-MOCKTOKEN123456",
+            publicKey: "APP_USR-MOCKPUBKEY123456",
+            clientId: "8274025178652391",
+            clientSecret: "MOCKSECRET",
+            isActive: true
+        };
+        localStorage.setItem("mock_mp_integration", JSON.stringify(mockIntegration));
+        return mockIntegration;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/oauth/callback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, redirectUri })
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao realizar o callback do Mercado Pago.");
+    }
+    return response.json();
+}
+
+export async function disconnectIntegration(): Promise<void> {
+    if (isTestEnv()) {
+        localStorage.removeItem("mock_mp_integration");
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/integration/disconnect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+    });
+    if (!response.ok) throw new Error("Erro ao desconectar conta.");
+}
+
 export async function getCompanyIntegration(companyId: string): Promise<MercadoPagoIntegration> {
     if (isTestEnv()) {
         const local = localStorage.getItem("mock_mp_integration");

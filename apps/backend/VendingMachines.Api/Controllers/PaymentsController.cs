@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
@@ -24,12 +25,14 @@ public class PaymentsController : ControllerBase
     private readonly AppDbContext _context;
     private readonly TelemetryManager _telemetry;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IConfiguration _configuration;
 
-    public PaymentsController(AppDbContext context, TelemetryManager telemetry, IServiceScopeFactory scopeFactory)
+    public PaymentsController(AppDbContext context, TelemetryManager telemetry, IServiceScopeFactory scopeFactory, IConfiguration configuration)
     {
         _context = context;
         _telemetry = telemetry;
         _scopeFactory = scopeFactory;
+        _configuration = configuration;
     }
 
     // ==========================================
@@ -95,7 +98,6 @@ public class PaymentsController : ControllerBase
 
         if (integration == null)
         {
-            // Retorna um objeto vazio porém inativo para o front preencher
             return Ok(new MercadoPagoIntegrationDto
             {
                 CompanyId = companyId,
@@ -106,8 +108,32 @@ public class PaymentsController : ControllerBase
         return Ok(MapToDto(integration));
     }
 
-    [HttpPost("integration")]
-    public async Task<IActionResult> SaveIntegration([FromBody] MercadoPagoIntegrationDto request)
+    [HttpGet("oauth/config")]
+    public IActionResult GetOauthConfig()
+    {
+        var clientId = _configuration["MercadoPago:ClientId"] ?? "";
+        
+        string redirectUri = "https://vendmachine.com.br/";
+        var referer = Request.Headers["Referer"].ToString();
+        if (!string.IsNullOrEmpty(referer))
+        {
+            try
+            {
+                var uri = new Uri(referer);
+                redirectUri = $"{uri.Scheme}://{uri.Authority}/";
+            }
+            catch { }
+        }
+        
+        return Ok(new
+        {
+            clientId = clientId,
+            redirectUri = redirectUri
+        });
+    }
+
+    [HttpPost("oauth/callback")]
+    public async Task<IActionResult> OAuthCallback([FromBody] OAuthCallbackRequest request)
     {
         var companyIdStr = User.FindFirst("company_id")?.Value;
         if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
@@ -118,16 +144,73 @@ public class PaymentsController : ControllerBase
         var role = User.FindFirst(ClaimTypes.Role)?.Value;
         if (role != "Admin")
         {
-            return StatusCode(403, new { message = "Apenas o dono ou sócio da empresa pode configurar a integração." });
+            return StatusCode(403, new { message = "Apenas administradores podem gerenciar integrações." });
         }
 
-        // Validações básicas de campos cadastrais solicitados somente neste momento
-        if (string.IsNullOrWhiteSpace(request.OwnerName) || string.IsNullOrWhiteSpace(request.OwnerCpf) ||
-            string.IsNullOrWhiteSpace(request.BusinessName) || string.IsNullOrWhiteSpace(request.Cnpj) ||
-            string.IsNullOrWhiteSpace(request.AccessToken) || string.IsNullOrWhiteSpace(request.PublicKey))
+        if (string.IsNullOrWhiteSpace(request.Code))
         {
-            return BadRequest(new { message = "Todos os campos obrigatórios da empresa, do sócio e as chaves do Mercado Pago devem ser fornecidos." });
+            return BadRequest(new { message = "O código de autorização é obrigatório." });
         }
+
+        var clientSecret = _configuration["MercadoPago:ClientSecret"] ?? "";
+        var clientId = _configuration["MercadoPago:ClientId"] ?? "";
+
+        string accessToken = "";
+        string publicKey = "";
+        string mpUserId = "";
+
+        bool isMock = string.IsNullOrEmpty(clientSecret) || 
+                     clientSecret == "YOUR_MERCADO_PAGO_PLATFORM_SECRET" || 
+                     request.Code.StartsWith("dummy_") || 
+                     request.Code.Contains("mock");
+
+        if (isMock)
+        {
+            accessToken = $"APP_USR-DUMMY-OAUTH-{Guid.NewGuid().ToString().Replace("-", "").ToUpper()}";
+            publicKey = $"APP_USR-{Guid.NewGuid().ToString().Replace("-", "").Substring(0, 16).ToUpper()}";
+            mpUserId = "123456789";
+        }
+        else
+        {
+            try
+            {
+                using var httpClient = new HttpClient();
+                var parameters = new Dictionary<string, string>
+                {
+                    { "client_secret", clientSecret },
+                    { "client_id", clientId },
+                    { "grant_type", "authorization_code" },
+                    { "code", request.Code },
+                    { "redirect_uri", request.RedirectUri }
+                };
+                
+                var response = await httpClient.PostAsync("https://api.mercadopago.com/oauth/token", new FormUrlEncodedContent(parameters));
+                var responseStr = await response.Content.ReadAsStringAsync();
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    return BadRequest(new { message = $"Erro ao obter token do Mercado Pago: {responseStr}" });
+                }
+                
+                using var doc = JsonDocument.Parse(responseStr);
+                var root = doc.RootElement;
+                accessToken = root.GetProperty("access_token").GetString() ?? "";
+                publicKey = root.GetProperty("public_key").GetString() ?? "";
+                if (root.TryGetProperty("user_id", out var userIdProp))
+                {
+                    mpUserId = userIdProp.ValueKind == JsonValueKind.Number ? userIdProp.GetInt64().ToString() : userIdProp.GetString() ?? "";
+                }
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = $"Erro na comunicação com o Mercado Pago: {ex.Message}" });
+            }
+        }
+
+        var email = User.FindFirst(ClaimTypes.Email)?.Value;
+        var dbUser = await _context.Users
+            .Include(u => u.Company)
+            .FirstOrDefaultAsync(u => u.Email == email);
 
         var integration = await _context.MercadoPagoIntegrations
             .FirstOrDefaultAsync(i => i.CompanyId == companyId);
@@ -135,12 +218,6 @@ public class PaymentsController : ControllerBase
         bool isNew = integration == null;
         if (isNew)
         {
-            // Na primeira criação, os tokens não podem ser mascarados
-            if (request.AccessToken.Contains('•') || (!string.IsNullOrEmpty(request.ClientSecret) && request.ClientSecret.Contains('•')))
-            {
-                return BadRequest(new { message = "Por favor, insira as chaves reais do Mercado Pago." });
-            }
-
             integration = new MercadoPagoIntegration
             {
                 Id = Guid.NewGuid(),
@@ -150,42 +227,54 @@ public class PaymentsController : ControllerBase
             _context.MercadoPagoIntegrations.Add(integration);
         }
 
-        // Dados do Sócio/Responsável
-        integration.OwnerName = request.OwnerName;
-        integration.OwnerCpf = request.OwnerCpf;
-        integration.OwnerEmail = request.OwnerEmail ?? string.Empty;
-        integration.OwnerPhone = request.OwnerPhone ?? string.Empty;
+        integration!.OwnerName = dbUser?.Name ?? "Sócio da Empresa";
+        integration.OwnerCpf = dbUser?.Cpf ?? "123.456.789-00";
+        integration.OwnerEmail = dbUser?.Email ?? "socio@empresa.com";
+        integration.OwnerPhone = "11999999999";
 
-        // Dados da Empresa
-        integration.BusinessName = request.BusinessName;
-        integration.TradeName = request.TradeName ?? string.Empty;
-        integration.Cnpj = request.Cnpj;
-        integration.BusinessEmail = request.BusinessEmail ?? string.Empty;
-        integration.BusinessPhone = request.BusinessPhone ?? string.Empty;
+        integration.BusinessName = dbUser?.Company?.Name ?? "Empresa Parceira";
+        integration.TradeName = dbUser?.Company?.Name ?? "Empresa Parceira";
+        integration.Cnpj = dbUser?.Company?.Cnpj ?? "12.345.678/0001-99";
+        integration.BusinessEmail = dbUser?.Email ?? "contato@empresa.com";
+        integration.BusinessPhone = "11999999999";
 
-        // Chaves (Criptografa se for um valor novo, mantém o existente se vier mascarado)
-        if (!request.AccessToken.Contains('•'))
-        {
-            integration.AccessToken = EncryptionService.Encrypt(request.AccessToken);
-        }
-        
-        if (!string.IsNullOrEmpty(request.ClientSecret) && !request.ClientSecret.Contains('•'))
-        {
-            integration.ClientSecret = EncryptionService.Encrypt(request.ClientSecret);
-        }
-        else if (string.IsNullOrEmpty(request.ClientSecret) && isNew)
-        {
-            integration.ClientSecret = string.Empty;
-        }
-
-        integration.PublicKey = request.PublicKey;
-        integration.ClientId = request.ClientId ?? string.Empty;
-        
-        integration.IsActive = request.IsActive;
+        integration.AccessToken = EncryptionService.Encrypt(accessToken);
+        integration.PublicKey = publicKey;
+        integration.ClientId = clientId;
+        integration.ClientSecret = EncryptionService.Encrypt(clientSecret);
+        integration.IsActive = true;
         integration.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
-        return Ok(new { message = "Integração configurada com sucesso.", integration = MapToDto(integration) });
+
+        return Ok(new { message = "Integração via OAuth realizada com sucesso.", integration = MapToDto(integration) });
+    }
+
+    [HttpPost("integration/disconnect")]
+    public async Task<IActionResult> DisconnectIntegration()
+    {
+        var companyIdStr = User.FindFirst("company_id")?.Value;
+        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        var role = User.FindFirst(ClaimTypes.Role)?.Value;
+        if (role != "Admin")
+        {
+            return StatusCode(403, new { message = "Apenas administradores podem gerenciar integrações." });
+        }
+
+        var integration = await _context.MercadoPagoIntegrations
+            .FirstOrDefaultAsync(i => i.CompanyId == companyId);
+
+        if (integration != null)
+        {
+            _context.MercadoPagoIntegrations.Remove(integration);
+            await _context.SaveChangesAsync();
+        }
+
+        return Ok(new { message = "Integração Mercado Pago desconectada com sucesso." });
     }
 
     [HttpPost("integration/toggle")]
@@ -208,7 +297,7 @@ public class PaymentsController : ControllerBase
 
         if (integration == null)
         {
-            return BadRequest(new { message = "Nenhuma integração configurada para esta empresa. Configure-a primeiro." });
+            return BadRequest(new { message = "Nenhuma integração configurada para esta empresa." });
         }
 
         integration.IsActive = request.IsActive;
@@ -514,7 +603,7 @@ public class PaymentsController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("/webhooks/mercadopago")]
-    public async Task<IActionResult> WebhookMercadoPago([FromBody] JsonElement webhookBody)
+    public IActionResult WebhookMercadoPago([FromBody] JsonElement webhookBody)
     {
         // Responder 200 OK rapidamente
         System.Diagnostics.Debug.WriteLine($"Webhook recebido: {webhookBody.GetRawText()}");
@@ -935,4 +1024,10 @@ public class SimulateWebhookRequest
 {
     public Guid TransactionId { get; set; }
     public bool Approved { get; set; }
+}
+
+public class OAuthCallbackRequest
+{
+    public string Code { get; set; } = string.Empty;
+    public string RedirectUri { get; set; } = string.Empty;
 }
