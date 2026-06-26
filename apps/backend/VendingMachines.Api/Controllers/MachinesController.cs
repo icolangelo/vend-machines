@@ -34,6 +34,12 @@ public class MachinesController : ControllerBase
     [HttpPost]
     public ActionResult Create([FromBody] Machine machine)
     {
+        var companyIdClaim = User.FindFirst("company_id")?.Value;
+        if (Guid.TryParse(companyIdClaim, out var companyId))
+        {
+            machine.CompanyId = companyId;
+        }
+
         _dataService.AddMachine(machine);
         return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
     }
@@ -43,6 +49,17 @@ public class MachinesController : ControllerBase
     {
         var existing = _dataService.GetMachines().FirstOrDefault(m => m.Id == id);
         if (existing == null) return NotFound();
+
+        var companyIdClaim = User.FindFirst("company_id")?.Value;
+        if (Guid.TryParse(companyIdClaim, out var companyId))
+        {
+            machine.CompanyId = companyId;
+        }
+        else
+        {
+            // Se o usuário atual não possuir um company_id no token, mantemos o anterior
+            machine.CompanyId = existing.CompanyId;
+        }
         
         machine.Id = id; // Garantir que o ID corresponda à URL
         _dataService.UpdateMachine(machine);

@@ -89,6 +89,22 @@ public static class DbInitializer
             };
             context.Machines.AddRange(machines);
         }
+        else
+        {
+            var defaultCompany = context.Companies.FirstOrDefault();
+            if (defaultCompany != null)
+            {
+                var unlinkedMachines = context.Machines.Where(m => m.CompanyId == null).ToList();
+                if (unlinkedMachines.Any())
+                {
+                    foreach (var m in unlinkedMachines)
+                    {
+                        m.CompanyId = defaultCompany.Id;
+                    }
+                    context.SaveChanges();
+                }
+            }
+        }
 
         // 4. Seed de Products (FullProduct)
         if (!context.Products.Any())
