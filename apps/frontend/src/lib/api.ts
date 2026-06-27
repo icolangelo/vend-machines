@@ -422,7 +422,7 @@ export interface OauthConfig {
 export async function getOauthConfig(): Promise<OauthConfig> {
     if (isTestEnv()) {
         return {
-            clientId: "8274025178652391",
+            clientId: "7902965695113613",
             redirectUri: window.location.origin + "/"
         };
     }
@@ -448,7 +448,7 @@ export async function exchangeOauthCode(code: string, redirectUri: string): Prom
             businessPhone: "11999999999",
             accessToken: "APP_USR-DUMMY-OAUTH-MOCKTOKEN123456",
             publicKey: "APP_USR-MOCKPUBKEY123456",
-            clientId: "8274025178652391",
+            clientId: "7902965695113613",
             clientSecret: "MOCKSECRET",
             isActive: true
         };

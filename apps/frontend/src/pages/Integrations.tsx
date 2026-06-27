@@ -75,8 +75,8 @@ export default function Integrations() {
         try {
             setLoading(true);
             const config = await getOauthConfig();
-            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "8274025178652391" || config.clientId === "";
-            
+            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "7902965695113613" || config.clientId === "";
+
             if (isTest) {
                 toast({
                     title: "Ambiente de Testes / Simulado",
@@ -165,7 +165,7 @@ export default function Integrations() {
                             <div className="max-w-3xl space-y-6">
                                 <Card className="border border-slate-200 bg-white shadow-sm relative overflow-hidden group">
                                     <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-sky-400 to-blue-600" />
-                                    
+
                                     <CardHeader className="pb-4">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-3">
@@ -182,7 +182,7 @@ export default function Integrations() {
                                                     </CardDescription>
                                                 </div>
                                             </div>
-                                            
+
                                             <Badge variant={isConnected && integration?.isActive ? "success" : "secondary"} className={`text-xs font-semibold px-2.5 py-1 ${isConnected && integration?.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
                                                 {isConnected ? (integration?.isActive ? "Conectado e Ativo" : "Pausado") : "Não Configurado"}
                                             </Badge>
@@ -191,8 +191,8 @@ export default function Integrations() {
 
                                     <CardContent className="space-y-6">
                                         <p className="text-sm text-slate-600 leading-relaxed">
-                                            A conexão é realizada diretamente por meio do fluxo oficial do Mercado Pago (OAuth 2.0). 
-                                            Isso garante máxima segurança, pois a plataforma não armazena suas chaves de API secretas brutas. 
+                                            A conexão é realizada diretamente por meio do fluxo oficial do Mercado Pago (OAuth 2.0).
+                                            Isso garante máxima segurança, pois a plataforma não armazena suas chaves de API secretas brutas.
                                             Além disso, permite a divisão automática da taxa da plataforma (<strong className="text-indigo-600">split de comissão</strong>) na criação de cada QR Code Pix.
                                         </p>
 
@@ -263,11 +263,10 @@ export default function Integrations() {
                                                     <Button
                                                         variant="outline"
                                                         size="sm"
-                                                        className={`flex items-center justify-center gap-1.5 h-9 font-medium transition-all ${
-                                                            integration?.isActive 
-                                                                ? "text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200" 
+                                                        className={`flex items-center justify-center gap-1.5 h-9 font-medium transition-all ${integration?.isActive
+                                                                ? "text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
                                                                 : "text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 border-emerald-200"
-                                                        }`}
+                                                            }`}
                                                         onClick={handleToggleStatus}
                                                     >
                                                         {integration?.isActive ? (

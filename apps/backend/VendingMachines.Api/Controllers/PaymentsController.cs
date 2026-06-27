@@ -113,7 +113,7 @@ public class PaymentsController : ControllerBase
     {
         var clientId = _configuration["MercadoPago:ClientId"] ?? "";
         
-        string redirectUri = "https://vendmachine.com.br/";
+        string redirectUri = "https://app.vendmachine.com.br/";
         var referer = Request.Headers["Referer"].ToString();
         if (!string.IsNullOrEmpty(referer))
         {
