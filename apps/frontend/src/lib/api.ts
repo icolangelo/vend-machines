@@ -557,8 +557,10 @@ export async function createPixQrCode(params: {
         body: JSON.stringify(params)
     });
     if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || "Erro ao gerar QR Code Pix.");
+        const errorData = await response.json().catch(() => ({}));
+        const err = new Error(errorData.message || "Erro ao gerar QR Code Pix.") as any;
+        err.transactionId = errorData.transactionId;
+        throw err;
     }
     return response.json();
 }

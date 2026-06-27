@@ -431,11 +431,11 @@ public class PaymentsController : ControllerBase
             // Determina os dados do comprador a partir da integração ativa se o frontend não enviá-los
             string payerEmail = !string.IsNullOrWhiteSpace(request.PayerEmail) 
                 ? request.PayerEmail 
-                : (!string.IsNullOrWhiteSpace(integration.BusinessEmail) ? integration.BusinessEmail : (!string.IsNullOrWhiteSpace(integration.OwnerEmail) ? integration.OwnerEmail : "pagamentos-vending@seuprovedor.com"));
+                : "cliente-vending@seudominio.com.br";
             
             string payerName = !string.IsNullOrWhiteSpace(request.PayerFirstName)
                 ? $"{request.PayerFirstName} {request.PayerLastName}".Trim()
-                : (!string.IsNullOrWhiteSpace(integration.BusinessName) ? integration.BusinessName : (!string.IsNullOrWhiteSpace(integration.OwnerName) ? integration.OwnerName : "Cliente Vending"));
+                : "Cliente Vending";
 
             string firstName = "Cliente";
             string lastName = "Vending";
@@ -449,8 +449,8 @@ public class PaymentsController : ControllerBase
                 }
             }
 
-            string docType = "CNPJ";
-            string docNumber = "";
+            string? docType = null;
+            string? docNumber = null;
 
             if (!string.IsNullOrWhiteSpace(request.PayerCpf))
             {
@@ -465,35 +465,13 @@ public class PaymentsController : ControllerBase
                     docType = "CPF";
                     docNumber = cleanedDoc;
                 }
-                else
-                {
-                    docType = "CPF";
-                    docNumber = "48288333079";
-                }
-            }
-            else if (!string.IsNullOrWhiteSpace(integration.Cnpj) && IsCnpjValido(integration.Cnpj))
-            {
-                docType = "CNPJ";
-                docNumber = integration.Cnpj.Replace(".", "").Replace("-", "").Replace("/", "").Replace(" ", "");
-            }
-            else if (!string.IsNullOrWhiteSpace(integration.OwnerCpf) && IsCpfValido(integration.OwnerCpf))
-            {
-                docType = "CPF";
-                docNumber = integration.OwnerCpf.Replace(".", "").Replace("-", "").Replace(" ", "");
-            }
-            else
-            {
-                // Fallback para CPF de testes matematicamente válido aceito pela validação do Mercado Pago
-                docType = "CPF";
-                docNumber = "48288333079";
             }
 
-            var payload = new
+            // Payloads dynamically built depending on whether document is provided and whether application_fee is charged
+            object payerPayload;
+            if (!string.IsNullOrEmpty(docNumber))
             {
-                transaction_amount = tx.Amount,
-                description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
-                payment_method_id = "pix",
-                payer = new
+                payerPayload = new
                 {
                     email = payerEmail,
                     first_name = firstName,
@@ -503,15 +481,107 @@ public class PaymentsController : ControllerBase
                         type = docType,
                         number = docNumber
                     }
-                },
-                application_fee = tx.ApplicationFee,
-                external_reference = tx.Id.ToString()
-            };
+                };
+            }
+            else
+            {
+                payerPayload = new
+                {
+                    email = payerEmail,
+                    first_name = firstName,
+                    last_name = lastName
+                };
+            }
+
+            object payload;
+            if (tx.ApplicationFee > 0)
+            {
+                payload = new
+                {
+                    transaction_amount = tx.Amount,
+                    description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
+                    payment_method_id = "pix",
+                    payer = payerPayload,
+                    application_fee = tx.ApplicationFee,
+                    external_reference = tx.Id.ToString()
+                };
+            }
+            else
+            {
+                payload = new
+                {
+                    transaction_amount = tx.Amount,
+                    description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
+                    payment_method_id = "pix",
+                    payer = payerPayload,
+                    external_reference = tx.Id.ToString()
+                };
+            }
 
             var mpResponse = await httpClient.PostAsJsonAsync("https://api.mercadopago.com/v1/payments", payload);
             var responseStr = await mpResponse.Content.ReadAsStringAsync();
 
             tx.RawResponse = responseStr;
+
+            // Retentar sem comissão (application_fee) se a resposta indicar erro na taxa
+            if (!mpResponse.IsSuccessStatusCode && tx.ApplicationFee > 0)
+            {
+                bool isFeeError = false;
+                try
+                {
+                    using var errDoc = JsonDocument.Parse(responseStr);
+                    var errRoot = errDoc.RootElement;
+                    string? msg = errRoot.TryGetProperty("message", out var msgProp) ? msgProp.GetString() : null;
+                    
+                    if (msg != null && (msg.Contains("application_fee") || msg.Contains("2030") || msg.Contains("2059")))
+                    {
+                        isFeeError = true;
+                    }
+                    else if (errRoot.TryGetProperty("cause", out var causeProp) && causeProp.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var cause in causeProp.EnumerateArray())
+                        {
+                            if (cause.TryGetProperty("description", out var descProp) && descProp.GetString()?.Contains("application_fee") == true)
+                            {
+                                isFeeError = true;
+                                break;
+                            }
+                            if (cause.TryGetProperty("code", out var codeProp) && 
+                                (codeProp.ValueKind == JsonValueKind.Number && (codeProp.GetInt32() == 2030 || codeProp.GetInt32() == 2059) ||
+                                 codeProp.ValueKind == JsonValueKind.String && (codeProp.GetString() == "2030" || codeProp.GetString() == "2059")))
+                            {
+                                isFeeError = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                if (isFeeError)
+                {
+                    await LogTelemetryAsync(tx.Id, "Warning", "O Mercado Pago recusou a comissão (application_fee). Retentando gerar cobrança Pix sem taxa da plataforma...");
+                    
+                    var retryPayload = new
+                    {
+                        transaction_amount = tx.Amount,
+                        description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
+                        payment_method_id = "pix",
+                        payer = payerPayload,
+                        external_reference = tx.Id.ToString()
+                    };
+
+                    mpResponse = await httpClient.PostAsJsonAsync("https://api.mercadopago.com/v1/payments", retryPayload);
+                    responseStr = await mpResponse.Content.ReadAsStringAsync();
+                    tx.RawResponse = responseStr;
+
+                    if (mpResponse.IsSuccessStatusCode)
+                    {
+                        tx.ApplicationFee = 0; // Taxa cancelada pois não pôde ser cobrada
+                        await LogTelemetryAsync(tx.Id, "Info", "Cobrança Pix gerada com sucesso sem taxa da plataforma (fallback).");
+                    }
+                }
+            }
 
             if (mpResponse.IsSuccessStatusCode)
             {
@@ -571,7 +641,7 @@ public class PaymentsController : ControllerBase
             if (request.UseRealMercadoPago)
             {
                 await LogTelemetryAsync(tx.Id, "Error", $"Falha na integração real do Mercado Pago: {ex.Message}");
-                return BadRequest(new { message = $"Erro retornado pelo Mercado Pago: {ex.Message}" });
+                return BadRequest(new { message = $"Erro retornado pelo Mercado Pago: {ex.Message}", transactionId = tx.Id });
             }
 
             // Fallback para simulação em desenvolvimento

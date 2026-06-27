@@ -125,6 +125,10 @@ export default function PaymentSimulator() {
             });
         } catch (err: any) {
             console.error("Erro ao criar cobrança:", err);
+            if (err.transactionId) {
+                setTransaction({ transactionId: err.transactionId, qrCode: "", qrCodeBase64: "", status: "Failed" });
+                setPollingActive(true);
+            }
             toast({
                 title: "Erro na Operação",
                 description: err.message || "Erro ao criar cobrança Pix no Mercado Pago.",
