@@ -25,7 +25,16 @@ export default function PaymentSimulator() {
 
     // Execution states
     const [generating, setGenerating] = useState(false);
-    const [transaction, setTransaction] = useState<{ transactionId: string; qrCode: string; qrCodeBase64: string; status: string } | null>(null);
+    const [transaction, setTransaction] = useState<{
+        transactionId: string;
+        qrCode: string;
+        qrCodeBase64: string;
+        status: string;
+        applicationFee?: number;
+        applicationFeeApplied?: boolean;
+        applicationFeeWarning?: string | null;
+        simulated?: boolean;
+    } | null>(null);
     const [copied, setCopied] = useState(false);
     const [simulating, setSimulating] = useState<"approved" | "rejected" | null>(null);
 
@@ -116,6 +125,10 @@ export default function PaymentSimulator() {
                 amount: value,
                 useRealMercadoPago
             });
+
+            if (result.applicationFeeApplied === false && !result.simulated) {
+                throw new Error("Cobrança rejeitada: o QR Code Pix não será exibido sem application_fee.");
+            }
 
             setTransaction(result);
             setPollingActive(true);

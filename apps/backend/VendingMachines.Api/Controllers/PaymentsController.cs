@@ -392,6 +392,10 @@ public class PaymentsController : ControllerBase
         var settings = await _context.SystemSettings.FirstOrDefaultAsync();
         decimal feePercent = settings?.ApplicationFeePercent ?? 5.0m;
         decimal appFee = Math.Round(request.Amount * (feePercent / 100m), 2);
+        if (appFee <= 0)
+        {
+            return BadRequest(new { message = "A taxa da plataforma precisa ser maior que R$ 0,00 para gerar uma cobrança Pix." });
+        }
 
         // Criar transação interna
         var tx = new PaymentTransaction
@@ -419,7 +423,12 @@ public class PaymentsController : ControllerBase
             {
                 if (request.UseRealMercadoPago)
                 {
-                    return BadRequest(new { message = "Você solicitou a integração real, mas as credenciais salvas para a empresa são de simulação (contêm 'mock' ou são muito curtas)." });
+                    const string mockCredentialsMessage = "Você solicitou a integração real, mas as credenciais salvas para a empresa são de simulação (contêm 'mock' ou são muito curtas).";
+                    tx.Status = "Failed";
+                    tx.RawResponse = JsonSerializer.Serialize(new { error = "mock_credentials", message = mockCredentialsMessage });
+                    await _context.SaveChangesAsync();
+                    await LogTelemetryAsync(tx.Id, "Error", mockCredentialsMessage);
+                    return BadRequest(new { message = mockCredentialsMessage, transactionId = tx.Id });
                 }
                 throw new Exception("Modo simulação local ativo: chaves de teste detectadas.");
             }
@@ -427,6 +436,7 @@ public class PaymentsController : ControllerBase
             using var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
             httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", tx.Id.ToString());
+            bool applicationFeeApplied = tx.ApplicationFee > 0;
 
             // Determina os dados do comprador a partir da integração ativa se o frontend não enviá-los
             string payerEmail = !string.IsNullOrWhiteSpace(request.PayerEmail) 
@@ -523,66 +533,6 @@ public class PaymentsController : ControllerBase
 
             tx.RawResponse = responseStr;
 
-            // Retentar sem comissão (application_fee) se a resposta indicar erro na taxa
-            if (!mpResponse.IsSuccessStatusCode && tx.ApplicationFee > 0)
-            {
-                bool isFeeError = false;
-                try
-                {
-                    using var errDoc = JsonDocument.Parse(responseStr);
-                    var errRoot = errDoc.RootElement;
-                    string? msg = errRoot.TryGetProperty("message", out var msgProp) ? msgProp.GetString() : null;
-                    
-                    if (msg != null && (msg.Contains("application_fee") || msg.Contains("2030") || msg.Contains("2059")))
-                    {
-                        isFeeError = true;
-                    }
-                    else if (errRoot.TryGetProperty("cause", out var causeProp) && causeProp.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var cause in causeProp.EnumerateArray())
-                        {
-                            if (cause.TryGetProperty("description", out var descProp) && descProp.GetString()?.Contains("application_fee") == true)
-                            {
-                                isFeeError = true;
-                                break;
-                            }
-                            if (cause.TryGetProperty("code", out var codeProp) && 
-                                (codeProp.ValueKind == JsonValueKind.Number && (codeProp.GetInt32() == 2030 || codeProp.GetInt32() == 2059) ||
-                                 codeProp.ValueKind == JsonValueKind.String && (codeProp.GetString() == "2030" || codeProp.GetString() == "2059")))
-                            {
-                                isFeeError = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch { }
-
-                if (isFeeError)
-                {
-                    await LogTelemetryAsync(tx.Id, "Warning", "O Mercado Pago recusou a comissão (application_fee). Retentando gerar cobrança Pix sem taxa da plataforma...");
-                    
-                    var retryPayload = new
-                    {
-                        transaction_amount = tx.Amount,
-                        description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
-                        payment_method_id = "pix",
-                        payer = payerPayload,
-                        external_reference = tx.Id.ToString()
-                    };
-
-                    mpResponse = await httpClient.PostAsJsonAsync("https://api.mercadopago.com/v1/payments", retryPayload);
-                    responseStr = await mpResponse.Content.ReadAsStringAsync();
-                    tx.RawResponse = responseStr;
-
-                    if (mpResponse.IsSuccessStatusCode)
-                    {
-                        tx.ApplicationFee = 0; // Taxa cancelada pois não pôde ser cobrada
-                        await LogTelemetryAsync(tx.Id, "Info", "Cobrança Pix gerada com sucesso sem taxa da plataforma (fallback).");
-                    }
-                }
-            }
-
             if (mpResponse.IsSuccessStatusCode)
             {
                 using var jsonDoc = JsonDocument.Parse(responseStr);
@@ -606,11 +556,15 @@ public class PaymentsController : ControllerBase
                     transactionId = tx.Id,
                     qrCode = tx.QrCode,
                     qrCodeBase64 = tx.QrCodeBase64,
-                    status = tx.Status
+                    status = tx.Status,
+                    applicationFee = tx.ApplicationFee,
+                    applicationFeeApplied
                 });
             }
             else
             {
+                tx.Status = "Failed";
+                await _context.SaveChangesAsync();
                 await LogTelemetryAsync(tx.Id, "Error", $"Erro retornado pelo Mercado Pago: {responseStr}");
                 
                 string errorDetail = responseStr;
@@ -640,6 +594,12 @@ public class PaymentsController : ControllerBase
         {
             if (request.UseRealMercadoPago)
             {
+                tx.Status = "Failed";
+                if (string.IsNullOrWhiteSpace(tx.RawResponse))
+                {
+                    tx.RawResponse = JsonSerializer.Serialize(new { status = "failed", message = ex.Message });
+                }
+                await _context.SaveChangesAsync();
                 await LogTelemetryAsync(tx.Id, "Error", $"Falha na integração real do Mercado Pago: {ex.Message}");
                 return BadRequest(new { message = $"Erro retornado pelo Mercado Pago: {ex.Message}", transactionId = tx.Id });
             }
@@ -662,6 +622,8 @@ public class PaymentsController : ControllerBase
                 qrCode = tx.QrCode,
                 qrCodeBase64 = tx.QrCodeBase64,
                 status = tx.Status,
+                applicationFee = tx.ApplicationFee,
+                applicationFeeApplied = tx.ApplicationFee > 0,
                 simulated = true
             });
         }

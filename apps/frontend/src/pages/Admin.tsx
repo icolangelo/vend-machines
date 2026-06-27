@@ -14,7 +14,8 @@ import {
     Building2,
     Activity,
     CreditCard,
-    Terminal
+    Terminal,
+    Save
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -573,7 +574,7 @@ export default function Admin() {
                                                         Taxa de Comissão do Site (%)
                                                     </label>
                                                     <p className="text-xs text-muted-foreground">
-                                                        Esta porcentagem será aplicada como comissão da plataforma (`application_fee`) em cada cobrança Pix gerada.
+                                                        Esta porcentagem será enviada como comissão da plataforma (`application_fee`) nas cobranças. Se o Mercado Pago recusar a taxa para Pix, a cobrança será rejeitada e nenhum QR Code será gerado.
                                                     </p>
                                                     <div className="flex items-center gap-3 mt-2">
                                                         <div className="relative max-w-[150px] w-full">
@@ -596,11 +597,24 @@ export default function Admin() {
                                                     <Activity className="w-5 h-5 shrink-0 mt-0.5" />
                                                     <div>
                                                         <strong className="font-semibold block mb-0.5">Exemplo Prático:</strong>
-                                                        Se a taxa for configurada em <strong className="font-mono-data">{feeInput}%</strong>, uma venda de <strong className="font-mono-data">R$ 10,00</strong> gerará uma comissão de <strong className="font-mono-data">R$ {(10 * (feeInput / 100)).toFixed(2)}</strong> para o site, e o cliente/vendedor receberá o valor restante líquido.
+                                                        Se a taxa for configurada em <strong className="font-mono-data">{feeInput}%</strong>, uma venda de <strong className="font-mono-data">R$ 10,00</strong> tentará gerar uma comissão de <strong className="font-mono-data">R$ {(10 * (feeInput / 100)).toFixed(2)}</strong> para o site, e a empresa integrada receberá o valor restante líquido quando o split for aceito.
                                                     </div>
+                                                </div>
+
+                                                <div className="flex justify-end pt-2">
+                                                    <Button
+                                                        type="button"
+                                                        onClick={handleSaveGlobalSettings}
+                                                        disabled={savingSettings}
+                                                        className="gap-2 bg-indigo-600 hover:bg-indigo-700 font-semibold"
+                                                    >
+                                                        <Save className="w-4 h-4" />
+                                                        {savingSettings ? "Salvando..." : "Salvar taxa"}
+                                                    </Button>
                                                 </div>
                                             </div>
                                         )}
+                                    </CardContent>
                                 </Card>
                             </TabsContent>
 

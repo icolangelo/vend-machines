@@ -8,7 +8,7 @@ namespace VendingMachines.Api.Data;
 
 public static class DbInitializer
 {
-    public static void Initialize(AppDbContext context)
+    public static void Initialize(AppDbContext context, bool seedDemoData)
     {
         // Executar migrations automáticas se necessário ou apenas garantir a criação para SQLite
         if (context.Database.IsSqlite())
@@ -18,6 +18,11 @@ public static class DbInitializer
         else
         {
             context.Database.Migrate();
+        }
+
+        if (!seedDemoData)
+        {
+            return;
         }
 
         // Definição de IDs fixos para garantir relacionamentos consistentes

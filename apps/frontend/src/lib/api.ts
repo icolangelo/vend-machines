@@ -520,7 +520,16 @@ export async function createPixQrCode(params: {
     payerLastName?: string;
     payerCpf?: string;
     useRealMercadoPago?: boolean;
-}): Promise<{ transactionId: string; qrCode: string; qrCodeBase64: string; status: string }> {
+}): Promise<{
+    transactionId: string;
+    qrCode: string;
+    qrCodeBase64: string;
+    status: string;
+    applicationFee?: number;
+    applicationFeeApplied?: boolean;
+    applicationFeeWarning?: string | null;
+    simulated?: boolean;
+}> {
     if (isTestEnv()) {
         const mockTxId = `tx-${Date.now()}`;
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
@@ -548,7 +557,10 @@ export async function createPixQrCode(params: {
             transactionId: mockTxId,
             qrCode: newTx.qrCode,
             qrCodeBase64: newTx.qrCodeBase64,
-            status: "Pending"
+            status: "Pending",
+            applicationFee: newTx.applicationFee,
+            applicationFeeApplied: true,
+            simulated: true
         };
     }
     const response = await authFetch(`${API_BASE_URL}/payments/pix-qr`, {

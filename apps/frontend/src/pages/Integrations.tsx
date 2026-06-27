@@ -75,7 +75,7 @@ export default function Integrations() {
         try {
             setLoading(true);
             const config = await getOauthConfig();
-            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "7902965695113613" || config.clientId === "";
+            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "";
 
             if (isTest) {
                 toast({

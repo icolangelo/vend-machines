@@ -1,3 +1,4 @@
 apps/backend/VendingMachines.Api/vending_machines.db
 apps/backend/VendingMachines.Api/vending_machines.db-shm
 apps/backend/VendingMachines.Api/vending_machines.db-wal
+.tmp/

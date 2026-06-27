@@ -120,7 +120,7 @@ using (var scope = app.Services.CreateScope())
     try
     {
         var context = services.GetRequiredService<AppDbContext>();
-        DbInitializer.Initialize(context);
+        DbInitializer.Initialize(context, app.Environment.IsDevelopment());
     }
     catch (Exception ex)
     {
