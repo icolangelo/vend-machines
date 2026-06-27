@@ -3,7 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { getUsers, getCompanies, getGlobalSettings, updateGlobalSettings, getCompanyIntegration, type PaginatedUsers, type PaginatedCompanies, type SystemSettings, type MercadoPagoIntegration } from "@/lib/api";
+import { getUsers, getCompanies, getGlobalSettings, updateGlobalSettings, getCompanyIntegration, getAdminLogs, type PaginatedUsers, type PaginatedCompanies, type SystemSettings, type MercadoPagoIntegration, type PaginatedAdminLogs, type AdminLog } from "@/lib/api";
 import { 
     Users as UsersIcon, 
     ShieldAlert, 
@@ -13,7 +13,8 @@ import {
     ChevronRight,
     Building2,
     Activity,
-    CreditCard
+    CreditCard,
+    Terminal
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -54,6 +55,41 @@ export default function Admin() {
     const [selectedCompanyForDetails, setSelectedCompanyForDetails] = useState<{ id: string, name: string } | null>(null);
     const [companyIntegration, setCompanyIntegration] = useState<MercadoPagoIntegration | null>(null);
     const [loadingDetails, setLoadingDetails] = useState(false);
+
+    // Estados dos Logs (Admin)
+    const [logsData, setLogsData] = useState<PaginatedAdminLogs | null>(null);
+    const [logsPage, setLogsPage] = useState(1);
+    const [logsSearch, setLogsSearch] = useState("");
+    const [logsSearchInput, setLogsSearchInput] = useState("");
+    const [logsLoading, setLogsLoading] = useState(true);
+    const [selectedLogForDetails, setSelectedLogForDetails] = useState<AdminLog | null>(null);
+    const [isLogDetailsOpen, setIsLogDetailsOpen] = useState(false);
+
+    // Efeito para carregar logs
+    useEffect(() => {
+        if (!isAdmin) return;
+        setLogsLoading(true);
+        getAdminLogs(logsPage, 10, logsSearch)
+            .then(data => {
+                setLogsData(data);
+                setLogsLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao carregar logs administrativos:", err);
+                setLogsLoading(false);
+            });
+    }, [logsPage, logsSearch, isAdmin]);
+
+    const handleLogsSearchSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        setLogsPage(1);
+        setLogsSearch(logsSearchInput);
+    };
+
+    const handleViewLogDetails = (log: AdminLog) => {
+        setSelectedLogForDetails(log);
+        setIsLogDetailsOpen(true);
+    };
 
     const handleViewIntegrationDetails = async (companyId: string, companyName: string) => {
         setSelectedCompanyForDetails({ id: companyId, name: companyName });
@@ -214,6 +250,9 @@ export default function Admin() {
                                 </TabsTrigger>
                                 <TabsTrigger value="payments" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
                                     Pagamentos
+                                </TabsTrigger>
+                                <TabsTrigger value="logs" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                    Logs de Transações
                                 </TabsTrigger>
                             </TabsList>
 
@@ -562,15 +601,147 @@ export default function Admin() {
                                                 </div>
                                             </div>
                                         )}
-                                        <div className="pt-4 border-t border-slate-100 flex justify-end">
-                                            <Button
-                                                onClick={handleSaveGlobalSettings}
-                                                disabled={settingsLoading || savingSettings}
-                                                className="bg-indigo-600 hover:bg-indigo-700 font-medium px-5 gap-2"
-                                            >
-                                                {savingSettings ? "Salvando..." : "Salvar Configurações"}
-                                            </Button>
+                                </Card>
+                            </TabsContent>
+
+                            {/* ABA DE LOGS DE TRANSAÇÕES */}
+                            <TabsContent value="logs" className="space-y-4 outline-none">
+                                <Card className="border border-slate-200 bg-white shadow-sm">
+                                    <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                        <div>
+                                            <CardTitle className="text-lg font-bold flex items-center gap-2">
+                                                <Terminal className="w-5 h-5 text-indigo-600" />
+                                                Logs e Diagnóstico de API
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Histórico de telemetria de transações e erros retornados pelo Mercado Pago em todo o sistema.
+                                            </CardDescription>
                                         </div>
+
+                                        {/* Barra de Pesquisa de Logs */}
+                                        <form onSubmit={handleLogsSearchSubmit} className="flex items-center gap-2 max-w-sm w-full">
+                                            <div className="relative w-full">
+                                                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                                                <Input
+                                                    type="search"
+                                                    placeholder="Buscar por erro, máquina, empresa..."
+                                                    className="pl-8 h-9 text-sm w-full bg-slate-50 border-slate-200 focus:bg-white"
+                                                    value={logsSearchInput}
+                                                    onChange={(e) => setLogsSearchInput(e.target.value)}
+                                                />
+                                            </div>
+                                            <Button type="submit" size="sm" className="h-9 px-3">
+                                                Buscar
+                                            </Button>
+                                        </form>
+                                    </CardHeader>
+
+                                    <CardContent className="p-0">
+                                        <Table>
+                                            <TableHeader className="bg-slate-50/70">
+                                                <TableRow>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Data / Hora</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Empresa</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Máquina</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Tipo</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Mensagem</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700 text-right">Ação</TableHead>
+                                                </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                                {logsLoading ? (
+                                                    Array.from({ length: 5 }).map((_, idx) => (
+                                                        <TableRow key={idx}>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-28" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-5 w-14 rounded-full" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-4 w-64" /></TableCell>
+                                                            <TableCell className="px-6 py-4 text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
+                                                        </TableRow>
+                                                    ))
+                                                ) : !logsData || logsData.items.length === 0 ? (
+                                                    <TableRow>
+                                                        <TableCell colSpan={6} className="text-center py-12 text-slate-400 font-medium font-sans">
+                                                            Nenhum log registrado na base de dados.
+                                                        </TableCell>
+                                                    </TableRow>
+                                                ) : (
+                                                    logsData.items.map((log) => (
+                                                        <TableRow key={log.id} className="hover:bg-slate-50/50 transition-colors">
+                                                            <TableCell className="px-6 py-3.5 text-xs text-slate-500 font-mono">
+                                                                {new Date(log.timestamp).toLocaleDateString("pt-BR", {
+                                                                    day: "2-digit",
+                                                                    month: "2-digit",
+                                                                    year: "numeric",
+                                                                    hour: "2-digit",
+                                                                    minute: "2-digit",
+                                                                    second: "2-digit"
+                                                                })}
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5 text-sm text-slate-800 font-semibold">{log.companyName}</TableCell>
+                                                            <TableCell className="px-6 py-3.5 text-sm text-slate-600 font-medium">{log.machineName}</TableCell>
+                                                            <TableCell className="px-6 py-3.5">
+                                                                <Badge variant={log.logType === "Error" ? "destructive" : "secondary"} className={`text-[10px] font-semibold px-2 py-0.5 ${
+                                                                    log.logType === "Error" 
+                                                                        ? "bg-red-50 text-red-700 border-red-200" 
+                                                                        : "bg-blue-50 text-blue-700 border-blue-200"
+                                                                }`}>
+                                                                    {log.logType}
+                                                                </Badge>
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5 text-sm text-slate-600 font-sans max-w-xs truncate" title={log.message}>
+                                                                {log.message}
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5 text-right">
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    onClick={() => handleViewLogDetails(log)}
+                                                                    className="h-8 text-xs font-semibold"
+                                                                >
+                                                                    Ver Log
+                                                                </Button>
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))
+                                                )}
+                                            </TableBody>
+                                        </Table>
+
+                                        {/* Paginação de Logs */}
+                                        {logsData && logsData.totalPages > 1 && (
+                                            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-slate-50/30">
+                                                <p className="text-xs text-slate-500 font-sans font-medium">
+                                                    Mostrando {logsData.items.length} de {logsData.totalItems} registros de log
+                                                </p>
+                                                <div className="flex items-center gap-1.5">
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 px-2 border-slate-200"
+                                                        onClick={() => setLogsPage(p => Math.max(1, p - 1))}
+                                                        disabled={logsPage === 1 || logsLoading}
+                                                    >
+                                                        <ChevronLeft className="w-4 h-4 mr-1" />
+                                                        Anterior
+                                                    </Button>
+                                                    <span className="text-xs font-sans font-semibold px-3 text-slate-700">
+                                                        Página {logsPage} de {logsData.totalPages}
+                                                    </span>
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 px-2 border-slate-200"
+                                                        onClick={() => setLogsPage(p => Math.min(logsData.totalPages, p + 1))}
+                                                        disabled={logsPage === logsData.totalPages || logsLoading}
+                                                    >
+                                                        Próximo
+                                                        <ChevronRight className="w-4 h-4 ml-1" />
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </CardContent>
                                 </Card>
                             </TabsContent>
@@ -652,6 +823,63 @@ export default function Admin() {
                                 </div>
                                 <div className="p-4 border-t bg-slate-50/70 flex justify-end">
                                     <Button onClick={() => setIsDetailsOpen(false)} className="px-5 h-9 font-semibold">
+                                        Fechar
+                                    </Button>
+                                </div>
+                            </DialogContent>
+                        </Dialog>
+
+                        {/* MODAL DETALHES DO LOG DE TRANSAÇÃO */}
+                        <Dialog open={isLogDetailsOpen} onOpenChange={setIsLogDetailsOpen}>
+                            <DialogContent className="max-w-2xl bg-white rounded-xl shadow-xl p-0 overflow-hidden">
+                                <DialogHeader className="p-6 pb-4 border-b bg-slate-50/70">
+                                    <DialogTitle className="text-lg font-bold flex items-center gap-2">
+                                        <Terminal className="w-5 h-5 text-indigo-600" />
+                                        Detalhes do Log de Telemetria
+                                    </DialogTitle>
+                                </DialogHeader>
+                                <div className="p-6 space-y-4 text-sm">
+                                    <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
+                                        <div><strong className="text-slate-600">ID do Log:</strong> <span className="font-mono">{selectedLogForDetails?.id}</span></div>
+                                        <div><strong className="text-slate-600">ID da Transação:</strong> <span className="font-mono">{selectedLogForDetails?.transactionId}</span></div>
+                                        <div><strong className="text-slate-600">Empresa:</strong> {selectedLogForDetails?.companyName}</div>
+                                        <div><strong className="text-slate-600">Máquina:</strong> {selectedLogForDetails?.machineName}</div>
+                                        <div><strong className="text-slate-600">Valor da Transação:</strong> R$ {selectedLogForDetails?.transactionAmount.toFixed(2)}</div>
+                                        <div>
+                                            <strong className="text-slate-600">Data/Hora:</strong>{" "}
+                                            {selectedLogForDetails?.timestamp && new Date(selectedLogForDetails.timestamp).toLocaleString("pt-BR")}
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-1">
+                                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Mensagem de Evento</h4>
+                                        <div className={`p-3 rounded-lg border text-sm font-medium ${
+                                            selectedLogForDetails?.logType === "Error" 
+                                                ? "bg-red-50 text-red-700 border-red-200" 
+                                                : "bg-slate-50 text-slate-700 border-slate-200"
+                                        }`}>
+                                            {selectedLogForDetails?.message}
+                                        </div>
+                                    </div>
+
+                                    {selectedLogForDetails?.rawResponse && (
+                                        <div className="space-y-1">
+                                            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Retorno da API Mercado Pago (JSON bruto)</h4>
+                                            <pre className="bg-slate-900 text-slate-100 p-4 rounded-lg overflow-auto text-xs font-mono max-h-60 select-all leading-normal">
+                                                {(() => {
+                                                    try {
+                                                        const parsed = JSON.parse(selectedLogForDetails.rawResponse);
+                                                        return JSON.stringify(parsed, null, 2);
+                                                    } catch {
+                                                        return selectedLogForDetails.rawResponse;
+                                                    }
+                                                })()}
+                                            </pre>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t bg-slate-50/70 flex justify-end">
+                                    <Button onClick={() => setIsLogDetailsOpen(false)} className="px-5 h-9 font-semibold">
                                         Fechar
                                     </Button>
                                 </div>

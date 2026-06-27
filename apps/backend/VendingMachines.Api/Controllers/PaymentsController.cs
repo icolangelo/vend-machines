@@ -703,7 +703,59 @@ public class PaymentsController : ControllerBase
         return Ok(logs);
     }
 
-    // ==========================================
+    [HttpGet("admin/logs")]
+    public async Task<IActionResult> GetAdminLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? search = null)
+    {
+        var email = User.FindFirst(ClaimTypes.Email)?.Value;
+        if (email != "dev.ivan@gmail.com")
+        {
+            return StatusCode(403, new { message = "Acesso restrito ao Administrador Geral." });
+        }
+
+        var query = _context.TransactionTelemetryLogs
+            .Include(l => l.Transaction)
+            .ThenInclude(t => t!.Machine)
+            .Include(l => l.Transaction)
+            .ThenInclude(t => t!.Company)
+            .AsQueryable();
+
+        if (!string.IsNullOrEmpty(search))
+        {
+            query = query.Where(l => l.Message.Contains(search) || 
+                                     l.LogType.Contains(search) || 
+                                     l.TransactionId.ToString().Contains(search));
+        }
+
+        var totalItems = await query.CountAsync();
+        var totalPages = (int)Math.Ceiling(totalItems / (double)pageSize);
+
+        var items = await query
+            .OrderByDescending(l => l.Timestamp)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(l => new {
+                l.Id,
+                l.TransactionId,
+                l.Timestamp,
+                l.LogType,
+                l.Message,
+                TransactionAmount = l.Transaction != null ? l.Transaction.Amount : 0,
+                MachineName = l.Transaction != null && l.Transaction.Machine != null ? l.Transaction.Machine.Name : "Máquina Desconhecida",
+                CompanyName = l.Transaction != null && l.Transaction.Company != null ? l.Transaction.Company.Name : "Empresa Desconhecida",
+                RawResponse = l.Transaction != null ? l.Transaction.RawResponse : null
+            })
+            .ToListAsync();
+
+        return Ok(new {
+            items,
+            page,
+            pageSize,
+            totalItems,
+            totalPages
+        });
+    }
+
+    // ==========================================================
     // MÉTODOS AUXILIARES DE TELEMETRIA E REEMBOLSO
     // ==========================================
 

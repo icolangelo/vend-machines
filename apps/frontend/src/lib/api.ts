@@ -621,3 +621,87 @@ export async function getTransactionLogs(transactionId: string): Promise<Transac
     if (!response.ok) throw new Error("Erro ao buscar logs da transação.");
     return response.json();
 }
+
+export interface AdminLog {
+    id: string;
+    transactionId: string;
+    timestamp: string;
+    logType: string;
+    message: string;
+    transactionAmount: number;
+    machineName: string;
+    companyName: string;
+    rawResponse?: string | null;
+}
+
+export interface PaginatedAdminLogs {
+    items: AdminLog[];
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export async function getAdminLogs(page: number = 1, pageSize: number = 20, search: string = ""): Promise<PaginatedAdminLogs> {
+    if (isTestEnv()) {
+        const mockItems: AdminLog[] = [
+            {
+                id: "1",
+                transactionId: "trans-abc",
+                timestamp: new Date().toISOString(),
+                logType: "Error",
+                message: "Erro retornado pelo Mercado Pago: Erro da API Mercado Pago (BadRequest): You cannot use application_fee with this payment.",
+                transactionAmount: 15.0,
+                machineName: "Vending Machine Portaria",
+                companyName: "ACME Machines LTDA",
+                rawResponse: '{"error": "bad_request", "message": "You cannot use application_fee with this payment", "status": 400, "cause": [{"code": "2030", "description": "You cannot use application_fee with this payment"}]}'
+            },
+            {
+                id: "2",
+                transactionId: "trans-abc",
+                timestamp: new Date(Date.now() - 5000).toISOString(),
+                logType: "Info",
+                message: "Solicitada cobrança Pix de R$ 15,00 na máquina Vending Machine Portaria (Taxa do site: R$ 0,75).",
+                transactionAmount: 15.0,
+                machineName: "Vending Machine Portaria",
+                companyName: "ACME Machines LTDA"
+            },
+            {
+                id: "3",
+                transactionId: "trans-xyz",
+                timestamp: new Date(Date.now() - 3600000).toISOString(),
+                logType: "Info",
+                message: "QR Code Pix gerado com sucesso pelo Mercado Pago. Payment ID: 9988776655",
+                transactionAmount: 8.5,
+                machineName: "Vending Central",
+                companyName: "Vending Express",
+                rawResponse: '{"id": 9988776655, "status": "pending", "status_detail": "pending_waiting_transfer"}'
+            }
+        ];
+
+        const filtered = mockItems.filter(item => 
+            !search || 
+            item.message.toLowerCase().includes(search.toLowerCase()) || 
+            item.logType.toLowerCase().includes(search.toLowerCase()) ||
+            item.companyName.toLowerCase().includes(search.toLowerCase()) ||
+            item.machineName.toLowerCase().includes(search.toLowerCase())
+        );
+
+        const totalItems = filtered.length;
+        const totalPages = Math.ceil(totalItems / pageSize);
+        const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+        return {
+            items: paginated,
+            page,
+            pageSize,
+            totalItems,
+            totalPages
+        };
+    }
+
+    const searchParam = search ? `&search=${encodeURIComponent(search)}` : "";
+    const response = await authFetch(`${API_BASE_URL}/payments/admin/logs?page=${page}&pageSize=${pageSize}${searchParam}`);
+    if (!response.ok) throw new Error("Erro ao carregar logs administrativos.");
+    return response.json();
+}
