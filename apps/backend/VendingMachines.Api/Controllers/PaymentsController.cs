@@ -764,31 +764,103 @@ public class PaymentsController : ControllerBase
         }
     }
 
-    // ==========================================
-    // 4. WEBHOOK DO MERCADO PAGO
-    // ==========================================
-
     [AllowAnonymous]
     [HttpPost("/webhooks/mercadopago")]
     public IActionResult WebhookMercadoPago([FromBody] JsonElement webhookBody)
     {
-        // Responder 200 OK rapidamente
-        System.Diagnostics.Debug.WriteLine($"Webhook recebido: {webhookBody.GetRawText()}");
-        
+        // Responder 200 OK rapidamente ao Mercado Pago
+        Console.WriteLine($"[WEBHOOK] Notificação recebida. Query: {Request.QueryString}. Body ({webhookBody.GetRawText().Length} bytes): {webhookBody.GetRawText()}");
+
+        string? paymentId = null;
+
         try
         {
+            // ─────────────────────────────────────────────────────────────────
+            // FORMATO 1 — Webhook API novo (User-Agent: MercadoPago WebHook v1.0)
+            // Body: {"action":"payment.updated","type":"payment","data":{"id":"123"}, ...}
+            // URL:  ?data.id=123&type=payment
+            // ─────────────────────────────────────────────────────────────────
+            string webhookFormat;
             if (webhookBody.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "payment")
             {
+                webhookFormat = "WebHook v1.0 (novo)";
                 if (webhookBody.TryGetProperty("data", out var dataProp) && dataProp.TryGetProperty("id", out var idProp))
                 {
-                    string paymentId = idProp.GetString() ?? idProp.GetInt64().ToString();
-                    _ = Task.Run(() => ProcessRealWebhookAsync(paymentId));
+                    paymentId = idProp.ValueKind == JsonValueKind.Number
+                        ? idProp.GetInt64().ToString()
+                        : (idProp.GetString() ?? "");
+                    Console.WriteLine($"[WEBHOOK] Payment ID extraído do body (formato novo): {paymentId}");
                 }
+            }
+            // ─────────────────────────────────────────────────────────────────
+            // FORMATO 2 — IPN antigo (User-Agent: MercadoPago Feed v2.0)
+            // Body: {"id":"123","topic":"payment"}
+            // URL:  ?id=123&topic=payment
+            // ─────────────────────────────────────────────────────────────────
+            else if (webhookBody.TryGetProperty("topic", out var topicProp) && topicProp.GetString() == "payment")
+            {
+                webhookFormat = "IPN Feed v2.0 (antigo)";
+                if (webhookBody.TryGetProperty("id", out var idProp))
+                {
+                    paymentId = idProp.ValueKind == JsonValueKind.Number
+                        ? idProp.GetInt64().ToString()
+                        : (idProp.GetString() ?? "");
+                    Console.WriteLine($"[WEBHOOK] Payment ID extraído do body (formato IPN antigo): {paymentId}");
+                }
+            }
+            else
+            {
+                webhookFormat = "desconhecido";
+            }
+
+            // ─────────────────────────────────────────────────────────────────
+            // FALLBACK — Extrair da query string se body não contiver o ID
+            // Cobre: ?data.id=xxx&type=payment  e  ?id=xxx&topic=payment
+            // ─────────────────────────────────────────────────────────────────
+            if (string.IsNullOrEmpty(paymentId))
+            {
+                var qsId = Request.Query["data.id"].FirstOrDefault()
+                        ?? Request.Query["id"].FirstOrDefault();
+                var qsType = Request.Query["type"].FirstOrDefault()
+                          ?? Request.Query["topic"].FirstOrDefault();
+
+                if (!string.IsNullOrEmpty(qsId) && qsType == "payment")
+                {
+                    paymentId = qsId;
+                    Console.WriteLine($"[WEBHOOK] Payment ID extraído da query string (fallback): {paymentId}");
+                }
+            }
+
+            if (!string.IsNullOrEmpty(paymentId))
+            {
+                Console.WriteLine($"[WEBHOOK] Iniciando processamento do pagamento ID: {paymentId}");
+                var capturedFormat = webhookFormat;
+                var capturedQuery = Request.QueryString.ToString();
+                var capturedUserAgent = Request.Headers["User-Agent"].ToString();
+                _ = Task.Run(() => ProcessRealWebhookAsync(paymentId, capturedFormat, capturedQuery, capturedUserAgent));
+            }
+            else
+            {
+                var tipoLog = webhookBody.TryGetProperty("type", out var t) ? t.GetString()
+                            : webhookBody.TryGetProperty("topic", out var top) ? top.GetString()
+                            : Request.Query["type"].FirstOrDefault() ?? Request.Query["topic"].FirstOrDefault() ?? "(sem tipo)";
+                Console.WriteLine($"[WEBHOOK] Notificação ignorada — tipo: {tipoLog}");
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Erro no parsing do webhook: {ex.Message}");
+            Console.Error.WriteLine($"[WEBHOOK] Erro ao processar body da notificação: {ex.Message}");
+
+            // Fallback de emergência: tentar extrair da query string mesmo com erro no body
+            var fallbackId = Request.Query["data.id"].FirstOrDefault() ?? Request.Query["id"].FirstOrDefault();
+            var fallbackType = Request.Query["type"].FirstOrDefault() ?? Request.Query["topic"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(fallbackId) && fallbackType == "payment")
+            {
+                Console.WriteLine($"[WEBHOOK] Fallback de emergência: processando PaymentId {fallbackId} da query string.");
+                var capturedQuery = Request.QueryString.ToString();
+                var capturedUserAgent = Request.Headers["User-Agent"].ToString();
+                _ = Task.Run(() => ProcessRealWebhookAsync(fallbackId, "fallback-querystring", capturedQuery, capturedUserAgent));
+            }
         }
 
         return Ok();
@@ -921,26 +993,71 @@ public class PaymentsController : ControllerBase
             totalPages
         });
     }
-
     // ==========================================================
     // MÉTODOS AUXILIARES DE TELEMETRIA E REEMBOLSO
     // ==========================================
 
-    private async Task ProcessRealWebhookAsync(string paymentId)
+    private async Task ProcessRealWebhookAsync(
+        string paymentId,
+        string webhookFormat = "desconhecido",
+        string queryString = "",
+        string userAgent = "")
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        var tx = await db.PaymentTransactions
-            .Include(t => t.Machine)
-            .FirstOrDefaultAsync(t => t.MercadoPagoPaymentId == paymentId);
+        Console.WriteLine($"[WEBHOOK] Buscando transação para PaymentId: {paymentId} (formato: {webhookFormat})");
 
-        if (tx == null || tx.Status != "Pending") return;
+        // Retry até 10s para cobrir race condition:
+        // O webhook pode chegar antes do SaveChanges do endpoint pix-qr salvar o MercadoPagoPaymentId.
+        PaymentTransaction? tx = null;
+        int attemptsUsed = 0;
+        for (int attempt = 1; attempt <= 5; attempt++)
+        {
+            tx = await db.PaymentTransactions
+                .Include(t => t.Machine)
+                .FirstOrDefaultAsync(t => t.MercadoPagoPaymentId == paymentId);
+
+            if (tx != null) break;
+
+            Console.WriteLine($"[WEBHOOK] Transação não encontrada (tentativa {attempt}/5). Aguardando 2s...");
+            await Task.Delay(2000);
+
+            // Recarregar o contexto para pegar dados frescos do banco
+            db.ChangeTracker.Clear();
+        }
+
+        if (tx == null)
+        {
+            Console.Error.WriteLine($"[WEBHOOK] Transação não encontrada para PaymentId '{paymentId}' após 5 tentativas (10s). Abortando.");
+            return;
+        }
+
+        if (tx.Status != "Pending")
+        {
+            Console.WriteLine($"[WEBHOOK] Transação {tx.Id} já possui status '{tx.Status}'. Ignorando webhook duplicado.");
+            await LogTelemetryAsync(tx.Id, "Info", $"Webhook duplicado ignorado (PaymentId: {paymentId}). Transação já possui status '{tx.Status}'.");
+            return;
+        }
+
+        // ── Primeiro log no banco: confirma recebimento e localização da transação ──
+        var receiptMsg = attemptsUsed == 1
+            ? $"Webhook recebido do Mercado Pago e transação localizada. Formato: {webhookFormat}. PaymentId MP: {paymentId}. Query: {queryString}. User-Agent: {userAgent}."
+            : $"Webhook recebido do Mercado Pago. Transação localizada após {attemptsUsed} tentativas (race condition detectada). Formato: {webhookFormat}. PaymentId MP: {paymentId}.";
+        await LogTelemetryAsync(tx.Id, "Webhook", receiptMsg);
+
+        Console.WriteLine($"[WEBHOOK] Transação {tx.Id} encontrada. Consultando status no Mercado Pago...");
+        await LogTelemetryAsync(tx.Id, "Webhook", $"Consultando status do pagamento {paymentId} na API do Mercado Pago...");
 
         var integration = await db.MercadoPagoIntegrations
             .FirstOrDefaultAsync(i => i.CompanyId == tx.CompanyId && i.IsActive);
 
-        if (integration == null) return;
+        if (integration == null)
+        {
+            Console.Error.WriteLine($"[WEBHOOK] Integração ativa não encontrada para empresa {tx.CompanyId}.");
+            await LogTelemetryAsync(tx.Id, "Error", "Webhook recebido, mas nenhuma integração Mercado Pago ativa foi encontrada para a empresa.");
+            return;
+        }
 
         try
         {
@@ -949,15 +1066,18 @@ public class PaymentsController : ControllerBase
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
 
             var mpResponse = await httpClient.GetAsync($"https://api.mercadopago.com/v1/payments/{paymentId}");
+            var responseStr = await mpResponse.Content.ReadAsStringAsync();
+
+            Console.WriteLine($"[WEBHOOK] Resposta do MP para PaymentId {paymentId}: HTTP {(int)mpResponse.StatusCode} — {responseStr[..Math.Min(200, responseStr.Length)]}");
+
             if (mpResponse.IsSuccessStatusCode)
             {
-                var responseStr = await mpResponse.Content.ReadAsStringAsync();
                 using var jsonDoc = JsonDocument.Parse(responseStr);
                 var root = jsonDoc.RootElement;
 
                 string status = root.GetProperty("status").GetString() ?? "pending";
                 tx.MercadoPagoStatus = status;
-                tx.MercadoPagoStatusDetail = root.GetProperty("status_detail").GetString();
+                tx.MercadoPagoStatusDetail = root.TryGetProperty("status_detail", out var detailProp) ? detailProp.GetString() : null;
                 tx.RawResponse = responseStr;
 
                 bool approved = status == "approved";
@@ -968,7 +1088,8 @@ public class PaymentsController : ControllerBase
                     tx.Status = "Approved";
                     tx.CompletedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync();
-                    await LogTelemetryAsync(tx.Id, "Info", "Webhook real confirmado: Aprovado pelo Mercado Pago.");
+                    Console.WriteLine($"[WEBHOOK] Pagamento {paymentId} APROVADO. Transação {tx.Id} atualizada.");
+                    await LogTelemetryAsync(tx.Id, "Info", "Webhook real confirmado: Pagamento APROVADO pelo Mercado Pago.");
                     _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, true));
                 }
                 else if (rejected)
@@ -976,14 +1097,32 @@ public class PaymentsController : ControllerBase
                     tx.Status = "Rejected";
                     tx.CompletedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync();
-                    await LogTelemetryAsync(tx.Id, "Info", "Webhook real confirmado: Recusado/Cancelado pelo Mercado Pago.");
+                    Console.WriteLine($"[WEBHOOK] Pagamento {paymentId} RECUSADO/CANCELADO. Transação {tx.Id} atualizada.");
+                    await LogTelemetryAsync(tx.Id, "Info", $"Webhook real confirmado: Pagamento RECUSADO/CANCELADO pelo Mercado Pago (status: {status}).");
                     _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, false));
                 }
+                else
+                {
+                    // Status intermediário (ex: pending, in_process) — não atualizar ainda
+                    await db.SaveChangesAsync();
+                    Console.WriteLine($"[WEBHOOK] Pagamento {paymentId} com status intermediário: '{status}'. Aguardando próxima notificação.");
+                    await LogTelemetryAsync(tx.Id, "Info", $"Webhook recebido do Mercado Pago com status intermediário: '{status}'. Aguardando confirmação final.");
+                }
+            }
+            else
+            {
+                Console.Error.WriteLine($"[WEBHOOK] Falha ao consultar PaymentId {paymentId} na API do MP: HTTP {(int)mpResponse.StatusCode}");
+                await LogTelemetryAsync(tx.Id, "Error", $"Webhook recebido, mas falha ao consultar o pagamento {paymentId} no Mercado Pago: HTTP {(int)mpResponse.StatusCode}. Resposta: {responseStr[..Math.Min(300, responseStr.Length)]}");
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Erro ao conciliar webhook real: {ex.Message}");
+            Console.Error.WriteLine($"[WEBHOOK] Erro ao processar webhook para PaymentId {paymentId}: {ex.Message}");
+            try
+            {
+                await LogTelemetryAsync(tx.Id, "Error", $"Erro interno ao processar webhook do Mercado Pago: {ex.Message}");
+            }
+            catch { }
         }
     }
 
