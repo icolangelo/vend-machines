@@ -487,10 +487,8 @@ public class PaymentsController : ControllerBase
             }
         }
 
-        if (request.UseRealMercadoPago && string.IsNullOrWhiteSpace(requestDocNumber))
-        {
-            return BadRequest(new { message = "CPF ou CNPJ válido do pagador é obrigatório para gerar Pix real no Mercado Pago." });
-        }
+
+
 
         // Criar transação interna
         var tx = new PaymentTransaction
