@@ -10,12 +10,44 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<bool>(
-                name: "SendTelemetryToMachine",
-                table: "PaymentTransactions",
-                type: "INTEGER",
-                nullable: false,
-                defaultValue: false);
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                migrationBuilder.Sql("""
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'PaymentTransactions'
+          AND column_name = 'SendTelemetryToMachine'
+          AND data_type <> 'boolean'
+    ) THEN
+        ALTER TABLE "PaymentTransactions"
+        ALTER COLUMN "SendTelemetryToMachine" TYPE boolean
+        USING "SendTelemetryToMachine" <> 0;
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'PaymentTransactions'
+          AND column_name = 'SendTelemetryToMachine'
+    ) THEN
+        ALTER TABLE "PaymentTransactions"
+        ADD COLUMN "SendTelemetryToMachine" boolean NOT NULL DEFAULT TRUE;
+    END IF;
+END $$;
+""");
+            }
+            else
+            {
+                migrationBuilder.AddColumn<bool>(
+                    name: "SendTelemetryToMachine",
+                    table: "PaymentTransactions",
+                    type: "INTEGER",
+                    nullable: false,
+                    defaultValue: true);
+            }
         }
 
         /// <inheritdoc />

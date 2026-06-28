@@ -20,6 +20,7 @@ public static class DbInitializer
         else
         {
             context.Database.Migrate();
+            EnsurePostgresCompatibilitySchema(context);
         }
 
         CleanUpEmptyMachineIds(context);
@@ -319,6 +320,36 @@ WHERE "LocationId" IS NULL
       SELECT 1 FROM "Locations" l
       WHERE l."CompanyId" = "Machines"."CompanyId"
   );
+""");
+    }
+
+    private static void EnsurePostgresCompatibilitySchema(AppDbContext context)
+    {
+        context.Database.ExecuteSqlRaw("""
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'PaymentTransactions'
+          AND column_name = 'SendTelemetryToMachine'
+          AND data_type <> 'boolean'
+    ) THEN
+        ALTER TABLE "PaymentTransactions"
+        ALTER COLUMN "SendTelemetryToMachine" TYPE boolean
+        USING "SendTelemetryToMachine" <> 0;
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'PaymentTransactions'
+          AND column_name = 'SendTelemetryToMachine'
+    ) THEN
+        ALTER TABLE "PaymentTransactions"
+        ADD COLUMN "SendTelemetryToMachine" boolean NOT NULL DEFAULT TRUE;
+    END IF;
+END $$;
 """);
     }
 
