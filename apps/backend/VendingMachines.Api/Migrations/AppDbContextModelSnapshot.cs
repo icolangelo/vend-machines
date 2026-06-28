@@ -317,8 +317,9 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("RawResponse")
                         .HasColumnType("TEXT");
 
-                    b.Property<bool>("SendTelemetryToMachine")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("SendTelemetryToMachineValue")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("SendTelemetryToMachine");
 
                     b.Property<string>("Status")
                         .IsRequired()

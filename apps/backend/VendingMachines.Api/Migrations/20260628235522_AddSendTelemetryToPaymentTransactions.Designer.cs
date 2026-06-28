@@ -11,7 +11,7 @@ using VendingMachines.Api.Data;
 namespace VendingMachines.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260628233543_AddSendTelemetryToPaymentTransactions")]
+    [Migration("20260628235522_AddSendTelemetryToPaymentTransactions")]
     partial class AddSendTelemetryToPaymentTransactions
     {
         /// <inheritdoc />
@@ -320,8 +320,9 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("RawResponse")
                         .HasColumnType("TEXT");
 
-                    b.Property<bool>("SendTelemetryToMachine")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("SendTelemetryToMachineValue")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("SendTelemetryToMachine");
 
                     b.Property<string>("Status")
                         .IsRequired()

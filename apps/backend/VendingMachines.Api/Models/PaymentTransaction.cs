@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace VendingMachines.Api.Models;
 
@@ -14,7 +15,15 @@ public class PaymentTransaction
     public decimal Amount { get; set; }
     public decimal ApplicationFee { get; set; }
     public string Status { get; set; } = "Pending"; // Pending, Approved, Rejected, Failed, Refunded
-    public bool SendTelemetryToMachine { get; set; } = true;
+    [Column("SendTelemetryToMachine")]
+    public int SendTelemetryToMachineValue { get; set; } = 1;
+
+    [NotMapped]
+    public bool SendTelemetryToMachine
+    {
+        get => SendTelemetryToMachineValue != 0;
+        set => SendTelemetryToMachineValue = value ? 1 : 0;
+    }
     
     // Mercado Pago Info
     public string? MercadoPagoPaymentId { get; set; }

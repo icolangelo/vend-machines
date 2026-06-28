@@ -15,18 +15,7 @@ namespace VendingMachines.Api.Migrations
                 migrationBuilder.Sql("""
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'PaymentTransactions'
-          AND column_name = 'SendTelemetryToMachine'
-          AND data_type <> 'boolean'
-    ) THEN
-        ALTER TABLE "PaymentTransactions"
-        ALTER COLUMN "SendTelemetryToMachine" TYPE boolean
-        USING "SendTelemetryToMachine" <> 0;
-    ELSIF NOT EXISTS (
+    IF NOT EXISTS (
         SELECT 1
         FROM information_schema.columns
         WHERE table_schema = 'public'
@@ -34,19 +23,19 @@ BEGIN
           AND column_name = 'SendTelemetryToMachine'
     ) THEN
         ALTER TABLE "PaymentTransactions"
-        ADD COLUMN "SendTelemetryToMachine" boolean NOT NULL DEFAULT TRUE;
+        ADD COLUMN "SendTelemetryToMachine" integer NOT NULL DEFAULT 1;
     END IF;
 END $$;
 """);
             }
             else
             {
-                migrationBuilder.AddColumn<bool>(
+                migrationBuilder.AddColumn<int>(
                     name: "SendTelemetryToMachine",
                     table: "PaymentTransactions",
                     type: "INTEGER",
                     nullable: false,
-                    defaultValue: true);
+                    defaultValue: 1);
             }
         }
 
