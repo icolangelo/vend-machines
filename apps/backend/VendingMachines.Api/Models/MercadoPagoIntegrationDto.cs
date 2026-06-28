@@ -22,9 +22,17 @@ public class MercadoPagoIntegrationDto
 
     // Mercado Pago Credentials (Masked)
     public string AccessToken { get; set; } = string.Empty;
+    public bool HasRefreshToken { get; set; }
+    public DateTime? AccessTokenExpiresAt { get; set; }
     public string PublicKey { get; set; } = string.Empty;
     public string ClientId { get; set; } = string.Empty;
     public string ClientSecret { get; set; } = string.Empty;
+    public string MercadoPagoUserId { get; set; } = string.Empty;
+    public string MercadoPagoNickname { get; set; } = string.Empty;
+    public string MercadoPagoSiteId { get; set; } = string.Empty;
+    public DateTime? LastTokenValidationAt { get; set; }
+    public string LastTokenValidationStatus { get; set; } = string.Empty;
+    public string TokenFingerprint { get; set; } = string.Empty;
 
     public bool IsActive { get; set; }
     public DateTime CreatedAt { get; set; }

@@ -311,9 +311,17 @@ export interface MercadoPagoIntegration {
     businessEmail: string;
     businessPhone: string;
     accessToken: string;
+    hasRefreshToken?: boolean;
+    accessTokenExpiresAt?: string;
     publicKey: string;
     clientId?: string;
     clientSecret?: string;
+    mercadoPagoUserId?: string;
+    mercadoPagoNickname?: string;
+    mercadoPagoSiteId?: string;
+    lastTokenValidationAt?: string;
+    lastTokenValidationStatus?: string;
+    tokenFingerprint?: string;
     isActive: boolean;
     createdAt?: string;
     updatedAt?: string;
@@ -417,6 +425,7 @@ export async function toggleIntegration(isActive: boolean): Promise<void> {
 export interface OauthConfig {
     clientId: string;
     redirectUri: string;
+    state?: string;
 }
 
 export async function getOauthConfig(): Promise<OauthConfig> {
@@ -431,7 +440,7 @@ export async function getOauthConfig(): Promise<OauthConfig> {
     return response.json();
 }
 
-export async function exchangeOauthCode(code: string, redirectUri: string): Promise<MercadoPagoIntegration> {
+export async function exchangeOauthCode(code: string, redirectUri: string, state?: string): Promise<MercadoPagoIntegration> {
     if (isTestEnv()) {
         const userStr = sessionStorage.getItem("user");
         const companyId = userStr ? JSON.parse(userStr).companyId : "11111111-1111-1111-1111-111111111111";
@@ -458,7 +467,7 @@ export async function exchangeOauthCode(code: string, redirectUri: string): Prom
     const response = await authFetch(`${API_BASE_URL}/payments/oauth/callback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, redirectUri })
+        body: JSON.stringify({ code, redirectUri, state })
     });
     if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));

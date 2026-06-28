@@ -830,6 +830,19 @@ export default function Admin() {
                                                     )}
                                                 </div>
                                             </div>
+
+                                            <div className="space-y-2">
+                                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">4. Diagnóstico OAuth</h4>
+                                                <div className="grid grid-cols-2 gap-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
+                                                    <div><strong className="text-slate-600">User ID MP:</strong> {companyIntegration.mercadoPagoUserId || "-"}</div>
+                                                    <div><strong className="text-slate-600">Nickname:</strong> {companyIntegration.mercadoPagoNickname || "-"}</div>
+                                                    <div><strong className="text-slate-600">Site:</strong> {companyIntegration.mercadoPagoSiteId || "-"}</div>
+                                                    <div><strong className="text-slate-600">Refresh token:</strong> {companyIntegration.hasRefreshToken ? "Salvo" : "Ausente"}</div>
+                                                    <div><strong className="text-slate-600">Expira em:</strong> {companyIntegration.accessTokenExpiresAt ? new Date(companyIntegration.accessTokenExpiresAt).toLocaleString("pt-BR") : "-"}</div>
+                                                    <div><strong className="text-slate-600">Fingerprint:</strong> <span className="font-mono">{companyIntegration.tokenFingerprint || "-"}</span></div>
+                                                    <div className="col-span-2"><strong className="text-slate-600">Última validação:</strong> {companyIntegration.lastTokenValidationStatus || "-"}</div>
+                                                </div>
+                                            </div>
                                         </>
                                     ) : (
                                         <p className="text-muted-foreground text-center py-6">Esta empresa não possui nenhuma integração com o Mercado Pago configurada.</p>

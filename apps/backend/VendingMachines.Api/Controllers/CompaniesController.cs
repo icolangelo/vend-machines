@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -125,6 +127,14 @@ public class CompaniesController : ControllerBase
             BusinessPhone = integration.BusinessPhone,
             PublicKey = integration.PublicKey,
             ClientId = integration.ClientId,
+            HasRefreshToken = !string.IsNullOrWhiteSpace(integration.RefreshToken),
+            AccessTokenExpiresAt = integration.AccessTokenExpiresAt,
+            MercadoPagoUserId = integration.MercadoPagoUserId,
+            MercadoPagoNickname = integration.MercadoPagoNickname,
+            MercadoPagoSiteId = integration.MercadoPagoSiteId,
+            LastTokenValidationAt = integration.LastTokenValidationAt,
+            LastTokenValidationStatus = integration.LastTokenValidationStatus,
+            TokenFingerprint = GetTokenFingerprint(decryptedAccessToken),
             IsActive = integration.IsActive,
             CreatedAt = integration.CreatedAt,
             UpdatedAt = integration.UpdatedAt,
@@ -143,6 +153,17 @@ public class CompaniesController : ControllerBase
             return new string('•', value.Length);
         }
         return value[..visibleStart] + new string('•', 12) + value[^visibleEnd..];
+    }
+
+    private static string GetTokenFingerprint(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return "empty";
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        return Convert.ToHexString(hash)[..12];
     }
 }
 

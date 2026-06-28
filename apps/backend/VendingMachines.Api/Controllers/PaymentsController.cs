@@ -4,6 +4,8 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -26,13 +28,15 @@ public class PaymentsController : ControllerBase
     private readonly TelemetryManager _telemetry;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _configuration;
+    private readonly IWebHostEnvironment _environment;
 
-    public PaymentsController(AppDbContext context, TelemetryManager telemetry, IServiceScopeFactory scopeFactory, IConfiguration configuration)
+    public PaymentsController(AppDbContext context, TelemetryManager telemetry, IServiceScopeFactory scopeFactory, IConfiguration configuration, IWebHostEnvironment environment)
     {
         _context = context;
         _telemetry = telemetry;
         _scopeFactory = scopeFactory;
         _configuration = configuration;
+        _environment = environment;
     }
 
     // ==========================================
@@ -111,6 +115,12 @@ public class PaymentsController : ControllerBase
     [HttpGet("oauth/config")]
     public IActionResult GetOauthConfig()
     {
+        var companyIdStr = User.FindFirst("company_id")?.Value;
+        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
         var clientId = _configuration["MercadoPago:ClientId"] ?? "";
         
         string redirectUri = "https://app.vendmachine.com.br/";
@@ -128,7 +138,8 @@ public class PaymentsController : ControllerBase
         return Ok(new
         {
             clientId = clientId,
-            redirectUri = redirectUri
+            redirectUri = redirectUri,
+            state = CreateOAuthState(companyId)
         });
     }
 
@@ -156,19 +167,37 @@ public class PaymentsController : ControllerBase
         var clientId = _configuration["MercadoPago:ClientId"] ?? "";
 
         string accessToken = "";
+        string refreshToken = "";
         string publicKey = "";
         string mpUserId = "";
+        string mpNickname = "";
+        string mpSiteId = "";
+        DateTime? accessTokenExpiresAt = null;
 
         bool isMock = string.IsNullOrEmpty(clientSecret) || 
                      clientSecret == "YOUR_MERCADO_PAGO_PLATFORM_SECRET" || 
                      request.Code.StartsWith("dummy_") || 
                      request.Code.Contains("mock");
 
+        if (isMock && !_environment.IsDevelopment())
+        {
+            return BadRequest(new { message = "Callback OAuth simulado não é permitido em produção." });
+        }
+
+        if (!isMock && !ValidateOAuthState(request.State, companyId, out var stateError))
+        {
+            return BadRequest(new { message = stateError });
+        }
+
         if (isMock)
         {
             accessToken = $"APP_USR-DUMMY-OAUTH-{Guid.NewGuid().ToString().Replace("-", "").ToUpper()}";
+            refreshToken = $"REFRESH-DUMMY-{Guid.NewGuid().ToString().Replace("-", "").ToUpper()}";
             publicKey = $"APP_USR-{Guid.NewGuid().ToString().Replace("-", "").Substring(0, 16).ToUpper()}";
             mpUserId = "123456789";
+            mpNickname = "mock-seller";
+            mpSiteId = "MLB";
+            accessTokenExpiresAt = DateTime.UtcNow.AddHours(6);
         }
         else
         {
@@ -195,10 +224,23 @@ public class PaymentsController : ControllerBase
                 using var doc = JsonDocument.Parse(responseStr);
                 var root = doc.RootElement;
                 accessToken = root.GetProperty("access_token").GetString() ?? "";
+                refreshToken = root.TryGetProperty("refresh_token", out var refreshProp) ? refreshProp.GetString() ?? "" : "";
                 publicKey = root.GetProperty("public_key").GetString() ?? "";
+                if (root.TryGetProperty("expires_in", out var expiresProp) && expiresProp.TryGetInt32(out var expiresIn))
+                {
+                    accessTokenExpiresAt = DateTime.UtcNow.AddSeconds(expiresIn);
+                }
                 if (root.TryGetProperty("user_id", out var userIdProp))
                 {
                     mpUserId = userIdProp.ValueKind == JsonValueKind.Number ? userIdProp.GetInt64().ToString() : userIdProp.GetString() ?? "";
+                }
+
+                var profile = await GetMercadoPagoUserProfileAsync(accessToken);
+                if (profile != null)
+                {
+                    mpUserId = profile.UserId;
+                    mpNickname = profile.Nickname;
+                    mpSiteId = profile.SiteId;
                 }
             }
             catch (Exception ex)
@@ -239,9 +281,16 @@ public class PaymentsController : ControllerBase
         integration.BusinessPhone = "11999999999";
 
         integration.AccessToken = EncryptionService.Encrypt(accessToken);
+        integration.RefreshToken = EncryptionService.Encrypt(refreshToken);
+        integration.AccessTokenExpiresAt = accessTokenExpiresAt;
         integration.PublicKey = publicKey;
         integration.ClientId = clientId;
         integration.ClientSecret = EncryptionService.Encrypt(clientSecret);
+        integration.MercadoPagoUserId = mpUserId;
+        integration.MercadoPagoNickname = mpNickname;
+        integration.MercadoPagoSiteId = mpSiteId;
+        integration.LastTokenValidationAt = DateTime.UtcNow;
+        integration.LastTokenValidationStatus = string.IsNullOrWhiteSpace(mpUserId) ? "Token OAuth salvo sem confirmação de /users/me." : "Token OAuth validado em /users/me.";
         integration.IsActive = true;
         integration.UpdatedAt = DateTime.UtcNow;
 
@@ -327,6 +376,14 @@ public class PaymentsController : ControllerBase
             BusinessPhone = integration.BusinessPhone,
             PublicKey = integration.PublicKey,
             ClientId = integration.ClientId,
+            HasRefreshToken = !string.IsNullOrWhiteSpace(integration.RefreshToken),
+            AccessTokenExpiresAt = integration.AccessTokenExpiresAt,
+            MercadoPagoUserId = integration.MercadoPagoUserId,
+            MercadoPagoNickname = integration.MercadoPagoNickname,
+            MercadoPagoSiteId = integration.MercadoPagoSiteId,
+            LastTokenValidationAt = integration.LastTokenValidationAt,
+            LastTokenValidationStatus = integration.LastTokenValidationStatus,
+            TokenFingerprint = GetTokenFingerprint(decryptedAccessToken),
             IsActive = integration.IsActive,
             CreatedAt = integration.CreatedAt,
             UpdatedAt = integration.UpdatedAt,
@@ -397,6 +454,33 @@ public class PaymentsController : ControllerBase
             return BadRequest(new { message = "A taxa da plataforma precisa ser maior que R$ 0,00 para gerar uma cobrança Pix." });
         }
 
+        if (appFee >= request.Amount)
+        {
+            return BadRequest(new { message = "A taxa da plataforma precisa ser menor que o valor total da cobrança Pix." });
+        }
+
+        string? requestDocType = null;
+        string? requestDocNumber = null;
+        if (!string.IsNullOrWhiteSpace(request.PayerCpf))
+        {
+            var cleanedDoc = CleanDocument(request.PayerCpf);
+            if (IsCnpjValido(cleanedDoc))
+            {
+                requestDocType = "CNPJ";
+                requestDocNumber = cleanedDoc;
+            }
+            else if (IsCpfValido(cleanedDoc))
+            {
+                requestDocType = "CPF";
+                requestDocNumber = cleanedDoc;
+            }
+        }
+
+        if (request.UseRealMercadoPago && string.IsNullOrWhiteSpace(requestDocNumber))
+        {
+            return BadRequest(new { message = "CPF ou CNPJ válido do pagador é obrigatório para gerar Pix real no Mercado Pago." });
+        }
+
         // Criar transação interna
         var tx = new PaymentTransaction
         {
@@ -418,7 +502,8 @@ public class PaymentsController : ControllerBase
         // Comunicar com a API do Mercado Pago
         try
         {
-            var decryptedToken = EncryptionService.Decrypt(integration.AccessToken);
+            var decryptedToken = await EnsureValidAccessTokenAsync(integration);
+            var tokenFingerprint = GetTokenFingerprint(decryptedToken);
             if (decryptedToken.Contains("mock") || decryptedToken.Length < 15)
             {
                 if (request.UseRealMercadoPago)
@@ -437,6 +522,57 @@ public class PaymentsController : ControllerBase
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
             httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", tx.Id.ToString());
             bool applicationFeeApplied = tx.ApplicationFee > 0;
+
+            await LogTelemetryAsync(
+                tx.Id,
+                "Info",
+                $"Usando token OAuth salvo na integração {integration.Id} da empresa {integration.CompanyId}. Fingerprint do token: {tokenFingerprint}. Integração atualizada em: {integration.UpdatedAt:O}."
+            );
+
+            MercadoPagoUserProfile tokenOwner;
+            try
+            {
+                tokenOwner = await LogMercadoPagoTokenOwnerAsync(httpClient, tx.Id);
+            }
+            catch (Exception ex)
+            {
+                tx.Status = "Failed";
+                tx.RawResponse = JsonSerializer.Serialize(new
+                {
+                    status = "failed",
+                    message = "Não foi possível validar o token OAuth salvo antes da criação do Pix.",
+                    details = ex.Message
+                });
+                integration.LastTokenValidationAt = DateTime.UtcNow;
+                integration.LastTokenValidationStatus = $"Falha ao validar token OAuth antes do Pix: {ex.Message}";
+                await _context.SaveChangesAsync();
+                await LogTelemetryAsync(tx.Id, "Error", $"Falha ao validar o dono do token OAuth em /users/me: {ex.Message}");
+                return BadRequest(new { message = "Não foi possível validar o token OAuth salvo no Mercado Pago antes de gerar o Pix.", transactionId = tx.Id });
+            }
+
+            if (!string.IsNullOrWhiteSpace(integration.MercadoPagoUserId) && tokenOwner.UserId != integration.MercadoPagoUserId)
+            {
+                tx.Status = "Failed";
+                tx.RawResponse = JsonSerializer.Serialize(new
+                {
+                    status = "failed",
+                    message = "O token OAuth usado na cobrança pertence a outra conta Mercado Pago.",
+                    expectedUserId = integration.MercadoPagoUserId,
+                    actualUserId = tokenOwner.UserId
+                });
+                integration.LastTokenValidationAt = DateTime.UtcNow;
+                integration.LastTokenValidationStatus = $"Token OAuth divergente. Esperado: {integration.MercadoPagoUserId}. Atual: {tokenOwner.UserId}.";
+                await _context.SaveChangesAsync();
+                await LogTelemetryAsync(tx.Id, "Error", $"Token OAuth divergente. Integração esperava seller {integration.MercadoPagoUserId}, mas /users/me retornou {tokenOwner.UserId}.");
+                return BadRequest(new { message = "O token OAuth salvo na integração não pertence à conta Mercado Pago esperada para esta empresa.", transactionId = tx.Id });
+            }
+
+            integration.MercadoPagoUserId = tokenOwner.UserId;
+            integration.MercadoPagoNickname = tokenOwner.Nickname;
+            integration.MercadoPagoSiteId = tokenOwner.SiteId;
+            integration.LastTokenValidationAt = DateTime.UtcNow;
+            integration.LastTokenValidationStatus = "Token OAuth validado em /users/me antes da criação do Pix.";
+            await _context.SaveChangesAsync();
 
             // Determina os dados do comprador a partir da integração ativa se o frontend não enviá-los
             string payerEmail = !string.IsNullOrWhiteSpace(request.PayerEmail) 
@@ -459,23 +595,8 @@ public class PaymentsController : ControllerBase
                 }
             }
 
-            string? docType = null;
-            string? docNumber = null;
-
-            if (!string.IsNullOrWhiteSpace(request.PayerCpf))
-            {
-                string cleanedDoc = request.PayerCpf.Replace(".", "").Replace("-", "").Replace("/", "").Replace(" ", "");
-                if (IsCnpjValido(cleanedDoc))
-                {
-                    docType = "CNPJ";
-                    docNumber = cleanedDoc;
-                }
-                else if (IsCpfValido(cleanedDoc))
-                {
-                    docType = "CPF";
-                    docNumber = cleanedDoc;
-                }
-            }
+            string? docType = requestDocType;
+            string? docNumber = requestDocNumber;
 
             // Payloads dynamically built depending on whether document is provided and whether application_fee is charged
             object payerPayload;
@@ -504,6 +625,7 @@ public class PaymentsController : ControllerBase
             }
 
             object payload;
+            var notificationUrl = GetMercadoPagoNotificationUrl();
             if (tx.ApplicationFee > 0)
             {
                 payload = new
@@ -513,6 +635,7 @@ public class PaymentsController : ControllerBase
                     payment_method_id = "pix",
                     payer = payerPayload,
                     application_fee = tx.ApplicationFee,
+                    notification_url = notificationUrl,
                     external_reference = tx.Id.ToString()
                 };
             }
@@ -524,6 +647,7 @@ public class PaymentsController : ControllerBase
                     description = string.IsNullOrWhiteSpace(request.Description) ? $"Venda maquina {machine.Name}" : request.Description,
                     payment_method_id = "pix",
                     payer = payerPayload,
+                    notification_url = notificationUrl,
                     external_reference = tx.Id.ToString()
                 };
             }
@@ -809,7 +933,7 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var decryptedToken = EncryptionService.Decrypt(integration.AccessToken);
+            var decryptedToken = await EnsureValidAccessTokenAsync(integration, db);
             using var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
 
@@ -960,7 +1084,7 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var decryptedToken = EncryptionService.Decrypt(integration.AccessToken);
+            var decryptedToken = await EnsureValidAccessTokenAsync(integration, db);
             using var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
 
@@ -1003,6 +1127,204 @@ public class PaymentsController : ControllerBase
             await db.SaveChangesAsync();
         }
         catch { }
+    }
+
+    private static string GetTokenFingerprint(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return "empty";
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        return Convert.ToHexString(hash)[..12];
+    }
+
+    private async Task<MercadoPagoUserProfile> LogMercadoPagoTokenOwnerAsync(HttpClient httpClient, Guid transactionId)
+    {
+        var profile = await GetMercadoPagoUserProfileAsync(httpClient);
+        await LogTelemetryAsync(transactionId, "Info", $"Token OAuth validado no Mercado Pago. Seller/User ID: {profile.UserId}. Nickname: {profile.Nickname}. Site: {profile.SiteId}.");
+        return profile;
+    }
+
+    private async Task<string> EnsureValidAccessTokenAsync(MercadoPagoIntegration integration, AppDbContext? dbContext = null)
+    {
+        var db = dbContext ?? _context;
+        var decryptedToken = EncryptionService.Decrypt(integration.AccessToken);
+        var expiresAt = integration.AccessTokenExpiresAt;
+
+        if (!expiresAt.HasValue || expiresAt.Value > DateTime.UtcNow.AddMinutes(5))
+        {
+            return decryptedToken;
+        }
+
+        var refreshToken = EncryptionService.Decrypt(integration.RefreshToken);
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            return decryptedToken;
+        }
+
+        var clientId = _configuration["MercadoPago:ClientId"] ?? integration.ClientId;
+        var clientSecret = _configuration["MercadoPago:ClientSecret"] ?? EncryptionService.Decrypt(integration.ClientSecret);
+
+        using var httpClient = new HttpClient();
+        var parameters = new Dictionary<string, string>
+        {
+            { "client_secret", clientSecret },
+            { "client_id", clientId },
+            { "grant_type", "refresh_token" },
+            { "refresh_token", refreshToken }
+        };
+
+        var response = await httpClient.PostAsync("https://api.mercadopago.com/oauth/token", new FormUrlEncodedContent(parameters));
+        var responseStr = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            integration.LastTokenValidationAt = DateTime.UtcNow;
+            integration.LastTokenValidationStatus = $"Falha ao renovar token OAuth: {responseStr}";
+            await db.SaveChangesAsync();
+            return decryptedToken;
+        }
+
+        using var doc = JsonDocument.Parse(responseStr);
+        var root = doc.RootElement;
+        var newAccessToken = root.GetProperty("access_token").GetString() ?? "";
+        var newRefreshToken = root.TryGetProperty("refresh_token", out var refreshProp) ? refreshProp.GetString() ?? refreshToken : refreshToken;
+        var expiresIn = root.TryGetProperty("expires_in", out var expiresProp) && expiresProp.TryGetInt32(out var seconds) ? seconds : 21600;
+
+        integration.AccessToken = EncryptionService.Encrypt(newAccessToken);
+        integration.RefreshToken = EncryptionService.Encrypt(newRefreshToken);
+        integration.AccessTokenExpiresAt = DateTime.UtcNow.AddSeconds(expiresIn);
+        integration.UpdatedAt = DateTime.UtcNow;
+
+        using var profileHttp = new HttpClient();
+        profileHttp.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", newAccessToken);
+        var profile = await GetMercadoPagoUserProfileAsync(profileHttp);
+        integration.MercadoPagoUserId = profile.UserId;
+        integration.MercadoPagoNickname = profile.Nickname;
+        integration.MercadoPagoSiteId = profile.SiteId;
+        integration.LastTokenValidationAt = DateTime.UtcNow;
+        integration.LastTokenValidationStatus = "Token OAuth renovado e validado em /users/me.";
+
+        await db.SaveChangesAsync();
+        return newAccessToken;
+    }
+
+    private async Task<MercadoPagoUserProfile> GetMercadoPagoUserProfileAsync(string accessToken)
+    {
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        return await GetMercadoPagoUserProfileAsync(httpClient);
+    }
+
+    private static async Task<MercadoPagoUserProfile> GetMercadoPagoUserProfileAsync(HttpClient httpClient)
+    {
+        var response = await httpClient.GetAsync("https://api.mercadopago.com/users/me");
+        var responseStr = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Não foi possível validar o token OAuth em /users/me. Status: {(int)response.StatusCode}. Resposta: {responseStr}");
+        }
+
+        using var doc = JsonDocument.Parse(responseStr);
+        var root = doc.RootElement;
+        var userId = root.TryGetProperty("id", out var idProp) ? idProp.GetRawText().Trim('"') : "";
+        var nickname = root.TryGetProperty("nickname", out var nickProp) ? nickProp.GetString() ?? "" : "";
+        var siteId = root.TryGetProperty("site_id", out var siteProp) ? siteProp.GetString() ?? "" : "";
+        return new MercadoPagoUserProfile(userId, nickname, siteId);
+    }
+
+    private string CreateOAuthState(Guid companyId)
+    {
+        var payload = JsonSerializer.Serialize(new OAuthStatePayload
+        {
+            CompanyId = companyId,
+            Nonce = Guid.NewGuid().ToString("N"),
+            IssuedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        });
+        var encodedPayload = Base64UrlEncode(Encoding.UTF8.GetBytes(payload));
+        var signature = SignOAuthState(encodedPayload);
+        return $"{encodedPayload}.{signature}";
+    }
+
+    private bool ValidateOAuthState(string? state, Guid expectedCompanyId, out string error)
+    {
+        error = "";
+        if (string.IsNullOrWhiteSpace(state))
+        {
+            error = "State OAuth ausente. Inicie a conexão novamente pela tela de integrações.";
+            return false;
+        }
+
+        var parts = state.Split('.', 2);
+        if (parts.Length != 2 || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(SignOAuthState(parts[0])), Encoding.UTF8.GetBytes(parts[1])))
+        {
+            error = "State OAuth inválido. Inicie a conexão novamente pela tela de integrações.";
+            return false;
+        }
+
+        try
+        {
+            var json = Encoding.UTF8.GetString(Base64UrlDecode(parts[0]));
+            var payload = JsonSerializer.Deserialize<OAuthStatePayload>(json);
+            if (payload == null || payload.CompanyId != expectedCompanyId)
+            {
+                error = "State OAuth não pertence à empresa logada.";
+                return false;
+            }
+
+            var issuedAt = DateTimeOffset.FromUnixTimeSeconds(payload.IssuedAt);
+            if (issuedAt < DateTimeOffset.UtcNow.AddMinutes(-30))
+            {
+                error = "State OAuth expirado. Inicie a conexão novamente pela tela de integrações.";
+                return false;
+            }
+
+            return true;
+        }
+        catch
+        {
+            error = "State OAuth malformado. Inicie a conexão novamente pela tela de integrações.";
+            return false;
+        }
+    }
+
+    private string SignOAuthState(string encodedPayload)
+    {
+        var key = Encoding.UTF8.GetBytes(_configuration["Jwt:Key"] ?? "SuperSecretKeyForVendingMachinesManager2026!");
+        using var hmac = new HMACSHA256(key);
+        return Base64UrlEncode(hmac.ComputeHash(Encoding.UTF8.GetBytes(encodedPayload)));
+    }
+
+    private static string Base64UrlEncode(byte[] bytes)
+    {
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static byte[] Base64UrlDecode(string value)
+    {
+        var padded = value.Replace('-', '+').Replace('_', '/');
+        padded = padded.PadRight(padded.Length + (4 - padded.Length % 4) % 4, '=');
+        return Convert.FromBase64String(padded);
+    }
+
+    private string GetMercadoPagoNotificationUrl()
+    {
+        var configuredUrl = _configuration["MercadoPago:WebhookUrl"];
+        if (!string.IsNullOrWhiteSpace(configuredUrl))
+        {
+            return configuredUrl;
+        }
+
+        var scheme = Request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? Request.Scheme;
+        var host = Request.Headers["X-Forwarded-Host"].FirstOrDefault() ?? Request.Host.Value;
+        return $"{scheme}://{host}/webhooks/mercadopago";
+    }
+
+    private static string CleanDocument(string document)
+    {
+        return document.Replace(".", "").Replace("-", "").Replace("/", "").Replace(" ", "");
     }
 
     private static bool IsCpfValido(string cpf)
@@ -1092,6 +1414,15 @@ public class PaymentsController : ControllerBase
     }
 }
 
+public record MercadoPagoUserProfile(string UserId, string Nickname, string SiteId);
+
+public class OAuthStatePayload
+{
+    public Guid CompanyId { get; set; }
+    public string Nonce { get; set; } = string.Empty;
+    public long IssuedAt { get; set; }
+}
+
 public class PixChargeRequest
 {
     public string MachineId { get; set; } = string.Empty;
@@ -1114,4 +1445,5 @@ public class OAuthCallbackRequest
 {
     public string Code { get; set; } = string.Empty;
     public string RedirectUri { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
 }

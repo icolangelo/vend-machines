@@ -83,10 +83,12 @@ export default function Integrations() {
                     description: "Redirecionando para autenticação simulada..."
                 });
                 setTimeout(() => {
-                    window.location.href = `${window.location.origin}/?code=dummy_mock_oauth_code_${Date.now()}`;
+                    const stateParam = config.state ? `&state=${encodeURIComponent(config.state)}` : "";
+                    window.location.href = `${window.location.origin}/?code=dummy_mock_oauth_code_${Date.now()}${stateParam}`;
                 }, 1200);
             } else {
-                const authUrl = `https://auth.mercadopago.com/authorization?client_id=${config.clientId}&response_type=code&platform_id=mp&redirect_uri=${encodeURIComponent(config.redirectUri)}`;
+                const stateParam = config.state ? `&state=${encodeURIComponent(config.state)}` : "";
+                const authUrl = `https://auth.mercadopago.com/authorization?client_id=${config.clientId}&response_type=code&platform_id=mp&redirect_uri=${encodeURIComponent(config.redirectUri)}${stateParam}`;
                 window.location.href = authUrl;
             }
         } catch (err: any) {
@@ -235,6 +237,21 @@ export default function Integrations() {
                                                     <div>
                                                         A cobrança do Pix nas máquinas vinculadas à sua empresa utilizará as credenciais automáticas desta conta Mercado Pago.
                                                     </div>
+                                                </div>
+
+                                                <div className="bg-white border border-slate-200/70 rounded-lg p-3 text-xs space-y-2">
+                                                    <p className="font-semibold text-slate-700">Diagnóstico Mercado Pago</p>
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-600">
+                                                        <span>User ID: <strong className="text-slate-800">{integration.mercadoPagoUserId || "-"}</strong></span>
+                                                        <span>Nickname: <strong className="text-slate-800">{integration.mercadoPagoNickname || "-"}</strong></span>
+                                                        <span>Site: <strong className="text-slate-800">{integration.mercadoPagoSiteId || "-"}</strong></span>
+                                                        <span>Refresh token: <strong className="text-slate-800">{integration.hasRefreshToken ? "Salvo" : "Ausente"}</strong></span>
+                                                        <span>Expira em: <strong className="text-slate-800">{integration.accessTokenExpiresAt ? new Date(integration.accessTokenExpiresAt).toLocaleString("pt-BR") : "-"}</strong></span>
+                                                        <span>Fingerprint: <strong className="text-slate-800 font-mono">{integration.tokenFingerprint || "-"}</strong></span>
+                                                    </div>
+                                                    {integration.lastTokenValidationStatus && (
+                                                        <p className="text-slate-500 pt-1 border-t border-slate-100">{integration.lastTokenValidationStatus}</p>
+                                                    )}
                                                 </div>
                                             </div>
                                         ) : (

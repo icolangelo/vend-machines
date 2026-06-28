@@ -37,6 +37,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("code");
+        const state = params.get("state") || undefined;
 
         if (code) {
             const token = sessionStorage.getItem("token") || localStorage.getItem("token");
@@ -45,7 +46,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
             setProcessing(true);
             const redirectUri = window.location.origin + "/";
 
-            exchangeOauthCode(code, redirectUri)
+            exchangeOauthCode(code, redirectUri, state)
                 .then(() => {
                     toast({
                         title: "Integração Conectada",
