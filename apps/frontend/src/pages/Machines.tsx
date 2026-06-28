@@ -2,8 +2,8 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { StatusIndicator } from "@/components/dashboard/StatusIndicator";
-import { type Machine, type Client } from "@/data/mockData";
-import { getMachines, getClients } from "@/lib/api";
+import { type Machine, type Location } from "@/data/mockData";
+import { getMachines, getLocations } from "@/lib/api";
 import { Box, Zap, AlertTriangle, ListFilter, ArrowLeft, ArrowRight, Info, Plus, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useMemo, useEffect } from "react";
@@ -23,7 +23,7 @@ export default function Machines() {
     const location = useLocation();
     
     const [machines, setMachines] = useState<Machine[]>([]);
-    const [clients, setClients] = useState<Client[]>([]);
+    const [locations, setLocations] = useState<Location[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -33,10 +33,10 @@ export default function Machines() {
         }
 
         setLoading(true);
-        Promise.all([getMachines(), getClients()])
-            .then(([mList, cList]) => {
+        Promise.all([getMachines(), getLocations()])
+            .then(([mList, locationList]) => {
                 setMachines(mList);
-                setClients(cList);
+                setLocations(locationList);
                 setLoading(false);
             })
             .catch(err => {
@@ -45,8 +45,8 @@ export default function Machines() {
             });
     }, [navigate]);
 
-    const [selectedClient, setSelectedClient] = useState<string>(
-        location.state?.selectedClient || "all"
+    const [selectedLocationId, setSelectedLocationId] = useState<string>(
+        location.state?.selectedLocationId || "all"
     );
     const [filterType, setFilterType] = useState<"attention" | "all">("all");
     const [currentPage, setCurrentPage] = useState(1);
@@ -55,18 +55,19 @@ export default function Machines() {
     const itemsPerPage = 20;
 
     // Derived states
-    const filteredMachinesByClient = useMemo(() => {
-        if (selectedClient === "all") return machines;
-        return machines.filter(m => m.clientName === selectedClient);
-    }, [machines, selectedClient]);
+    const filteredMachinesByLocation = useMemo(() => {
+        if (selectedLocationId === "all") return machines;
+        const selectedLocation = locations.find(item => item.id === selectedLocationId);
+        return machines.filter(m => m.locationId === selectedLocationId || (!!selectedLocation && m.clientName === selectedLocation.name));
+    }, [machines, locations, selectedLocationId]);
 
     const { avgStock, uptime, totalCount, attentionCount } = useMemo(() => {
-        const total = filteredMachinesByClient.length;
+        const total = filteredMachinesByLocation.length;
         if (total === 0) return { avgStock: 0, uptime: 0, totalCount: 0, attentionCount: 0 };
         
-        const stockSum = filteredMachinesByClient.reduce((acc, m) => acc + m.stockLevel, 0);
-        const onlineCount = filteredMachinesByClient.filter(m => m.status === "online").length;
-        const alertCount = filteredMachinesByClient.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25).length;
+        const stockSum = filteredMachinesByLocation.reduce((acc, m) => acc + m.stockLevel, 0);
+        const onlineCount = filteredMachinesByLocation.filter(m => m.status === "online").length;
+        const alertCount = filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25).length;
         
         return {
             avgStock: Math.round(stockSum / total),
@@ -74,15 +75,15 @@ export default function Machines() {
             totalCount: total,
             attentionCount: alertCount
         };
-    }, [filteredMachinesByClient]);
+    }, [filteredMachinesByLocation]);
 
     // Table view logic
     const tableData = useMemo(() => {
         if (filterType === "attention") {
-            return filteredMachinesByClient.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25);
+            return filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25);
         }
-        return filteredMachinesByClient;
-    }, [filteredMachinesByClient, filterType]);
+        return filteredMachinesByLocation;
+    }, [filteredMachinesByLocation, filterType]);
 
     // Pagination
     const totalPages = Math.ceil(tableData.length / itemsPerPage);
@@ -96,7 +97,7 @@ export default function Machines() {
     // Reset page when switching filters or client
     useEffect(() => {
         setCurrentPage(1);
-    }, [selectedClient, filterType]);
+    }, [selectedLocationId, filterType]);
 
     return (
         <SidebarProvider>
@@ -123,15 +124,15 @@ export default function Machines() {
                                 </Button>
                             </div>
                             <div className="w-[280px]">
-                                <Select value={selectedClient} onValueChange={setSelectedClient}>
+                                <Select value={selectedLocationId} onValueChange={setSelectedLocationId}>
                                     <SelectTrigger>
-                                        <SelectValue placeholder="Selecione um cliente" />
+                                        <SelectValue placeholder="Selecione uma localização" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        <SelectItem value="all">Todos os Clientes</SelectItem>
-                                        {clients.map(client => (
-                                            <SelectItem key={client.name} value={client.name}>
-                                                {client.name}
+                                        <SelectItem value="all">Todas as Localizações</SelectItem>
+                                        {locations.map(location => (
+                                            <SelectItem key={location.id} value={location.id}>
+                                                {location.name}
                                             </SelectItem>
                                         ))}
                                     </SelectContent>
@@ -194,7 +195,7 @@ export default function Machines() {
                                         <tr className="border-b bg-muted/50">
                                             <th className="text-left px-5 py-2.5 text-label font-medium">ID</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Máquina</th>
-                                            <th className="text-left px-5 py-2.5 text-label font-medium">Cliente</th>
+                                            <th className="text-left px-5 py-2.5 text-label font-medium">Localização</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Status</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Estoque</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Última Sinc.</th>
@@ -250,7 +251,9 @@ export default function Machines() {
                                                             <button 
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
-                                                                    navigate(`/machines/${machine.id}/edit`);
+                                                                    if (machine.id) {
+                                                                        navigate(`/machines/${encodeURIComponent(machine.id)}/edit`);
+                                                                    }
                                                                 }}
                                                                 className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
                                                                 title="Editar Equipamento"
@@ -322,8 +325,8 @@ export default function Machines() {
                                 size="sm" 
                                 className="gap-2"
                                 onClick={() => {
-                                    if (selectedMachine) {
-                                        navigate(`/machines/${selectedMachine.id}/edit`);
+                                    if (selectedMachine?.id) {
+                                        navigate(`/machines/${encodeURIComponent(selectedMachine.id)}/edit`);
                                     }
                                 }}
                             >
@@ -348,7 +351,7 @@ export default function Machines() {
                                     <p className="font-medium text-lg">{selectedMachine.name}</p>
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Cliente</p>
+                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Localização</p>
                                     <p className="font-medium text-sm">{selectedMachine.clientName}</p>
                                 </div>
                                 <div>

@@ -8,7 +8,7 @@ import { ClientRanking } from "@/components/dashboard/ClientRanking";
 import { ProductRanking } from "@/components/dashboard/ProductRanking";
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { getMachines, getClients, getTopProducts, getBottomProducts, getDashboardStats } from "@/lib/api";
+import { getMachines, getLocations, getTopProducts, getBottomProducts, getDashboardStats } from "@/lib/api";
 import { DollarSign, ShoppingCart, Box, Zap, LogOut } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -31,7 +31,7 @@ export default function Index() {
         setLoading(true);
         Promise.all([
             getMachines(),
-            getClients(),
+            getLocations(),
             getTopProducts(),
             getBottomProducts(),
             getDashboardStats()
@@ -52,10 +52,11 @@ export default function Index() {
         if (loading || !stats) {
             return { totalRevenue: 0, totalSales: 0, avgStock: 0, uptime: 0 };
         }
-        const mLength = machinesList.length || 1;
-        const avgSt = Math.round(machinesList.reduce((s, m) => s + m.stockLevel, 0) / mLength);
+        const hasMachines = machinesList.length > 0;
+        const mLength = hasMachines ? machinesList.length : 1;
+        const avgSt = hasMachines ? Math.round(machinesList.reduce((s, m) => s + m.stockLevel, 0) / mLength) : 0;
         const onlineCount = machinesList.filter((m) => m.status === "online").length;
-        const upt = Math.round((onlineCount / mLength) * 100);
+        const upt = hasMachines ? Math.round((onlineCount / mLength) * 100) : 0;
 
         return {
             totalRevenue: stats.totalRevenue30d || 0,
@@ -104,15 +105,13 @@ export default function Index() {
                                         title="Faturamento 30d"
                                         value={`R$ ${kpis.totalRevenue.toLocaleString("pt-BR")}`}
                                         icon={DollarSign}
-                                        trend={{ value: 7.2, label: "vs mês anterior" }}
-                                        subtitle="vs mês anterior"
+                                        subtitle="transações aprovadas"
                                     />
                                     <KpiCard
                                         title="Vendas 30d"
                                         value={kpis.totalSales.toLocaleString("pt-BR")}
                                         icon={ShoppingCart}
-                                        trend={{ value: 4.8, label: "" }}
-                                        subtitle="unidades"
+                                        subtitle="pagamentos aprovados"
                                     />
                                     <KpiCard
                                         title="Estoque Médio"
@@ -133,7 +132,7 @@ export default function Index() {
                                 {/* Chart + Status */}
                                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                                     <div className="lg:col-span-2">
-                                        <RevenueChart />
+                                        <RevenueChart data={stats?.performanceHistory ?? []} />
                                     </div>
                                     <MachineStatusSummary machines={machinesList} />
                                 </div>

@@ -18,14 +18,14 @@ public class ClientsController : ControllerBase
     }
 
     [HttpGet]
-    public ActionResult<IEnumerable<Client>> GetAll()
+    public ActionResult<IEnumerable<LocationDto>> GetAll()
     {
         if (!TryGetCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
 
-        return Ok(_dataService.GetClients(companyId));
+        return Ok(_dataService.GetLocations(companyId));
     }
 
     private bool TryGetCompanyId(out Guid companyId)

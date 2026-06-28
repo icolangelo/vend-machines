@@ -5,8 +5,10 @@ import {
     productTypes as mockProductTypes,
     topProducts as mockTopProducts,
     bottomProducts as mockBottomProducts,
+    generateHistoricalData as mockHistoricalData,
     type Machine,
     type Client,
+    type Location,
     type FullProduct,
     type Product,
     type ProductType
@@ -49,11 +51,13 @@ export async function getMachine(id: string): Promise<Machine | null> {
 export async function createMachine(machine: Partial<Machine>): Promise<Machine> {
     if (isTestEnv()) {
         const newId = `VM-${String(mockMachines.length + 1).padStart(3, '0')}`;
+        const selectedLocation = mockClients.find(location => location.id === machine.locationId);
         const newMachine: Machine = {
             id: newId,
             name: machine.name || "",
-            clientName: machine.clientName || "Hospital São Luiz",
-            location: machine.location || "Lobby Central",
+            locationId: selectedLocation?.id,
+            clientName: selectedLocation?.name || machine.clientName || "ACME - Shopping",
+            location: machine.location || selectedLocation?.name || "ACME - Shopping",
             status: machine.status || "online",
             stockLevel: machine.stockLevel ?? 100,
             revenue30d: machine.revenue30d ?? 0,
@@ -69,7 +73,10 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(machine)
     });
-    if (!response.ok) throw new Error("Erro ao criar máquina na API");
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao criar máquina na API");
+    }
     return response.json();
 }
 
@@ -77,7 +84,13 @@ export async function updateMachine(id: string, machine: Partial<Machine>): Prom
     if (isTestEnv()) {
         const idx = mockMachines.findIndex(m => m.id === id);
         if (idx > -1) {
-            mockMachines[idx] = { ...mockMachines[idx], ...machine } as Machine;
+            const selectedLocation = mockClients.find(location => location.id === machine.locationId);
+            mockMachines[idx] = {
+                ...mockMachines[idx],
+                ...machine,
+                clientName: selectedLocation?.name || machine.clientName || mockMachines[idx].clientName,
+                location: machine.location || selectedLocation?.name || mockMachines[idx].location
+            } as Machine;
         }
         return;
     }
@@ -86,16 +99,95 @@ export async function updateMachine(id: string, machine: Partial<Machine>): Prom
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(machine)
     });
-    if (!response.ok) throw new Error("Erro ao atualizar máquina na API");
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao atualizar máquina na API");
+    }
 }
 
-export async function getClients(): Promise<Client[]> {
+export async function getLocations(): Promise<Location[]> {
     if (isTestEnv()) {
         return mockClients;
     }
-    const response = await authFetch(`${API_BASE_URL}/clients`);
-    if (!response.ok) throw new Error("Erro ao buscar clientes da API");
+    const response = await authFetch(`${API_BASE_URL}/locations`);
+    if (!response.ok) throw new Error("Erro ao buscar localizações da API");
     return response.json();
+}
+
+export async function createLocation(name: string): Promise<Location> {
+    if (isTestEnv()) {
+        const location: Location = {
+            id: `loc-${Date.now()}`,
+            name,
+            machineCount: 0,
+            revenue30d: 0,
+            totalSales30d: 0,
+            createdAt: new Date().toISOString()
+        };
+        mockClients.push(location);
+        return location;
+    }
+    const response = await authFetch(`${API_BASE_URL}/locations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao criar localização.");
+    }
+    return response.json();
+}
+
+export async function updateLocation(id: string, name: string): Promise<void> {
+    if (isTestEnv()) {
+        const location = mockClients.find(item => item.id === id);
+        if (location) {
+            location.name = name;
+            location.updatedAt = new Date().toISOString();
+            mockMachines
+                .filter(machine => machine.locationId === id)
+                .forEach(machine => {
+                    machine.clientName = name;
+                    machine.location = name;
+                });
+        }
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/locations/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao atualizar localização.");
+    }
+}
+
+export async function deleteLocation(id: string): Promise<void> {
+    if (isTestEnv()) {
+        const hasMachines = mockMachines.some(machine => machine.locationId === id);
+        if (hasMachines) {
+            throw new Error("Não é possível excluir uma localização com máquinas vinculadas.");
+        }
+        const index = mockClients.findIndex(item => item.id === id);
+        if (index >= 0) {
+            mockClients.splice(index, 1);
+        }
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/locations/${id}`, {
+        method: "DELETE"
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao excluir localização.");
+    }
+}
+
+export async function getClients(): Promise<Client[]> {
+    return getLocations();
 }
 
 export async function getProducts(): Promise<FullProduct[]> {
@@ -114,6 +206,69 @@ export async function getProductTypes(): Promise<ProductType[]> {
     const response = await authFetch(`${API_BASE_URL}/products/types`);
     if (!response.ok) throw new Error("Erro ao buscar tipos de produtos da API");
     return response.json();
+}
+
+export async function createProductType(type: Partial<ProductType>): Promise<ProductType> {
+    if (isTestEnv()) return { ...type, id: `pt-${Date.now()}` } as ProductType;
+    const response = await authFetch(`${API_BASE_URL}/products/types`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(type)
+    });
+    if (!response.ok) throw new Error("Erro ao criar tipo de produto");
+    return response.json();
+}
+
+export async function updateProductType(id: string, type: Partial<ProductType>): Promise<ProductType> {
+    if (isTestEnv()) return { ...type, id } as ProductType;
+    const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(type)
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Erro ao atualizar tipo de produto");
+    }
+    return response.json();
+}
+
+export async function deleteProductType(id: string): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
+        method: "DELETE"
+    });
+    if (!response.ok) throw new Error("Erro ao excluir tipo de produto");
+}
+
+export async function createProduct(product: Partial<FullProduct>): Promise<FullProduct> {
+    if (isTestEnv()) return { ...product, id: `p-${Date.now()}` } as FullProduct;
+    const response = await authFetch(`${API_BASE_URL}/products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(product)
+    });
+    if (!response.ok) throw new Error("Erro ao criar produto");
+    return response.json();
+}
+
+export async function updateProduct(id: string, product: Partial<FullProduct>): Promise<FullProduct> {
+    if (isTestEnv()) return { ...product, id } as FullProduct;
+    const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(product)
+    });
+    if (!response.ok) throw new Error("Erro ao atualizar produto");
+    return response.json();
+}
+
+export async function deleteProduct(id: string): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
+        method: "DELETE"
+    });
+    if (!response.ok) throw new Error("Erro ao excluir produto");
 }
 
 export async function getTopProducts(): Promise<Product[]> {
@@ -156,7 +311,8 @@ export async function getDashboardStats(): Promise<any> {
                 { day: "Sex", revenue: 3890 },
                 { day: "Sáb", revenue: 4210 },
                 { day: "Dom", revenue: 2180 }
-            ]
+            ],
+            performanceHistory: mockHistoricalData(30)
         };
     }
     const response = await authFetch(`${API_BASE_URL}/dashboard/stats`);

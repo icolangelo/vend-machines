@@ -14,6 +14,7 @@ public class Machine
     public string SerialNumber { get; set; } = string.Empty;
     public Guid? CompanyId { get; set; }
     public Company? Company { get; set; }
+    public Guid? LocationId { get; set; }
+    public Location? AssignedLocation { get; set; }
     public bool MercadoPagoEnabled { get; set; } = false;
 }
-

@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
+using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Controllers;
 
@@ -115,6 +116,9 @@ public class AuthController : ControllerBase
             _context.Companies.Add(company);
             await _context.SaveChangesAsync();
 
+            _context.Locations.AddRange(CreateDefaultLocations(company));
+            await _context.SaveChangesAsync();
+
             // Criar o usuário
             var user = new User
             {
@@ -141,6 +145,7 @@ public class AuthController : ControllerBase
             await transaction.CommitAsync();
 
             // Gerar token JWT e realizar login automático
+            user.Company = company;
             var token = GenerateJwtToken(user);
 
             return Ok(new
@@ -209,10 +214,13 @@ public class AuthController : ControllerBase
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 
-        if (user.CompanyId.HasValue && user.Company != null)
+        if (user.CompanyId.HasValue)
         {
             claimsList.Add(new Claim("company_id", user.CompanyId.Value.ToString()));
-            claimsList.Add(new Claim("company_name", user.Company.Name));
+            if (user.Company != null)
+            {
+                claimsList.Add(new Claim("company_name", user.Company.Name));
+            }
         }
 
         var claims = claimsList.ToArray();
@@ -226,6 +234,16 @@ public class AuthController : ControllerBase
         );
 
         return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    private static IEnumerable<Location> CreateDefaultLocations(Company company)
+    {
+        var prefix = DatabaseDataService.GetCompanyPrefix(company.Name);
+        return new[]
+        {
+            new Location { CompanyId = company.Id, Name = $"{prefix} - Shopping", CreatedAt = DateTime.UtcNow },
+            new Location { CompanyId = company.Id, Name = $"{prefix} - Hospital", CreatedAt = DateTime.UtcNow }
+        };
     }
 }
 

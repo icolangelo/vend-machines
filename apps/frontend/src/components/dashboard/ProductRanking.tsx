@@ -8,6 +8,18 @@ function ProductList({
     products: Product[];
     type: "top" | "bottom";
 }) {
+    if (products.length === 0) {
+        return (
+            <div className="py-8 text-center">
+                <p className="text-sm text-muted-foreground">
+                    {type === "top"
+                        ? "Nenhum produto vendido para exibir."
+                        : "Nenhum produto com baixa venda para exibir."}
+                </p>
+            </div>
+        );
+    }
+
     return (
         <div className="space-y-3">
             {products.map((product, i) => (

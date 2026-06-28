@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Models;
@@ -14,6 +15,7 @@ public static class DbInitializer
         if (context.Database.IsSqlite())
         {
             context.Database.EnsureCreated();
+            EnsureSqliteCompatibilitySchema(context);
         }
         else
         {
@@ -29,6 +31,8 @@ public static class DbInitializer
         var companyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         var adminUserId = Guid.Parse("22222222-2222-2222-2222-222222222222");
         var joaoUserId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var shoppingLocationId = Guid.Parse("44444444-4444-4444-4444-444444444441");
+        var hospitalLocationId = Guid.Parse("44444444-4444-4444-4444-444444444442");
 
         // 0. Seed de SystemSettings
         if (!context.SystemSettings.Any())
@@ -56,6 +60,15 @@ public static class DbInitializer
             context.Companies.Add(defaultCompany);
         }
 
+        // 1.1 Seed de Localizações padrão da empresa
+        if (!context.Locations.Any())
+        {
+            context.Locations.AddRange(
+                new Location { Id = shoppingLocationId, CompanyId = companyId, Name = "ACME - Shopping", CreatedAt = DateTime.UtcNow },
+                new Location { Id = hospitalLocationId, CompanyId = companyId, Name = "ACME - Hospital", CreatedAt = DateTime.UtcNow }
+            );
+        }
+
         // 2. Seed de ProductTypes
         if (!context.ProductTypes.Any())
         {
@@ -79,18 +92,18 @@ public static class DbInitializer
         {
             var machines = new List<Machine>
             {
-                new() { Id = "VM-001", Name = "Lobby A1", ClientName = "Hospital São Luiz", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230m, TotalSales30d = 847, LastSync = "2 min atrás", SerialNumber = "SN-123456", CompanyId = companyId },
-                new() { Id = "VM-002", Name = "Refeitório B2", ClientName = "Hospital São Luiz", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890m, TotalSales30d = 778, LastSync = "5 min atrás", SerialNumber = "SN-987654", CompanyId = companyId },
-                new() { Id = "VM-003", Name = "UTI C1", ClientName = "Hospital São Luiz", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150m, TotalSales30d = 430, LastSync = "1 min atrás", SerialNumber = "SN-555555", CompanyId = companyId },
-                new() { Id = "VM-004", Name = "Recepção D1", ClientName = "Faculdade Anhanguera", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670m, TotalSales30d = 1134, LastSync = "3 min atrás", SerialNumber = "SN-004", CompanyId = companyId },
-                new() { Id = "VM-005", Name = "Cantina E1", ClientName = "Faculdade Anhanguera", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0m, TotalSales30d = 0, LastSync = "2 dias atrás", SerialNumber = "SN-005", CompanyId = companyId },
-                new() { Id = "VM-006", Name = "Hall F1", ClientName = "Condomínio Alphaville", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890m, TotalSales30d = 378, LastSync = "4 min atrás", SerialNumber = "SN-006", CompanyId = companyId },
-                new() { Id = "VM-007", Name = "Academia G1", ClientName = "Condomínio Alphaville", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420m, TotalSales30d = 684, LastSync = "8 min atrás", SerialNumber = "SN-007", CompanyId = companyId },
-                new() { Id = "VM-008", Name = "Terminal H1", ClientName = "Rodoviária Tietê", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940m, TotalSales30d = 1788, LastSync = "1 min atrás", SerialNumber = "SN-008", CompanyId = companyId },
-                new() { Id = "VM-009", Name = "Embarque I1", ClientName = "Rodoviária Tietê", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230m, TotalSales30d = 1446, LastSync = "2 min atrás", SerialNumber = "SN-009", CompanyId = companyId },
-                new() { Id = "VM-010", Name = "Plataforma J1", ClientName = "Rodoviária Tietê", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180m, TotalSales30d = 1236, LastSync = "15 min atrás", SerialNumber = "SN-010", CompanyId = companyId },
-                new() { Id = "VM-011", Name = "Escritório K1", ClientName = "WeWork Faria Lima", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560m, TotalSales30d = 912, LastSync = "1 min atrás", SerialNumber = "SN-011", CompanyId = companyId },
-                new() { Id = "VM-012", Name = "Lounge L1", ClientName = "WeWork Faria Lima", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230m, TotalSales30d = 1046, LastSync = "3 min atrás", SerialNumber = "SN-012", CompanyId = companyId }
+                new() { Id = "VM-001", Name = "Lobby A1", ClientName = "ACME - Hospital", Location = "Lobby Principal", Status = "online", StockLevel = 82, Revenue30d = 4230m, TotalSales30d = 847, LastSync = "2 min atrás", SerialNumber = "SN-123456", CompanyId = companyId, LocationId = hospitalLocationId },
+                new() { Id = "VM-002", Name = "Refeitório B2", ClientName = "ACME - Hospital", Location = "Refeitório 2º andar", Status = "warning", StockLevel = 18, Revenue30d = 3890m, TotalSales30d = 778, LastSync = "5 min atrás", SerialNumber = "SN-987654", CompanyId = companyId, LocationId = hospitalLocationId },
+                new() { Id = "VM-003", Name = "UTI C1", ClientName = "ACME - Hospital", Location = "Corredor UTI", Status = "online", StockLevel = 65, Revenue30d = 2150m, TotalSales30d = 430, LastSync = "1 min atrás", SerialNumber = "SN-555555", CompanyId = companyId, LocationId = hospitalLocationId },
+                new() { Id = "VM-004", Name = "Recepção D1", ClientName = "ACME - Shopping", Location = "Bloco D", Status = "online", StockLevel = 91, Revenue30d = 5670m, TotalSales30d = 1134, LastSync = "3 min atrás", SerialNumber = "SN-004", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-005", Name = "Cantina E1", ClientName = "ACME - Shopping", Location = "Cantina Central", Status = "offline", StockLevel = 0, Revenue30d = 0m, TotalSales30d = 0, LastSync = "2 dias atrás", SerialNumber = "SN-005", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-006", Name = "Hall F1", ClientName = "ACME - Shopping", Location = "Hall de Entrada", Status = "online", StockLevel = 45, Revenue30d = 1890m, TotalSales30d = 378, LastSync = "4 min atrás", SerialNumber = "SN-006", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-007", Name = "Academia G1", ClientName = "ACME - Shopping", Location = "Academia", Status = "warning", StockLevel = 12, Revenue30d = 3420m, TotalSales30d = 684, LastSync = "8 min atrás", SerialNumber = "SN-007", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-008", Name = "Terminal H1", ClientName = "ACME - Shopping", Location = "Terminal 3", Status = "online", StockLevel = 73, Revenue30d = 8940m, TotalSales30d = 1788, LastSync = "1 min atrás", SerialNumber = "SN-008", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-009", Name = "Embarque I1", ClientName = "ACME - Shopping", Location = "Sala de Embarque", Status = "online", StockLevel = 56, Revenue30d = 7230m, TotalSales30d = 1446, LastSync = "2 min atrás", SerialNumber = "SN-009", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-010", Name = "Plataforma J1", ClientName = "ACME - Shopping", Location = "Plataforma 12", Status = "warning", StockLevel = 22, Revenue30d = 6180m, TotalSales30d = 1236, LastSync = "15 min atrás", SerialNumber = "SN-010", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-011", Name = "Escritório K1", ClientName = "ACME - Shopping", Location = "12º andar", Status = "online", StockLevel = 88, Revenue30d = 4560m, TotalSales30d = 912, LastSync = "1 min atrás", SerialNumber = "SN-011", CompanyId = companyId, LocationId = shoppingLocationId },
+                new() { Id = "VM-012", Name = "Lounge L1", ClientName = "ACME - Shopping", Location = "Lounge Café", Status = "online", StockLevel = 71, Revenue30d = 5230m, TotalSales30d = 1046, LastSync = "3 min atrás", SerialNumber = "SN-012", CompanyId = companyId, LocationId = shoppingLocationId }
             };
             context.Machines.AddRange(machines);
         }
@@ -102,9 +115,15 @@ public static class DbInitializer
                 var unlinkedMachines = context.Machines.Where(m => m.CompanyId == null).ToList();
                 if (unlinkedMachines.Any())
                 {
+                    var fallbackLocation = context.Locations.FirstOrDefault(l => l.CompanyId == defaultCompany.Id);
                     foreach (var m in unlinkedMachines)
                     {
                         m.CompanyId = defaultCompany.Id;
+                        if (m.LocationId == null && fallbackLocation != null)
+                        {
+                            m.LocationId = fallbackLocation.Id;
+                            m.ClientName = fallbackLocation.Name;
+                        }
                     }
                     context.SaveChanges();
                 }
@@ -182,5 +201,167 @@ public static class DbInitializer
         }
 
         context.SaveChanges();
+    }
+
+    private static void EnsureSqliteCompatibilitySchema(AppDbContext context)
+    {
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "Locations" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_Locations" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL,
+    "Name" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL,
+    "UpdatedAt" TEXT NULL,
+    CONSTRAINT "FK_Locations_Companies_CompanyId" FOREIGN KEY ("CompanyId") REFERENCES "Companies" ("Id") ON DELETE CASCADE
+);
+""");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_Locations_CompanyId_Name" ON "Locations" ("CompanyId", "Name");
+""");
+
+        if (!SqliteColumnExists(context, "Machines", "LocationId"))
+        {
+            context.Database.ExecuteSqlRaw("""
+ALTER TABLE "Machines" ADD COLUMN "LocationId" TEXT NULL;
+""");
+        }
+
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "RefreshToken", "TEXT NOT NULL DEFAULT ''");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "AccessTokenExpiresAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "MercadoPagoUserId", "TEXT NOT NULL DEFAULT ''");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "MercadoPagoNickname", "TEXT NOT NULL DEFAULT ''");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "MercadoPagoSiteId", "TEXT NOT NULL DEFAULT ''");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "LastTokenValidationAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "MercadoPagoIntegrations", "LastTokenValidationStatus", "TEXT NOT NULL DEFAULT ''");
+
+        EnsureSqliteColumn(context, "Products", "CompanyId", "TEXT NULL");
+        EnsureSqliteColumn(context, "Products", "OriginalId", "TEXT NULL");
+        EnsureSqliteColumn(context, "ProductTypes", "CompanyId", "TEXT NULL");
+        EnsureSqliteColumn(context, "ProductTypes", "OriginalId", "TEXT NULL");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE INDEX IF NOT EXISTS "IX_Machines_LocationId" ON "Machines" ("LocationId");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+INSERT INTO "Locations" ("Id", "CompanyId", "Name", "CreatedAt")
+SELECT upper(hex(randomblob(4))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(6))),
+       c."Id",
+       COALESCE(NULLIF(substr(trim(c."Name"), 1, instr(trim(c."Name") || ' ', ' ') - 1), ''), 'Empresa') || ' - Shopping',
+       CURRENT_TIMESTAMP
+FROM "Companies" c
+WHERE NOT EXISTS (
+    SELECT 1 FROM "Locations" l
+    WHERE l."CompanyId" = c."Id"
+      AND l."Name" = COALESCE(NULLIF(substr(trim(c."Name"), 1, instr(trim(c."Name") || ' ', ' ') - 1), ''), 'Empresa') || ' - Shopping'
+);
+""");
+
+        context.Database.ExecuteSqlRaw("""
+INSERT INTO "Locations" ("Id", "CompanyId", "Name", "CreatedAt")
+SELECT upper(hex(randomblob(4))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(2))) || '-' || upper(hex(randomblob(6))),
+       c."Id",
+       COALESCE(NULLIF(substr(trim(c."Name"), 1, instr(trim(c."Name") || ' ', ' ') - 1), ''), 'Empresa') || ' - Hospital',
+       CURRENT_TIMESTAMP
+FROM "Companies" c
+WHERE NOT EXISTS (
+    SELECT 1 FROM "Locations" l
+    WHERE l."CompanyId" = c."Id"
+      AND l."Name" = COALESCE(NULLIF(substr(trim(c."Name"), 1, instr(trim(c."Name") || ' ', ' ') - 1), ''), 'Empresa') || ' - Hospital'
+);
+""");
+
+        // Fix existing lowercase Guids
+        context.Database.ExecuteSqlRaw("""
+UPDATE "Locations" SET "Id" = upper("Id") WHERE "Id" != upper("Id");
+UPDATE "Machines" SET "LocationId" = upper("LocationId") WHERE "LocationId" != upper("LocationId");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+UPDATE "Machines"
+SET "LocationId" = (
+        SELECT l."Id"
+        FROM "Locations" l
+        WHERE l."CompanyId" = "Machines"."CompanyId"
+          AND l."Name" = trim("Machines"."ClientName")
+        LIMIT 1
+    )
+WHERE "LocationId" IS NULL
+  AND EXISTS (
+      SELECT 1 FROM "Locations" l
+      WHERE l."CompanyId" = "Machines"."CompanyId"
+        AND l."Name" = trim("Machines"."ClientName")
+  );
+""");
+
+        context.Database.ExecuteSqlRaw("""
+UPDATE "Machines"
+SET "LocationId" = (
+        SELECT l."Id"
+        FROM "Locations" l
+        WHERE l."CompanyId" = "Machines"."CompanyId"
+        ORDER BY l."CreatedAt", l."Name"
+        LIMIT 1
+    ),
+    "ClientName" = (
+        SELECT l."Name"
+        FROM "Locations" l
+        WHERE l."CompanyId" = "Machines"."CompanyId"
+        ORDER BY l."CreatedAt", l."Name"
+        LIMIT 1
+    )
+WHERE "LocationId" IS NULL
+  AND EXISTS (
+      SELECT 1 FROM "Locations" l
+      WHERE l."CompanyId" = "Machines"."CompanyId"
+  );
+""");
+    }
+
+    private static void EnsureSqliteColumn(AppDbContext context, string tableName, string columnName, string columnDefinition)
+    {
+        if (SqliteColumnExists(context, tableName, columnName))
+        {
+            return;
+        }
+
+        var sql = $"""
+ALTER TABLE "{tableName}" ADD COLUMN "{columnName}" {columnDefinition};
+""";
+        context.Database.ExecuteSqlRaw(sql);
+    }
+
+    private static bool SqliteColumnExists(AppDbContext context, string tableName, string columnName)
+    {
+        var connection = context.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        if (shouldClose)
+        {
+            connection.Open();
+        }
+
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = $"PRAGMA table_info(\"{tableName}\");";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            if (shouldClose)
+            {
+                connection.Close();
+            }
+        }
     }
 }

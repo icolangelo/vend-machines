@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { type FullProduct, type ProductType } from "@/data/mockData";
-import { getProducts, getProductTypes } from "@/lib/api";
+import { getProducts, getProductTypes, createProduct, updateProduct, deleteProduct } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -80,7 +80,7 @@ export default function Products() {
         logout();
     };
 
-    const handleSaveProduct = () => {
+    const handleSaveProduct = async () => {
         if (!formData.code || !formData.name || !formData.typeId) {
             toast({
                 title: "Erro",
@@ -90,34 +90,40 @@ export default function Products() {
             return;
         }
 
-        if (editingProduct) {
-            setProducts(products.map(p => p.id === editingProduct.id ? { ...editingProduct, ...formData } as FullProduct : p));
-            toast({
-                title: "Sucesso",
-                description: "Produto atualizado com sucesso.",
+        try {
+            if (editingProduct) {
+                const updatedProduct = await updateProduct(editingProduct.id, formData);
+                setProducts(products.map(p => p.id === editingProduct.id ? updatedProduct : p));
+                toast({
+                    title: "Sucesso",
+                    description: "Produto atualizado com sucesso.",
+                });
+            } else {
+                const newProduct = await createProduct(formData);
+                setProducts([...products, newProduct]);
+                toast({
+                    title: "Sucesso",
+                    description: "Novo produto adicionado com sucesso.",
+                });
+            }
+            
+            setIsDialogOpen(false);
+            setEditingProduct(null);
+            setFormData({
+                code: "",
+                name: "",
+                description: "",
+                typeId: "",
+                isAlcoholic: false,
+                cost: 0,
             });
-        } else {
-            const newProduct: FullProduct = {
-                ...formData as FullProduct,
-                id: `p-${Date.now()}`,
-            };
-            setProducts([...products, newProduct]);
+        } catch (err: any) {
             toast({
-                title: "Sucesso",
-                description: "Novo produto adicionado com sucesso.",
+                title: "Erro",
+                description: err.message || "Erro ao salvar produto.",
+                variant: "destructive",
             });
         }
-        
-        setIsDialogOpen(false);
-        setEditingProduct(null);
-        setFormData({
-            code: "",
-            name: "",
-            description: "",
-            typeId: "",
-            isAlcoholic: false,
-            cost: 0,
-        });
     };
 
     const handleEdit = (product: FullProduct) => {
@@ -126,13 +132,22 @@ export default function Products() {
         setIsDialogOpen(true);
     };
 
-    const handleDelete = (id: string) => {
+    const handleDelete = async (id: string) => {
         if (confirm("Tem certeza que deseja excluir este produto?")) {
-            setProducts(products.filter(p => p.id !== id));
-            toast({
-                title: "Sucesso",
-                description: "Produto excluído com sucesso.",
-            });
+            try {
+                await deleteProduct(id);
+                setProducts(products.filter(p => p.id !== id));
+                toast({
+                    title: "Sucesso",
+                    description: "Produto excluído com sucesso.",
+                });
+            } catch (err: any) {
+                toast({
+                    title: "Erro",
+                    description: err.message || "Erro ao excluir produto.",
+                    variant: "destructive",
+                });
+            }
         }
     };
 

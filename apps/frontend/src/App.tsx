@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { HashRouter, Route, Routes } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,7 +10,7 @@ import Index from "./pages/Index.tsx";
 import Login from "./pages/Login.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import Machines from "./pages/Machines.tsx";
-import Clients from "./pages/Clients.tsx";
+import Locations from "./pages/Locations.tsx";
 import Products from "./pages/Products.tsx";
 import Settings from "./pages/Settings.tsx";
 import Integrations from "./pages/Integrations.tsx";
@@ -111,8 +111,10 @@ const App = () => {
                                     <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
                                     <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
                                     <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
+                                    <Route path="/machines/edit" element={<ProtectedRoute><Navigate to="/machines" replace /></ProtectedRoute>} />
                                     <Route path="/machines/:id/edit" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
-                                    <Route path="/clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
+                                    <Route path="/locations" element={<ProtectedRoute><Locations /></ProtectedRoute>} />
+                                    <Route path="/clients" element={<ProtectedRoute><Navigate to="/locations" replace /></ProtectedRoute>} />
                                     <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
                                     <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
                                     <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />

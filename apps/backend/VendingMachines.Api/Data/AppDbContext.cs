@@ -15,6 +15,7 @@ public class AppDbContext : DbContext
     public DbSet<ProductPerformance> ProductPerformances { get; set; } = null!;
     public DbSet<User> Users { get; set; } = null!;
     public DbSet<Company> Companies { get; set; } = null!;
+    public DbSet<Location> Locations { get; set; } = null!;
     
     // Novas tabelas Mercado Pago
     public DbSet<SystemSettings> SystemSettings { get; set; } = null!;
@@ -33,6 +34,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<ProductPerformance>().HasKey(pp => pp.Name);
         modelBuilder.Entity<User>().HasKey(u => u.Id);
         modelBuilder.Entity<Company>().HasKey(c => c.Id);
+        modelBuilder.Entity<Location>().HasKey(l => l.Id);
         modelBuilder.Entity<SystemSettings>().HasKey(s => s.Id);
         modelBuilder.Entity<MercadoPagoIntegration>().HasKey(mpi => mpi.Id);
         modelBuilder.Entity<PaymentTransaction>().HasKey(t => t.Id);
@@ -51,6 +53,38 @@ public class AppDbContext : DbContext
             .WithMany(c => c.Machines)
             .HasForeignKey(m => m.CompanyId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        // Relacionamento Empresa -> Localizações
+        modelBuilder.Entity<Location>()
+            .HasOne(l => l.Company)
+            .WithMany(c => c.Locations)
+            .HasForeignKey(l => l.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Relacionamento Empresa -> Produtos
+        modelBuilder.Entity<FullProduct>()
+            .HasOne(p => p.Company)
+            .WithMany()
+            .HasForeignKey(p => p.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Relacionamento Empresa -> Tipos de Produto
+        modelBuilder.Entity<ProductType>()
+            .HasOne(pt => pt.Company)
+            .WithMany()
+            .HasForeignKey(pt => pt.CompanyId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Location>()
+            .HasIndex(l => new { l.CompanyId, l.Name })
+            .IsUnique();
+
+        // Relacionamento Localização -> Máquinas
+        modelBuilder.Entity<Machine>()
+            .HasOne(m => m.AssignedLocation)
+            .WithMany(l => l.Machines)
+            .HasForeignKey(m => m.LocationId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         // Relacionamento Empresa -> Integração Mercado Pago
         modelBuilder.Entity<MercadoPagoIntegration>()

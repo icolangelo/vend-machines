@@ -216,7 +216,7 @@ export default function Alerts() {
                                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                                     <Input 
                                         type="text"
-                                        placeholder="Buscar por máquina, cliente ou motivo..."
+                                        placeholder="Buscar por máquina, localização ou motivo..."
                                         className="pl-9 w-full"
                                         value={search}
                                         onChange={(e) => setSearch(e.target.value)}

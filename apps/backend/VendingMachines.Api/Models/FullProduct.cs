@@ -9,4 +9,7 @@ public class FullProduct
     public string TypeId { get; set; } = string.Empty;
     public bool IsAlcoholic { get; set; }
     public decimal Cost { get; set; }
+    public Guid? CompanyId { get; set; }
+    public Company? Company { get; set; }
+    public string? OriginalId { get; set; }
 }

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VendingMachines.Api.Data;
 
@@ -10,9 +11,11 @@ using VendingMachines.Api.Data;
 namespace VendingMachines.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260628125424_AddLocationsToMachines")]
+    partial class AddLocationsToMachines
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.1");
@@ -51,9 +54,6 @@ namespace VendingMachines.Api.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("TEXT");
-
                     b.Property<decimal>("Cost")
                         .HasPrecision(18, 3)
                         .HasColumnType("TEXT");
@@ -74,8 +74,6 @@ namespace VendingMachines.Api.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("CompanyId");
 
                     b.ToTable("Products");
                 });
@@ -355,16 +353,11 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("Id")
                         .HasColumnType("TEXT");
 
-                    b.Property<Guid?>("CompanyId")
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("CompanyId");
 
                     b.ToTable("ProductTypes");
                 });
@@ -462,16 +455,6 @@ namespace VendingMachines.Api.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("VendingMachines.Api.Models.FullProduct", b =>
-                {
-                    b.HasOne("VendingMachines.Api.Models.Company", "Company")
-                        .WithMany()
-                        .HasForeignKey("CompanyId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
-                    b.Navigation("Company");
-                });
-
             modelBuilder.Entity("VendingMachines.Api.Models.Location", b =>
                 {
                     b.HasOne("VendingMachines.Api.Models.Company", "Company")
@@ -528,16 +511,6 @@ namespace VendingMachines.Api.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("Machine");
-                });
-
-            modelBuilder.Entity("VendingMachines.Api.Models.ProductType", b =>
-                {
-                    b.HasOne("VendingMachines.Api.Models.Company", "Company")
-                        .WithMany()
-                        .HasForeignKey("CompanyId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
-                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VendingMachines.Api.Models.TransactionTelemetryLog", b =>

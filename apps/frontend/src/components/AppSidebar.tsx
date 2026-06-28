@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
     LayoutDashboard,
     Box,
-    Users,
+    MapPin,
     Package,
     BarChart3,
     Settings,
@@ -33,7 +33,7 @@ import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
 const mainItems = [
     { title: "Dashboard", url: "/", icon: LayoutDashboard },
     { title: "Máquinas", url: "/machines", icon: Box },
-    { title: "Clientes", url: "/clients", icon: Users },
+    { title: "Localizações", url: "/locations", icon: MapPin },
     { title: "Produtos", url: "/products", icon: Package },
     { title: "Relatórios", url: "/reports", icon: BarChart3 },
 ];

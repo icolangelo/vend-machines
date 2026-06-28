@@ -107,7 +107,7 @@ export default function Reports() {
                                             Relatório de Máquinas e Estoque
                                         </h2>
                                         <p className="text-xs text-muted-foreground mt-0.5">
-                                            Listagem detalhada das vending machines, clientes e status do estoque.
+                                            Listagem detalhada das vending machines, localizações e status do estoque.
                                         </p>
                                     </div>
                                     <div className="text-left sm:text-right text-xs text-muted-foreground">
@@ -123,7 +123,7 @@ export default function Reports() {
                                             <tr className="border-b bg-muted/30 text-muted-foreground text-xs uppercase tracking-wider font-semibold">
                                                 <th className="text-left px-4 py-3">ID da Máquina</th>
                                                 <th className="text-left px-4 py-3">Máquina</th>
-                                                <th className="text-left px-4 py-3">Cliente Alocado</th>
+                                                <th className="text-left px-4 py-3">Localização</th>
                                                 <th className="text-right px-4 py-3">Produtos Alocados</th>
                                                 <th className="text-center px-4 py-3 w-[200px]">% do Estoque</th>
                                             </tr>

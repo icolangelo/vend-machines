@@ -10,7 +10,7 @@ export function ClientRanking({ clients }: { clients: Client[] }) {
             <div className="px-5 py-4 border-b flex items-center gap-2">
                 <Trophy className="h-4 w-4 text-accent" />
                 <h2 className="text-sm font-semibold text-foreground">
-                    Ranking de Clientes
+                    Ranking de Localizações
                 </h2>
                 <span className="text-label ml-auto">30 dias</span>
             </div>

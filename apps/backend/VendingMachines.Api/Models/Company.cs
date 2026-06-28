@@ -16,4 +16,7 @@ public class Company
 
     // Coleção de máquinas vinculadas a esta empresa
     public ICollection<Machine> Machines { get; set; } = new List<Machine>();
+
+    // Coleção de localizações vinculadas a esta empresa
+    public ICollection<Location> Locations { get; set; } = new List<Location>();
 }

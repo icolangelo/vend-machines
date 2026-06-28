@@ -24,7 +24,7 @@ export function MachineAlertTable({ machines }: { machines: Machine[] }) {
                         <tr className="border-b bg-muted/50">
                             <th className="text-left px-5 py-2.5 text-label font-medium">ID</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Máquina</th>
-                            <th className="text-left px-5 py-2.5 text-label font-medium">Cliente</th>
+                            <th className="text-left px-5 py-2.5 text-label font-medium">Localização</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Status</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Estoque</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Última Sinc.</th>

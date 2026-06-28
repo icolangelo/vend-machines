@@ -26,14 +26,15 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { getMachine, createMachine, updateMachine, getIntegration } from "@/lib/api";
+import { getMachine, createMachine, updateMachine, getIntegration, getLocations } from "@/lib/api";
+import { type Location } from "@/data/mockData";
 
 const machineFormSchema = z.object({
     id: z.string().optional(),
     grupoId: z.number().min(0, "Grupo ID não pode ser negativo").optional(),
     serialNumber: z.string().min(1, "Serial Number é obrigatório"),
     modelo: z.string().min(1, "Modelo é obrigatório"),
-    vendingMachineId: z.string().min(1, "Selecione uma Vending Machine"),
+    locationId: z.string().min(1, "Selecione uma localização"),
     firmwareVersion: z.string().optional(),
     useGsm: z.boolean().default(false),
     useWifi: z.boolean().default(false),
@@ -84,6 +85,7 @@ export default function MachineFormPage() {
     const { id } = useParams();
     const isEditMode = !!id;
     const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
+    const [locations, setLocations] = useState<Location[]>([]);
 
     const form = useForm<MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
@@ -98,6 +100,7 @@ export default function MachineFormPage() {
             ftpServerPort: 21,
             ftpDirectoryPath: "/evadts/",
             evaBaudRateOption: "0",
+            locationId: "",
             mercadoPagoEnabled: false
         },
     });
@@ -114,6 +117,16 @@ export default function MachineFormPage() {
         }).catch(err => {
             console.error("Erro ao buscar integracao para a maquina:", err);
         });
+
+        getLocations().then(data => {
+            setLocations(data);
+            if (!isEditMode && data.length > 0) {
+                form.setValue("locationId", data[0].id);
+            }
+        }).catch(err => {
+            console.error("Erro ao buscar localizações para a máquina:", err);
+            toast.error("Erro ao carregar localizações.");
+        });
     }, []);
 
     useEffect(() => {
@@ -124,7 +137,7 @@ export default function MachineFormPage() {
                         id: machine.id,
                         serialNumber: machine.serialNumber,
                         modelo: machine.name,
-                        vendingMachineId: "machine-1",
+                        locationId: machine.locationId || locations.find(location => location.name === machine.clientName)?.id || "",
                         useWifi: true,
                         ativo: machine.status === "online",
                         isDhcpEnabled: true,
@@ -139,17 +152,19 @@ export default function MachineFormPage() {
                 console.error("Erro ao buscar detalhes da máquina:", err);
             });
         }
-    }, [id, isEditMode, form]);
+    }, [id, isEditMode, form, locations]);
 
     function onSubmit(data: MachineFormValues) {
         console.log("Form Submitted:", data);
         
+        const selectedLocation = locations.find(location => location.id === data.locationId);
         const machineData = {
             name: data.modelo,
             serialNumber: data.serialNumber,
             status: (data.ativo ? "online" : "offline") as any,
-            location: "Lobby Central",
-            clientName: "Hospital São Luiz",
+            locationId: data.locationId,
+            location: selectedLocation?.name || "Localização principal",
+            clientName: selectedLocation?.name || "",
             mercadoPagoEnabled: data.mercadoPagoEnabled
         };
 
@@ -164,7 +179,7 @@ export default function MachineFormPage() {
             })
             .catch(err => {
                 console.error("Erro ao salvar máquina:", err);
-                toast.error("Erro ao salvar máquina.");
+                toast.error(err.message || "Erro ao salvar máquina.");
             });
     }
 
@@ -233,14 +248,17 @@ export default function MachineFormPage() {
                                             </div>
 
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                                <FormField control={form.control} name="vendingMachineId" render={({ field }) => (
+                                                <FormField control={form.control} name="locationId" render={({ field }) => (
                                                     <FormItem>
-                                                        <FormLabel>Vending Machine (Localização/Ativo) *</FormLabel>
-                                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                            <FormControl><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger></FormControl>
+                                                        <FormLabel>Localização *</FormLabel>
+                                                        <Select value={field.value || ""} onValueChange={field.onChange}>
+                                                            <FormControl><SelectTrigger><SelectValue placeholder="Selecione uma localização..." /></SelectTrigger></FormControl>
                                                             <SelectContent>
-                                                                <SelectItem value="machine-1">Machine BR-01 (Hospital)</SelectItem>
-                                                                <SelectItem value="machine-2">Machine BR-02 (Shopping)</SelectItem>
+                                                                {locations.map(location => (
+                                                                    <SelectItem key={location.id} value={location.id}>
+                                                                        {location.name}
+                                                                    </SelectItem>
+                                                                ))}
                                                             </SelectContent>
                                                         </Select>
                                                         <FormMessage />

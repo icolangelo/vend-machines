@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Models;
 using VendingMachines.Api.Services;
 
@@ -50,8 +51,26 @@ public class MachinesController : ControllerBase
         }
 
         machine.CompanyId = companyId;
-        _dataService.AddMachine(machine);
-        return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
+        try
+        {
+            _dataService.AddMachine(machine);
+            machine.Company = null;
+            machine.AssignedLocation = null;
+            return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!ex.Message.Contains("ID"))
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+
+            return Conflict(new { message = ex.Message });
+        }
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("PK_Machines") == true || ex.Message.Contains("PK_Machines"))
+        {
+            return Conflict(new { message = "Já existe uma máquina cadastrada com este ID." });
+        }
     }
 
     [HttpPut("{id}")]
@@ -67,8 +86,15 @@ public class MachinesController : ControllerBase
         
         machine.CompanyId = companyId;
         machine.Id = id; // Garantir que o ID corresponda à URL
-        _dataService.UpdateMachine(machine);
-        return NoContent();
+        try
+        {
+            _dataService.UpdateMachine(machine);
+            return NoContent();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 
     private bool TryGetCompanyId(out Guid companyId)

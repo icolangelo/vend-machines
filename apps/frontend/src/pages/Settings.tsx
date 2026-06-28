@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { type ProductType } from "@/data/mockData";
-import { getProductTypes } from "@/lib/api";
+import { getProductTypes, createProductType, updateProductType, deleteProductType } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -61,7 +61,7 @@ export default function Settings() {
         logout();
     };
 
-    const handleSaveType = () => {
+    const handleSaveType = async () => {
         if (!newTypeName.trim()) {
             toast({
                 title: "Erro",
@@ -71,24 +71,33 @@ export default function Settings() {
             return;
         }
 
-        if (editingType) {
-            setTypes(types.map(t => t.id === editingType.id ? { ...t, name: newTypeName } : t));
+        try {
+            if (editingType) {
+                const updatedType = await updateProductType(editingType.id, { name: newTypeName });
+                setTypes(types.map(t => t.id === editingType.id ? updatedType : t));
+                toast({
+                    title: "Sucesso",
+                    description: "Tipo de produto atualizado com sucesso.",
+                });
+            } else {
+                const newType = await createProductType({ name: newTypeName });
+                setTypes([...types, newType]);
+                toast({
+                    title: "Sucesso",
+                    description: "Novo tipo de produto adicionado com sucesso.",
+                });
+            }
+            
+            setIsDialogOpen(false);
+            setEditingType(null);
+            setNewTypeName("");
+        } catch (err: any) {
             toast({
-                title: "Sucesso",
-                description: "Tipo de produto atualizado com sucesso.",
-            });
-        } else {
-            const newId = `pt-${Date.now()}`;
-            setTypes([...types, { id: newId, name: newTypeName }]);
-            toast({
-                title: "Sucesso",
-                description: "Novo tipo de produto adicionado com sucesso.",
+                title: "Erro",
+                description: err.message || "Erro ao salvar tipo de produto.",
+                variant: "destructive",
             });
         }
-        
-        setIsDialogOpen(false);
-        setEditingType(null);
-        setNewTypeName("");
     };
 
     const handleEdit = (type: ProductType) => {
@@ -97,13 +106,22 @@ export default function Settings() {
         setIsDialogOpen(true);
     };
 
-    const handleDelete = (id: string) => {
+    const handleDelete = async (id: string) => {
         if (confirm("Tem certeza que deseja excluir este tipo de produto?")) {
-            setTypes(types.filter(t => t.id !== id));
-            toast({
-                title: "Sucesso",
-                description: "Tipo de produto excluído com sucesso.",
-            });
+            try {
+                await deleteProductType(id);
+                setTypes(types.filter(t => t.id !== id));
+                toast({
+                    title: "Sucesso",
+                    description: "Tipo de produto excluído com sucesso.",
+                });
+            } catch (err: any) {
+                toast({
+                    title: "Erro",
+                    description: err.message || "Erro ao excluir tipo de produto.",
+                    variant: "destructive",
+                });
+            }
         }
     };
 
