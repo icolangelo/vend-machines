@@ -437,8 +437,19 @@ public class PaymentsController : ControllerBase
             return BadRequest(new { message = "A máquina selecionada não está vinculada a nenhuma empresa." });
         }
 
+        var currentCompanyIdStr = User.FindFirst("company_id")?.Value;
+        if (string.IsNullOrEmpty(currentCompanyIdStr) || !Guid.TryParse(currentCompanyIdStr, out var currentCompanyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        if (machine.CompanyId.Value != currentCompanyId)
+        {
+            return StatusCode(403, new { message = "A máquina selecionada pertence a outra empresa. Selecione uma máquina vinculada à empresa logada." });
+        }
+
         var integration = await _context.MercadoPagoIntegrations
-            .FirstOrDefaultAsync(i => i.CompanyId == machine.CompanyId.Value && i.IsActive);
+            .FirstOrDefaultAsync(i => i.CompanyId == currentCompanyId && i.IsActive);
 
         if (integration == null)
         {

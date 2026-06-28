@@ -20,6 +20,17 @@ public class DashboardController : ControllerBase
     [HttpGet("stats")]
     public ActionResult<DashboardStats> GetStats()
     {
-        return Ok(_dataService.GetDashboardStats());
+        if (!TryGetCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        return Ok(_dataService.GetDashboardStats(companyId));
+    }
+
+    private bool TryGetCompanyId(out Guid companyId)
+    {
+        var companyIdClaim = User.FindFirst("company_id")?.Value;
+        return Guid.TryParse(companyIdClaim, out companyId);
     }
 }

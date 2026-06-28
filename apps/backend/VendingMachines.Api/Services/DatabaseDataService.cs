@@ -12,11 +12,14 @@ public class DatabaseDataService : IDataService
         _context = context;
     }
 
-    public List<Machine> GetMachines() => _context.Machines.ToList();
-
-    public List<Client> GetClients()
+    public List<Machine> GetMachines(Guid? companyId = null)
     {
-        return _context.Machines
+        return GetMachineQuery(companyId).ToList();
+    }
+
+    public List<Client> GetClients(Guid? companyId = null)
+    {
+        return GetMachineQuery(companyId)
             .GroupBy(m => m.ClientName)
             .Select(g => new Client
             {
@@ -60,9 +63,9 @@ public class DatabaseDataService : IDataService
 
     public List<ProductType> GetProductTypes() => _context.ProductTypes.ToList();
 
-    public DashboardStats GetDashboardStats()
+    public DashboardStats GetDashboardStats(Guid? companyId = null)
     {
-        var machines = _context.Machines.ToList();
+        var machines = GetMachineQuery(companyId).ToList();
         return new DashboardStats
         {
             TotalRevenue30d = machines.Sum(m => m.Revenue30d),
@@ -82,6 +85,16 @@ public class DatabaseDataService : IDataService
             },
             PerformanceHistory = GenerateHistoricalData(30)
         };
+    }
+
+    private IQueryable<Machine> GetMachineQuery(Guid? companyId = null)
+    {
+        var query = _context.Machines.AsQueryable();
+        if (companyId.HasValue)
+        {
+            query = query.Where(m => m.CompanyId == companyId.Value);
+        }
+        return query;
     }
 
     private List<HistoricalData> GenerateHistoricalData(int days)

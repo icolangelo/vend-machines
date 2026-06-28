@@ -20,13 +20,23 @@ public class MachinesController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<Machine>> GetAll()
     {
-        return Ok(_dataService.GetMachines());
+        if (!TryGetCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        return Ok(_dataService.GetMachines(companyId));
     }
 
     [HttpGet("{id}")]
     public ActionResult<Machine> GetById(string id)
     {
-        var machine = _dataService.GetMachines().FirstOrDefault(m => m.Id == id);
+        if (!TryGetCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        var machine = _dataService.GetMachines(companyId).FirstOrDefault(m => m.Id == id);
         if (machine == null) return NotFound();
         return Ok(machine);
     }
@@ -34,12 +44,12 @@ public class MachinesController : ControllerBase
     [HttpPost]
     public ActionResult Create([FromBody] Machine machine)
     {
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        if (Guid.TryParse(companyIdClaim, out var companyId))
+        if (!TryGetCompanyId(out var companyId))
         {
-            machine.CompanyId = companyId;
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
 
+        machine.CompanyId = companyId;
         _dataService.AddMachine(machine);
         return CreatedAtAction(nameof(GetById), new { id = machine.Id }, machine);
     }
@@ -47,22 +57,23 @@ public class MachinesController : ControllerBase
     [HttpPut("{id}")]
     public ActionResult Update(string id, [FromBody] Machine machine)
     {
-        var existing = _dataService.GetMachines().FirstOrDefault(m => m.Id == id);
-        if (existing == null) return NotFound();
+        if (!TryGetCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
 
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        if (Guid.TryParse(companyIdClaim, out var companyId))
-        {
-            machine.CompanyId = companyId;
-        }
-        else
-        {
-            // Se o usuário atual não possuir um company_id no token, mantemos o anterior
-            machine.CompanyId = existing.CompanyId;
-        }
+        var existing = _dataService.GetMachines(companyId).FirstOrDefault(m => m.Id == id);
+        if (existing == null) return NotFound();
         
+        machine.CompanyId = companyId;
         machine.Id = id; // Garantir que o ID corresponda à URL
         _dataService.UpdateMachine(machine);
         return NoContent();
+    }
+
+    private bool TryGetCompanyId(out Guid companyId)
+    {
+        var companyIdClaim = User.FindFirst("company_id")?.Value;
+        return Guid.TryParse(companyIdClaim, out companyId);
     }
 }
