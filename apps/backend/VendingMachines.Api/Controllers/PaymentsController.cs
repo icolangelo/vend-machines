@@ -766,9 +766,94 @@ public class PaymentsController : ControllerBase
     [HttpPost("/webhooks/mercadopago")]
     public IActionResult WebhookMercadoPago([FromBody] JsonElement webhookBody)
     {
-        // Responder 200 OK rapidamente ao Mercado Pago
-        Console.WriteLine($"[WEBHOOK] Notificação recebida. Query: {Request.QueryString}. Body ({webhookBody.GetRawText().Length} bytes): {webhookBody.GetRawText()}");
+        // ── 1. CAPTURA DE CONTEXTO ──────────────────────────────────────────────
+        string xSignature  = Request.Headers["x-signature"].ToString();
+        string xRequestId  = Request.Headers["x-request-id"].ToString();
+        string userAgent   = Request.Headers["User-Agent"].ToString();
+        string queryString = Request.QueryString.ToString();
 
+        Console.WriteLine($"[WEBHOOK] Notificação recebida. UA: {userAgent}. Query: {queryString}. x-signature: {(string.IsNullOrEmpty(xSignature) ? "(ausente)" : xSignature[..Math.Min(40, xSignature.Length)] + "...")}");
+
+        // ── 2. VALIDAÇÃO DA ASSINATURA SECRETA (x-signature) ───────────────────
+        // Algoritmo: HMAC-SHA256 sobre "id:<dataId>;request-id:<xRequestId>;ts:<ts>;"
+        // Documentação: https://www.mercadopago.com.br/developers/pt/docs/your-integrations/notifications/webhooks
+        string webhookSecret = _configuration["MercadoPago:WebhookSecret"] ?? "";
+        bool signatureConfigured = !string.IsNullOrWhiteSpace(webhookSecret)
+                                   && !webhookSecret.StartsWith("COLE_AQUI");
+
+        bool signatureValid = false;
+        string signatureLog = "";
+
+        if (signatureConfigured && !string.IsNullOrEmpty(xSignature))
+        {
+            try
+            {
+                // Extrair ts e v1 do header: "ts=1704908010,v1=618c85..."
+                var sigParts = xSignature.Split(',')
+                    .Select(p => p.Split('=', 2))
+                    .Where(p => p.Length == 2)
+                    .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
+
+                string ts = sigParts.GetValueOrDefault("ts", "");
+                string v1 = sigParts.GetValueOrDefault("v1", "");
+
+                // Obter o dataId para construir o manifesto (query string tem prioridade)
+                string dataId = Request.Query["data.id"].FirstOrDefault()
+                             ?? Request.Query["id"].FirstOrDefault()
+                             ?? "";
+
+                // Construir manifesto — omitir campos vazios conforme documentação
+                var manifestParts = new List<string>();
+                if (!string.IsNullOrEmpty(dataId))    manifestParts.Add($"id:{dataId}");
+                if (!string.IsNullOrEmpty(xRequestId)) manifestParts.Add($"request-id:{xRequestId}");
+                if (!string.IsNullOrEmpty(ts))         manifestParts.Add($"ts:{ts}");
+                string manifest = string.Join(";", manifestParts) + ";";
+
+                // Computar HMAC-SHA256
+                using var hmac = new System.Security.Cryptography.HMACSHA256(
+                    System.Text.Encoding.UTF8.GetBytes(webhookSecret));
+                byte[] hashBytes = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(manifest));
+                string computedHash = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+
+                // Comparação em tempo constante (evita timing attack)
+                signatureValid = v1.Length == computedHash.Length &&
+                    System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                        System.Text.Encoding.UTF8.GetBytes(v1),
+                        System.Text.Encoding.UTF8.GetBytes(computedHash));
+
+                signatureLog = signatureValid
+                    ? $"Assinatura x-signature VÁLIDA. Manifesto: '{manifest}'. ts={ts}."
+                    : $"Assinatura x-signature INVÁLIDA. Manifesto: '{manifest}'. v1 recebido: '{v1}'. Hash calculado: '{computedHash}'.";
+
+                Console.WriteLine($"[WEBHOOK] {signatureLog}");
+            }
+            catch (Exception ex)
+            {
+                signatureLog = $"Erro ao validar x-signature: {ex.Message}. Header recebido: '{xSignature}'.";
+                Console.Error.WriteLine($"[WEBHOOK] {signatureLog}");
+                signatureValid = false;
+            }
+
+            if (!signatureValid)
+            {
+                Console.Error.WriteLine("[WEBHOOK] Requisição rejeitada: assinatura inválida.");
+                return Unauthorized(new { message = "Assinatura do webhook inválida." });
+            }
+        }
+        else if (signatureConfigured && string.IsNullOrEmpty(xSignature))
+        {
+            // Secret configurado mas MP não enviou o header — possível IPN legado
+            signatureLog = "Assinatura secreta configurada, mas header x-signature ausente na notificação (possível IPN legado). Processando sem validação.";
+            Console.WriteLine($"[WEBHOOK] {signatureLog}");
+        }
+        else
+        {
+            // Secret não configurado — modo sem validação (aviso)
+            signatureLog = "AVISO: Assinatura secreta do webhook não configurada (MercadoPago:WebhookSecret). Validação de autenticidade desativada.";
+            Console.WriteLine($"[WEBHOOK] {signatureLog}");
+        }
+
+        // Responder 200 OK rapidamente ao Mercado Pago
         string? paymentId = null;
 
         try
@@ -832,10 +917,15 @@ public class PaymentsController : ControllerBase
             if (!string.IsNullOrEmpty(paymentId))
             {
                 Console.WriteLine($"[WEBHOOK] Iniciando processamento do pagamento ID: {paymentId}");
-                var capturedFormat = webhookFormat;
-                var capturedQuery = Request.QueryString.ToString();
-                var capturedUserAgent = Request.Headers["User-Agent"].ToString();
-                _ = Task.Run(() => ProcessRealWebhookAsync(paymentId, capturedFormat, capturedQuery, capturedUserAgent));
+                var capturedFormat    = webhookFormat;
+                var capturedQuery     = queryString;
+                var capturedUserAgent = userAgent;
+                var capturedSigLog    = signatureLog;
+                var capturedSigValid  = signatureValid;
+                var capturedSigConf   = signatureConfigured;
+                _ = Task.Run(() => ProcessRealWebhookAsync(
+                    paymentId, capturedFormat, capturedQuery, capturedUserAgent,
+                    capturedSigLog, capturedSigValid, capturedSigConf));
             }
             else
             {
@@ -850,19 +940,22 @@ public class PaymentsController : ControllerBase
             Console.Error.WriteLine($"[WEBHOOK] Erro ao processar body da notificação: {ex.Message}");
 
             // Fallback de emergência: tentar extrair da query string mesmo com erro no body
-            var fallbackId = Request.Query["data.id"].FirstOrDefault() ?? Request.Query["id"].FirstOrDefault();
+            var fallbackId   = Request.Query["data.id"].FirstOrDefault() ?? Request.Query["id"].FirstOrDefault();
             var fallbackType = Request.Query["type"].FirstOrDefault() ?? Request.Query["topic"].FirstOrDefault();
             if (!string.IsNullOrEmpty(fallbackId) && fallbackType == "payment")
             {
                 Console.WriteLine($"[WEBHOOK] Fallback de emergência: processando PaymentId {fallbackId} da query string.");
-                var capturedQuery = Request.QueryString.ToString();
-                var capturedUserAgent = Request.Headers["User-Agent"].ToString();
-                _ = Task.Run(() => ProcessRealWebhookAsync(fallbackId, "fallback-querystring", capturedQuery, capturedUserAgent));
+                _ = Task.Run(() => ProcessRealWebhookAsync(
+                    fallbackId, "fallback-querystring", queryString, userAgent,
+                    signatureLog, signatureValid, signatureConfigured));
             }
         }
 
         return Ok();
     }
+
+
+
 
     // ==========================================
     // 5. SIMULADOR DE WEBHOOK (Front -> Back)
@@ -999,7 +1092,10 @@ public class PaymentsController : ControllerBase
         string paymentId,
         string webhookFormat = "desconhecido",
         string queryString = "",
-        string userAgent = "")
+        string userAgent = "",
+        string signatureLog = "",
+        bool signatureValid = false,
+        bool signatureConfigured = false)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -1043,6 +1139,20 @@ public class PaymentsController : ControllerBase
             ? $"Webhook recebido do Mercado Pago e transação localizada. Formato: {webhookFormat}. PaymentId MP: {paymentId}. Query: {queryString}. User-Agent: {userAgent}."
             : $"Webhook recebido do Mercado Pago. Transação localizada após {attemptsUsed} tentativas (race condition detectada). Formato: {webhookFormat}. PaymentId MP: {paymentId}.";
         await LogTelemetryAsync(tx.Id, "Webhook", receiptMsg);
+
+        // ── Log de validação da assinatura secreta ──
+        if (signatureConfigured)
+        {
+            string sigLogType = signatureValid ? "Info" : "Error";
+            await LogTelemetryAsync(tx.Id, sigLogType,
+                signatureValid
+                    ? $"✅ Assinatura x-signature VÁLIDA. Autenticidade confirmada. Detalhe: {signatureLog}"
+                    : $"❌ {signatureLog}");
+        }
+        else if (!string.IsNullOrEmpty(signatureLog))
+        {
+            await LogTelemetryAsync(tx.Id, "Info", signatureLog);
+        }
 
         Console.WriteLine($"[WEBHOOK] Transação {tx.Id} encontrada. Consultando status no Mercado Pago...");
         await LogTelemetryAsync(tx.Id, "Webhook", $"Consultando status do pagamento {paymentId} na API do Mercado Pago...");
