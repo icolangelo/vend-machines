@@ -588,7 +588,7 @@ public class PaymentsController : ControllerBase
             // Determina os dados do comprador a partir da integração ativa se o frontend não enviá-los
             string payerEmail = !string.IsNullOrWhiteSpace(request.PayerEmail) 
                 ? request.PayerEmail 
-                : "cliente-vending@seudominio.com.br";
+                : "comprador@vendmachine.com.br";
             
             string payerName = !string.IsNullOrWhiteSpace(request.PayerFirstName)
                 ? $"{request.PayerFirstName} {request.PayerLastName}".Trim()

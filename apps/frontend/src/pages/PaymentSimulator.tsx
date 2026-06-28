@@ -282,36 +282,7 @@ export default function PaymentSimulator() {
 
 
 
-                                            <div className="space-y-3 rounded-lg border border-slate-200/80 bg-slate-50 p-3">
-                                                <p className="text-xs font-bold text-slate-700">Dados do pagador</p>
-                                                <Input
-                                                    type="email"
-                                                    placeholder="E-mail do pagador"
-                                                    value={payerEmail}
-                                                    onChange={e => setPayerEmail(e.target.value)}
-                                                    className="h-9 bg-white text-sm"
-                                                />
-                                                <div className="grid grid-cols-2 gap-2">
-                                                    <Input
-                                                        placeholder="Nome"
-                                                        value={payerFirstName}
-                                                        onChange={e => setPayerFirstName(e.target.value)}
-                                                        className="h-9 bg-white text-sm"
-                                                    />
-                                                    <Input
-                                                        placeholder="Sobrenome"
-                                                        value={payerLastName}
-                                                        onChange={e => setPayerLastName(e.target.value)}
-                                                        className="h-9 bg-white text-sm"
-                                                    />
-                                                </div>
-                                                <Input
-                                                    placeholder="CPF ou CNPJ do pagador"
-                                                    value={payerCpf}
-                                                    onChange={e => setPayerCpf(e.target.value)}
-                                                    className="h-9 bg-white text-sm"
-                                                />
-                                            </div>
+
 
                                             <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200/80 rounded-lg mt-2">
                                                 <div className="space-y-0.5 pr-2">
