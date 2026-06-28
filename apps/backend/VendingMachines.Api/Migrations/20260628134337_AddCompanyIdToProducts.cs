@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -11,17 +11,34 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<Guid>(
-                name: "CompanyId",
-                table: "ProductTypes",
-                type: "TEXT",
-                nullable: true);
+            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                migrationBuilder.AddColumn<Guid>(
+                    name: "CompanyId",
+                    table: "ProductTypes",
+                    type: "uuid",
+                    nullable: true);
 
-            migrationBuilder.AddColumn<Guid>(
-                name: "CompanyId",
-                table: "Products",
-                type: "TEXT",
-                nullable: true);
+                migrationBuilder.AddColumn<Guid>(
+                    name: "CompanyId",
+                    table: "Products",
+                    type: "uuid",
+                    nullable: true);
+            }
+            else
+            {
+                migrationBuilder.AddColumn<Guid>(
+                    name: "CompanyId",
+                    table: "ProductTypes",
+                    type: "TEXT",
+                    nullable: true);
+
+                migrationBuilder.AddColumn<Guid>(
+                    name: "CompanyId",
+                    table: "Products",
+                    type: "TEXT",
+                    nullable: true);
+            }
 
             migrationBuilder.CreateIndex(
                 name: "IX_ProductTypes_CompanyId",
