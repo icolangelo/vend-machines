@@ -22,6 +22,8 @@ public static class DbInitializer
             context.Database.Migrate();
         }
 
+        CleanUpEmptyMachineIds(context);
+
         if (!seedDemoData)
         {
             return;
@@ -355,6 +357,125 @@ ALTER TABLE "{tableName}" ADD COLUMN "{columnName}" {columnDefinition};
             }
 
             return false;
+        }
+        finally
+        {
+            if (shouldClose)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    private static void CleanUpEmptyMachineIds(AppDbContext context)
+    {
+        var connection = context.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        if (shouldClose)
+        {
+            connection.Open();
+        }
+
+        try
+        {
+            var machinesToFix = new List<(string OldId, string SerialNumber)>();
+            using (var selectCmd = connection.CreateCommand())
+            {
+                selectCmd.CommandText = "SELECT \"Id\", \"SerialNumber\" FROM \"Machines\" WHERE \"Id\" IS NULL OR trim(\"Id\") = '';";
+                using (var reader = selectCmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var id = reader.IsDBNull(0) ? string.Empty : reader.GetString(0);
+                        var sn = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                        machinesToFix.Add((id, sn));
+                    }
+                }
+            }
+
+            if (machinesToFix.Count > 0)
+            {
+                Console.WriteLine($"[DB CLEANUP] Found {machinesToFix.Count} machines with empty or null ID. Fixing...");
+                
+                foreach (var machine in machinesToFix)
+                {
+                    string newId;
+                    bool exists;
+                    do
+                    {
+                        newId = "VM-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+                        using (var checkCmd = connection.CreateCommand())
+                        {
+                            checkCmd.CommandText = "SELECT COUNT(1) FROM \"Machines\" WHERE \"Id\" = @Id;";
+                            var p = checkCmd.CreateParameter();
+                            p.ParameterName = "@Id";
+                            p.Value = newId;
+                            checkCmd.Parameters.Add(p);
+                            exists = Convert.ToInt32(checkCmd.ExecuteScalar()) > 0;
+                        }
+                    } while (exists);
+
+                    using (var transaction = connection.BeginTransaction())
+                    {
+                        try
+                        {
+                            using (var updateFkCmd = connection.CreateCommand())
+                            {
+                                updateFkCmd.Transaction = transaction;
+                                updateFkCmd.CommandText = "UPDATE \"PaymentTransactions\" SET \"MachineId\" = @NewId WHERE \"MachineId\" = @OldId;";
+                                
+                                var pNew = updateFkCmd.CreateParameter();
+                                pNew.ParameterName = "@NewId";
+                                pNew.Value = newId;
+                                updateFkCmd.Parameters.Add(pNew);
+
+                                var pOld = updateFkCmd.CreateParameter();
+                                pOld.ParameterName = "@OldId";
+                                pOld.Value = machine.OldId;
+                                updateFkCmd.Parameters.Add(pOld);
+
+                                updateFkCmd.ExecuteNonQuery();
+                            }
+
+                            using (var updateIdCmd = connection.CreateCommand())
+                            {
+                                updateIdCmd.Transaction = transaction;
+                                updateIdCmd.CommandText = "UPDATE \"Machines\" SET \"Id\" = @NewId WHERE \"Id\" = @OldId AND \"SerialNumber\" = @SN;";
+                                
+                                var pNew = updateIdCmd.CreateParameter();
+                                pNew.ParameterName = "@NewId";
+                                pNew.Value = newId;
+                                updateIdCmd.Parameters.Add(pNew);
+
+                                var pOld = updateIdCmd.CreateParameter();
+                                pOld.ParameterName = "@OldId";
+                                pOld.Value = machine.OldId;
+                                updateIdCmd.Parameters.Add(pOld);
+
+                                var pSn = updateIdCmd.CreateParameter();
+                                pSn.ParameterName = "@SN";
+                                pSn.Value = machine.SerialNumber;
+                                updateIdCmd.Parameters.Add(pSn);
+
+                                updateIdCmd.ExecuteNonQuery();
+                            }
+
+                            transaction.Commit();
+                            Console.WriteLine($"[DB CLEANUP] Successfully updated machine (SN: {machine.SerialNumber}) from ID '{machine.OldId}' to '{newId}'.");
+                        }
+                        catch (Exception ex)
+                        {
+                            transaction.Rollback();
+                            Console.WriteLine($"[DB CLEANUP] Error updating machine ID: {ex.Message}");
+                            throw;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DB CLEANUP] Exception in CleanUpEmptyMachineIds: {ex.Message}");
         }
         finally
         {

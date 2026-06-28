@@ -254,7 +254,7 @@ export default function MachineFormPage() {
                                                         <Select value={field.value || ""} onValueChange={field.onChange}>
                                                             <FormControl><SelectTrigger><SelectValue placeholder="Selecione uma localização..." /></SelectTrigger></FormControl>
                                                             <SelectContent>
-                                                                {locations.map(location => (
+                                                                {locations.filter(l => l.id && l.id.trim() !== "").map(location => (
                                                                     <SelectItem key={location.id} value={location.id}>
                                                                         {location.name}
                                                                     </SelectItem>

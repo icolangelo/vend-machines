@@ -122,7 +122,7 @@ export default function Telemetry() {
                                         <SelectValue placeholder="Selecione uma máquina..." />
                                     </SelectTrigger>
                                     <SelectContent>
-                                        {machinesList.filter(m => m.serialNumber).map(machine => (
+                                        {machinesList.filter(m => m.id && m.id.trim() !== "" && m.serialNumber && m.serialNumber.trim() !== "").map(machine => (
                                             <SelectItem key={machine.id} value={machine.serialNumber}>{machine.name} ({machine.serialNumber})</SelectItem>
                                         ))}
                                     </SelectContent>

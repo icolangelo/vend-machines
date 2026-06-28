@@ -364,7 +364,7 @@ export default function Products() {
                                                     <SelectValue placeholder="Selecione um tipo" />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    {productTypes.map((type) => (
+                                                    {productTypes.filter(t => t.id && t.id.trim() !== "").map((type) => (
                                                         <SelectItem key={type.id} value={type.id}>
                                                             {type.name}
                                                         </SelectItem>

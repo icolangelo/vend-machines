@@ -55,8 +55,8 @@ export default function PaymentSimulator() {
         setLoadingMachines(true);
         getMachines()
             .then(data => {
-                // Filtrar apenas máquinas com Mercado Pago ativado
-                const mpMachines = data.filter(m => m.mercadoPagoEnabled);
+                // Filtrar apenas máquinas com Mercado Pago ativado e ID válido
+                const mpMachines = data.filter(m => m.mercadoPagoEnabled && m.id && m.id.trim() !== "");
                 setMachines(mpMachines);
                 if (mpMachines.length > 0) {
                     setSelectedMachineId(mpMachines[0].id);

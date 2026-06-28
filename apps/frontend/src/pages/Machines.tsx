@@ -130,7 +130,7 @@ export default function Machines() {
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="all">Todas as Localizações</SelectItem>
-                                        {locations.map(location => (
+                                        {locations.filter(l => l.id && l.id.trim() !== "").map(location => (
                                             <SelectItem key={location.id} value={location.id}>
                                                 {location.name}
                                             </SelectItem>
