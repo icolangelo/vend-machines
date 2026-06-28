@@ -685,6 +685,7 @@ export async function createPixQrCode(params: {
     payerLastName?: string;
     payerCpf?: string;
     useRealMercadoPago?: boolean;
+    sendTelemetryToMachine?: boolean;
 }): Promise<{
     transactionId: string;
     qrCode: string;
@@ -742,7 +743,7 @@ export async function createPixQrCode(params: {
     return response.json();
 }
 
-export async function simulateWebhook(transactionId: string, approved: boolean): Promise<void> {
+export async function simulateWebhook(transactionId: string, approved: boolean, sendTelemetryToMachine = true): Promise<void> {
     if (isTestEnv()) {
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         const idx = mockTransactions.findIndex(t => t.id == transactionId);
@@ -753,6 +754,12 @@ export async function simulateWebhook(transactionId: string, approved: boolean):
             // Append Simulated Telemetry Logs
             const logs = JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]");
             logs.push({ id: `log-3`, transactionId, timestamp: new Date().toISOString(), logType: "Info", message: `Webhook Simulado: Pagamento ${(approved ? "APROVADO" : "RECUSADO")}` });
+
+            if (!sendTelemetryToMachine) {
+                logs.push({ id: `log-4`, transactionId, timestamp: new Date().toISOString(), logType: "Info", message: "Simulador configurado para não enviar retorno MDB para a máquina." });
+                localStorage.setItem(`mock_logs_${transactionId}`, JSON.stringify(logs));
+                return;
+            }
             
             // Simular sequencia de telemetria local
             setTimeout(() => {
@@ -776,7 +783,7 @@ export async function simulateWebhook(transactionId: string, approved: boolean):
     const response = await authFetch(`${API_BASE_URL}/payments/simulate-webhook`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transactionId, approved })
+        body: JSON.stringify({ transactionId, approved, sendTelemetryToMachine })
     });
     if (!response.ok) throw new Error("Erro ao simular webhook de pagamento.");
 }

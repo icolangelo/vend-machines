@@ -26,6 +26,7 @@ export default function PaymentSimulator() {
     const [payerLastName, setPayerLastName] = useState("Vending");
     const [payerCpf, setPayerCpf] = useState("");
     const [useRealMercadoPago, setUseRealMercadoPago] = useState(false);
+    const [sendTelemetryToMachine, setSendTelemetryToMachine] = useState(false);
 
     // Execution states
     const [generating, setGenerating] = useState(false);
@@ -83,7 +84,8 @@ export default function PaymentSimulator() {
                         l.message.includes("concluída com sucesso") || 
                         l.message.includes("Estorno Pix concluído") || 
                         l.message.includes("permaneceu offline") ||
-                        l.message.includes("operador")
+                        l.message.includes("operador") ||
+                        l.message.includes("não enviar retorno MDB")
                     );
                     if (hasEnded) {
                         setPollingActive(false);
@@ -131,7 +133,8 @@ export default function PaymentSimulator() {
                 payerFirstName,
                 payerLastName,
                 payerCpf,
-                useRealMercadoPago
+                useRealMercadoPago,
+                sendTelemetryToMachine
             });
 
             if (result.applicationFeeApplied === false && !result.simulated) {
@@ -165,10 +168,12 @@ export default function PaymentSimulator() {
 
         setSimulating(approved ? "approved" : "rejected");
         try {
-            await simulateWebhook(transaction.transactionId, approved);
+            await simulateWebhook(transaction.transactionId, approved, sendTelemetryToMachine);
             toast({
                 title: "Notificação Enviada",
-                description: `Webhook de pagamento ${approved ? "aprovado" : "recusado"} disparado com sucesso!`
+                description: sendTelemetryToMachine
+                    ? `Webhook de pagamento ${approved ? "aprovado" : "recusado"} disparado com sucesso!`
+                    : `Pagamento ${approved ? "aprovado" : "recusado"} sem retorno MDB para a máquina.`
             });
             setPollingActive(true);
         } catch (err) {
@@ -293,6 +298,18 @@ export default function PaymentSimulator() {
                                                     id="real-mp"
                                                     checked={useRealMercadoPago}
                                                     onCheckedChange={setUseRealMercadoPago}
+                                                />
+                                            </div>
+
+                                            <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200/80 rounded-lg mt-2">
+                                                <div className="space-y-0.5 pr-2">
+                                                    <label htmlFor="send-telemetry" className="text-xs font-bold text-slate-700 cursor-pointer">Retornar transação para a máquina</label>
+                                                    <p className="text-[9px] text-muted-foreground leading-snug">Quando desligado, o simulador aprova/recusa o pagamento sem enviar comandos MDB.</p>
+                                                </div>
+                                                <Switch 
+                                                    id="send-telemetry"
+                                                    checked={sendTelemetryToMachine}
+                                                    onCheckedChange={setSendTelemetryToMachine}
                                                 />
                                             </div>
 

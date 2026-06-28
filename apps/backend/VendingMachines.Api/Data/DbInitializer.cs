@@ -241,6 +241,7 @@ ALTER TABLE "Machines" ADD COLUMN "LocationId" TEXT NULL;
         EnsureSqliteColumn(context, "Products", "OriginalId", "TEXT NULL");
         EnsureSqliteColumn(context, "ProductTypes", "CompanyId", "TEXT NULL");
         EnsureSqliteColumn(context, "ProductTypes", "OriginalId", "TEXT NULL");
+        EnsureSqliteColumn(context, "PaymentTransactions", "SendTelemetryToMachine", "INTEGER NOT NULL DEFAULT 1");
 
         context.Database.ExecuteSqlRaw("""
 CREATE INDEX IF NOT EXISTS "IX_Machines_LocationId" ON "Machines" ("LocationId");

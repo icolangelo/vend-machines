@@ -499,6 +499,7 @@ public class PaymentsController : ControllerBase
             Amount = request.Amount,
             ApplicationFee = appFee,
             Status = "Pending",
+            SendTelemetryToMachine = request.SendTelemetryToMachine,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -986,10 +987,14 @@ public class PaymentsController : ControllerBase
 
         await LogTelemetryAsync(tx.Id, "Info", $"Webhook Simulado recebido. Status do Pagamento: {(request.Approved ? "APROVADO" : "RECUSADO")}");
 
-        // Inicia a telemetria resiliente na máquina em segundo plano
-        _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, request.Approved));
+        if (request.SendTelemetryToMachine)
+        {
+            _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, request.Approved));
+            return Ok(new { message = "Status atualizado. Sequência de telemetria disparada em background.", transaction = tx });
+        }
 
-        return Ok(new { message = "Status atualizado. Sequência de telemetria disparada em background.", transaction = tx });
+        await LogTelemetryAsync(tx.Id, "Info", "Simulador configurado para não enviar retorno MDB para a máquina.");
+        return Ok(new { message = "Status atualizado. Retorno MDB para a máquina desativado por configuração.", transaction = tx });
     }
 
     // ==========================================
@@ -1198,7 +1203,14 @@ public class PaymentsController : ControllerBase
                     await db.SaveChangesAsync();
                     Console.WriteLine($"[WEBHOOK] Pagamento {paymentId} APROVADO. Transação {tx.Id} atualizada.");
                     await LogTelemetryAsync(tx.Id, "Info", "Webhook real confirmado: Pagamento APROVADO pelo Mercado Pago.");
-                    _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, true));
+                    if (tx.SendTelemetryToMachine)
+                    {
+                        _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, true));
+                    }
+                    else
+                    {
+                        await LogTelemetryAsync(tx.Id, "Info", "Transação configurada pelo Simulador Pix para não enviar retorno MDB para a máquina.");
+                    }
                 }
                 else if (rejected)
                 {
@@ -1207,7 +1219,14 @@ public class PaymentsController : ControllerBase
                     await db.SaveChangesAsync();
                     Console.WriteLine($"[WEBHOOK] Pagamento {paymentId} RECUSADO/CANCELADO. Transação {tx.Id} atualizada.");
                     await LogTelemetryAsync(tx.Id, "Info", $"Webhook real confirmado: Pagamento RECUSADO/CANCELADO pelo Mercado Pago (status: {status}).");
-                    _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, false));
+                    if (tx.SendTelemetryToMachine)
+                    {
+                        _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, false));
+                    }
+                    else
+                    {
+                        await LogTelemetryAsync(tx.Id, "Info", "Transação configurada pelo Simulador Pix para não enviar retorno MDB para a máquina.");
+                    }
                 }
                 else
                 {
@@ -1344,27 +1363,43 @@ public class PaymentsController : ControllerBase
         {
             var decryptedToken = await EnsureValidAccessTokenAsync(integration, db);
             using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
+            httpClient.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
 
-            var response = await httpClient.PostAsync($"https://api.mercadopago.com/v1/payments/{tx.MercadoPagoPaymentId}/refunds", null);
+            httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", $"refund-{tx.Id}");
+
+            var body = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+            var response = await httpClient.PostAsync(
+                $"https://api.mercadopago.com/v1/payments/{tx.MercadoPagoPaymentId}/refunds", body);
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+
             if (response.IsSuccessStatusCode)
             {
+                Console.WriteLine($"[REFUND] Estorno aprovado pelo MP. PaymentId: {tx.MercadoPagoPaymentId}.");
+                await LogTelemetryAsync(tx.Id, "Info",
+                    $"Estorno processado com sucesso na API do Mercado Pago. PaymentId: {tx.MercadoPagoPaymentId}.");
                 return true;
             }
             else
             {
-                var err = await response.Content.ReadAsStringAsync();
-                System.Diagnostics.Debug.WriteLine($"Falha no reembolso Mercado Pago: {err}");
+                Console.Error.WriteLine($"[REFUND] Falha no estorno MP: HTTP {(int)response.StatusCode} — {responseBody}");
+                await LogTelemetryAsync(tx.Id, "Error",
+                    $"Falha ao solicitar estorno na API do Mercado Pago: HTTP {(int)response.StatusCode}. " +
+                    $"PaymentId: {tx.MercadoPagoPaymentId}. " +
+                    $"Resposta: {responseBody[..Math.Min(400, responseBody.Length)]}");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Erro HTTP ao reembolsar: {ex.Message}");
+            Console.Error.WriteLine($"[REFUND] Erro HTTP ao reembolsar: {ex.Message}");
+            await LogTelemetryAsync(tx.Id, "Error",
+                $"Erro interno ao tentar estorno no Mercado Pago: {ex.Message}");
             return false;
         }
     }
-
+    
     private async Task LogTelemetryAsync(Guid transactionId, string type, string message)
     {
         try
@@ -1691,12 +1726,14 @@ public class PixChargeRequest
     public string? PayerLastName { get; set; }
     public string? PayerCpf { get; set; }
     public bool UseRealMercadoPago { get; set; } = false;
+    public bool SendTelemetryToMachine { get; set; } = true;
 }
 
 public class SimulateWebhookRequest
 {
     public Guid TransactionId { get; set; }
     public bool Approved { get; set; }
+    public bool SendTelemetryToMachine { get; set; } = true;
 }
 
 public class OAuthCallbackRequest

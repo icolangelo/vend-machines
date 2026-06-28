@@ -14,6 +14,7 @@ public class PaymentTransaction
     public decimal Amount { get; set; }
     public decimal ApplicationFee { get; set; }
     public string Status { get; set; } = "Pending"; // Pending, Approved, Rejected, Failed, Refunded
+    public bool SendTelemetryToMachine { get; set; } = true;
     
     // Mercado Pago Info
     public string? MercadoPagoPaymentId { get; set; }
