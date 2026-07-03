@@ -258,7 +258,9 @@ public class WebSocketMiddleware
                         await socket.SendAsync(new ArraySegment<byte>(ackBytes), WebSocketMessageType.Text, true, CancellationToken.None);
                         
                         string dataPayload = root.GetProperty("data").GetString() ?? "";
-                        await _telemetry.SendToSitesByDevice(deviceSerial, dataPayload);
+                        // Broadcast direto a todos os site clients com envelope { type:"telemetry", serial, data }.
+                        // Elimina dependência do SiteRegistrations e qualquer race condition de registro.
+                        await _telemetry.BroadcastToAllSites(new { type = "telemetry", serial = deviceSerial, data = dataPayload });
                     }
                     break;
             }
