@@ -34,6 +34,23 @@ public class TelemetryManager
     // Site (React Frontend) Clients
     public ConcurrentDictionary<string, WebSocket> SiteClients { get; } = new();
     public ConcurrentDictionary<string, string> SiteRegistrations { get; } = new(); // siteClientId -> deviceSerial to listen
+    public ConcurrentDictionary<string, bool> SiteListening { get; } = new(); // siteClientId -> is in listen mode
+
+    /// <summary>
+    /// Registra sincronamente todos os site clients que estão em modo escuta para o deviceSerial fornecido.
+    /// Elimina a race condition entre o broadcast device_connected e o subscribe vindo do frontend.
+    /// </summary>
+    public void AutoRegisterListeningClients(string deviceSerial)
+    {
+        foreach (var kv in SiteListening.ToArray())
+        {
+            if (kv.Value)
+            {
+                SiteRegistrations[kv.Key] = deviceSerial;
+                SiteListening[kv.Key] = false; // sai do modo escuta
+            }
+        }
+    }
 
     public void EnqueueMessageToEsp(string deviceSerial, string action, string data = "")
     {

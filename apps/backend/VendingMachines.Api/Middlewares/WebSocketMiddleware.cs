@@ -58,26 +58,46 @@ public class WebSocketMiddleware
                         var root = doc.RootElement;
                         
                         string type = root.GetProperty("type").GetString() ?? "";
-                        string target = root.GetProperty("target").GetString() ?? "";
                         
-                        if (type == "subscribe" && !string.IsNullOrEmpty(target))
+                        if (type == "listen")
                         {
-                            _telemetry.SiteRegistrations[clientId] = target;
-                            await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Inscrito com sucesso" });
-                        }
-                        else if (type == "msg" && !string.IsNullOrEmpty(target))
-                        {
-                            string data = root.GetProperty("data").GetString() ?? "";
-                            
-                            // Mocking config update for now
-                            if (data == "ATUALIZAR_CONFIGURACAO")
+                            if (root.TryGetProperty("cancel", out var cancelProp) && cancelProp.GetBoolean())
                             {
-                                await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Comando de configuracao enviado a fila!" });
+                                // Frontend cancelou o modo escuta
+                                _telemetry.SiteListening.TryRemove(clientId, out _);
+                                await _telemetry.SendToSingleSite(socket, new { type = "ack", data = "listen_cancelled" });
                             }
                             else
                             {
-                                _telemetry.EnqueueRawMessageToEsp(target, data);
-                                await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Comando comum enviado" });
+                                // Marca este cliente como "em modo escuta" — o próximo ESP que conectar será auto-registrado
+                                _telemetry.SiteListening[clientId] = true;
+                                await _telemetry.SendToSingleSite(socket, new { type = "ack", data = "listen_ok" });
+                            }
+                        }
+                        else
+                        {
+                            string target = root.GetProperty("target").GetString() ?? "";
+                            
+                            if (type == "subscribe" && !string.IsNullOrEmpty(target))
+                            {
+                                _telemetry.SiteRegistrations[clientId] = target;
+                                _telemetry.SiteListening.TryRemove(clientId, out _); // cancela listen se havia
+                                await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Inscrito com sucesso" });
+                            }
+                            else if (type == "msg" && !string.IsNullOrEmpty(target))
+                            {
+                                string data = root.GetProperty("data").GetString() ?? "";
+                                
+                                // Mocking config update for now
+                                if (data == "ATUALIZAR_CONFIGURACAO")
+                                {
+                                    await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Comando de configuracao enviado a fila!" });
+                                }
+                                else
+                                {
+                                    _telemetry.EnqueueRawMessageToEsp(target, data);
+                                    await _telemetry.SendToSingleSite(socket, new { type = "ack", target, data = "Comando comum enviado" });
+                                }
                             }
                         }
                     }
@@ -96,6 +116,7 @@ public class WebSocketMiddleware
         {
             _telemetry.SiteClients.TryRemove(clientId, out _);
             _telemetry.SiteRegistrations.TryRemove(clientId, out _);
+            _telemetry.SiteListening.TryRemove(clientId, out _);
             if (socket.State == WebSocketState.Open || socket.State == WebSocketState.CloseReceived)
             {
                 await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Fechado", CancellationToken.None);
@@ -204,6 +225,10 @@ public class WebSocketMiddleware
                     {
                         deviceSerial = targetProp.GetString() ?? "";
                         _telemetry.ClientIdentifiers[clientId] = deviceSerial;
+                        // Auto-registrar sincronamente os site clients em modo escuta ANTES do broadcast.
+                        // Isso elimina a race condition: o SiteRegistrations é atualizado ANTES de
+                        // qualquer mensagem "msg" do ESP chegar via SendToSitesByDevice.
+                        _telemetry.AutoRegisterListeningClients(deviceSerial);
                         // Notifica todos os clientes site (frontend) que uma máquina IoT conectou
                         await _telemetry.BroadcastToAllSites(new { type = "device_connected", serial = deviceSerial });
                     }

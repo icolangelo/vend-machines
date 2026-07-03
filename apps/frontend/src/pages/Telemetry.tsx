@@ -63,17 +63,12 @@ export default function Telemetry() {
                 if (parsed.type === "device_connected" && parsed.serial) {
                     const serial: string = parsed.serial;
                     setDetectedDevice({ serial, status: "connected" });
-                    setLogs(prev => [...prev, `[IOT] Máquina identificada: ${serial} — Conectada!`]);
-
-                    // Inscrever automaticamente na máquina detectada
                     setSelectedEsp(serial);
-                    const subscribePayload = { type: "subscribe", target: serial };
-                    socket.send(JSON.stringify(subscribePayload));
-                    setLogs(prev => [...prev, `[ENVIADO] ${JSON.stringify(subscribePayload)}`]);
-
-                    // Sair do modo escuta
                     setListeningMode(false);
                     listeningRef.current = false;
+                    setLogs(prev => [...prev, `[IOT] Máquina identificada: ${serial} — Conectada! Recebendo telemetria...`]);
+                    // Nota: o backend já registrou este cliente no SiteRegistrations via AutoRegisterListeningClients
+                    // antes de enviar este evento. Não há race condition.
                     return;
                 }
 
@@ -126,14 +121,27 @@ export default function Telemetry() {
 
     const toggleListeningMode = () => {
         if (listeningMode) {
+            // Cancelar modo escuta
             setListeningMode(false);
             listeningRef.current = false;
+            // Notifica backend para não auto-registrar mais
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: "listen", cancel: true }));
+            }
             setLogs(prev => [...prev, "[SISTEMA] Modo de escuta cancelado."]);
         } else {
             setListeningMode(true);
             listeningRef.current = true;
             setDetectedDevice(null);
-            setLogs(prev => [...prev, "[SISTEMA] Modo de escuta ativado — aguardando conexão de máquina IoT..."]);
+            // Notifica backend para registrar este cliente quando o próximo ESP conectar
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: "listen" }));
+                setLogs(prev => [...prev, "[SISTEMA] Modo de escuta ativado — aguardando conexão de máquina IoT..."]);
+            } else {
+                setLogs(prev => [...prev, "[ERRO] WebSocket não está conectado."]);
+                setListeningMode(false);
+                listeningRef.current = false;
+            }
         }
     };
 
