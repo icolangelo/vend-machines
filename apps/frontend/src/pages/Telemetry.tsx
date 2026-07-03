@@ -67,8 +67,6 @@ export default function Telemetry() {
                     setListeningMode(false);
                     listeningRef.current = false;
                     setLogs(prev => [...prev, `[IOT] Máquina identificada: ${serial} — Conectada! Recebendo telemetria...`]);
-                    // Nota: o backend já registrou este cliente no SiteRegistrations via AutoRegisterListeningClients
-                    // antes de enviar este evento. Não há race condition.
                     return;
                 }
 
@@ -79,7 +77,18 @@ export default function Telemetry() {
                     return;
                 }
 
+                // Telemetria enviada pela máquina IoT ao backend (resposta a comandos ou dados espontâneos)
+                if (parsed.type === "telemetry" && parsed.serial !== undefined) {
+                    const serial: string = parsed.serial;
+                    const data: string = parsed.data ?? "";
+                    setLogs(prev => [...prev, `[${serial}] ${data}`]);
+                    return;
+                }
+
                 if (parsed.type === "ack") {
+                    // Filtrar acks de listen/subscribe para não poluir o log
+                    const data: string = parsed.data ?? "";
+                    if (data === "listen_ok" || data === "listen_cancelled") return;
                     setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
                     return;
                 }
@@ -89,6 +98,7 @@ export default function Telemetry() {
 
             setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
         };
+
 
         socket.onclose = () => {
             setLogs(prev => [...prev, "[SISTEMA] Conexão encerrada com o servidor."]);
