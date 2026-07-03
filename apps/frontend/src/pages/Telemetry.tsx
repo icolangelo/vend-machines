@@ -3,9 +3,16 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Terminal, Send, Trash2, Power, DoorOpen, DoorClosed, CheckCircle2, XCircle, FileText, Settings, RefreshCw } from "lucide-react";
+import { Terminal, Send, Trash2, DoorOpen, DoorClosed, CheckCircle2, XCircle, FileText, Settings, RefreshCw, Radio, WifiOff } from "lucide-react";
 import { type Machine } from "@/data/mockData";
 import { getMachines, API_BASE_URL } from "@/lib/api";
+
+type DeviceStatus = "idle" | "listening" | "connected" | "disconnected";
+
+interface DetectedDevice {
+    serial: string;
+    status: DeviceStatus;
+}
 
 export default function Telemetry() {
     const [logs, setLogs] = useState<string[]>([]);
@@ -14,6 +21,12 @@ export default function Telemetry() {
     const [isConnected, setIsConnected] = useState(false);
     const logEndRef = useRef<HTMLDivElement>(null);
     const [machinesList, setMachinesList] = useState<Machine[]>([]);
+
+    // Modo de escuta automática de máquinas IoT
+    const [listeningMode, setListeningMode] = useState(false);
+    const [detectedDevice, setDetectedDevice] = useState<DetectedDevice | null>(null);
+    const wsRef = useRef<WebSocket | null>(null);
+    const listeningRef = useRef(false);
 
     useEffect(() => {
         getMachines().then(data => {
@@ -29,7 +42,6 @@ export default function Telemetry() {
     }, [logs]);
 
     useEffect(() => {
-        // Conectar dinamicamente ao endpoint websocket na API .NET
         const wsUrl = API_BASE_URL
             .replace(/^http:/, "ws:")
             .replace(/^https:/, "wss:")
@@ -40,9 +52,46 @@ export default function Telemetry() {
             setLogs(prev => [...prev, "[SISTEMA] Conectado ao WebSocket de Telemetria!"]);
             setIsConnected(true);
             setWs(socket);
+            wsRef.current = socket;
         };
 
         socket.onmessage = (event) => {
+            // Tenta tratar eventos de dispositivo IoT antes de logar
+            try {
+                const parsed = JSON.parse(event.data);
+
+                if (parsed.type === "device_connected" && parsed.serial) {
+                    const serial: string = parsed.serial;
+                    setDetectedDevice({ serial, status: "connected" });
+                    setLogs(prev => [...prev, `[IOT] Máquina identificada: ${serial} — Conectada!`]);
+
+                    // Inscrever automaticamente na máquina detectada
+                    setSelectedEsp(serial);
+                    const subscribePayload = { type: "subscribe", target: serial };
+                    socket.send(JSON.stringify(subscribePayload));
+                    setLogs(prev => [...prev, `[ENVIADO] ${JSON.stringify(subscribePayload)}`]);
+
+                    // Sair do modo escuta
+                    setListeningMode(false);
+                    listeningRef.current = false;
+                    return;
+                }
+
+                if (parsed.type === "device_disconnected" && parsed.serial) {
+                    const serial: string = parsed.serial;
+                    setDetectedDevice(prev => prev?.serial === serial ? { serial, status: "disconnected" } : prev);
+                    setLogs(prev => [...prev, `[IOT] Máquina ${serial} — Desconectada`]);
+                    return;
+                }
+
+                if (parsed.type === "ack") {
+                    setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
+                    return;
+                }
+            } catch {
+                // não é JSON ou não é evento de dispositivo
+            }
+
             setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
         };
 
@@ -50,6 +99,7 @@ export default function Telemetry() {
             setLogs(prev => [...prev, "[SISTEMA] Conexão encerrada com o servidor."]);
             setIsConnected(false);
             setWs(null);
+            wsRef.current = null;
         };
 
         socket.onerror = (err) => {
@@ -71,6 +121,19 @@ export default function Telemetry() {
             };
             ws.send(JSON.stringify(subscribePayload));
             setLogs(prev => [...prev, `[ENVIADO] ${JSON.stringify(subscribePayload)}`]);
+        }
+    };
+
+    const toggleListeningMode = () => {
+        if (listeningMode) {
+            setListeningMode(false);
+            listeningRef.current = false;
+            setLogs(prev => [...prev, "[SISTEMA] Modo de escuta cancelado."]);
+        } else {
+            setListeningMode(true);
+            listeningRef.current = true;
+            setDetectedDevice(null);
+            setLogs(prev => [...prev, "[SISTEMA] Modo de escuta ativado — aguardando conexão de máquina IoT..."]);
         }
     };
 
@@ -97,6 +160,42 @@ export default function Telemetry() {
 
     const limparLog = () => setLogs([]);
 
+    // Helpers de UI para o badge do dispositivo detectado
+    const deviceBadgeContent = () => {
+        if (!detectedDevice) {
+            if (listeningMode) return {
+                label: "Aguardando conexão IoT...",
+                color: "text-yellow-400",
+                bg: "bg-yellow-500/10 border-yellow-500/30",
+                dotClass: "bg-yellow-400",
+                ping: true,
+                icon: <Radio className="w-3.5 h-3.5" />,
+                suffix: null
+            };
+            return null;
+        }
+        if (detectedDevice.status === "connected") return {
+            label: detectedDevice.serial,
+            color: "text-green-400",
+            bg: "bg-green-500/10 border-green-500/30",
+            dotClass: "bg-green-400",
+            ping: false,
+            icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+            suffix: "Telemetria ativa"
+        };
+        return {
+            label: detectedDevice.serial,
+            color: "text-red-400",
+            bg: "bg-red-500/10 border-red-500/30",
+            dotClass: "bg-red-400",
+            ping: false,
+            icon: <WifiOff className="w-3.5 h-3.5" />,
+            suffix: "Máquina desconectada"
+        };
+    };
+
+    const badge = deviceBadgeContent();
+
     return (
         <SidebarProvider>
             <div className="min-h-screen flex w-full">
@@ -110,32 +209,66 @@ export default function Telemetry() {
                         </div>
                     </header>
                     <main className="flex-1 p-6 flex flex-col gap-6 h-[calc(100vh-3rem)]">
-                        
+
                         {/* CONTROLS HEADER */}
-                        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 bg-card p-4 rounded-lg border">
-                            <div className="w-full md:w-80">
-                                <label className="text-sm font-medium mb-1.5 block text-muted-foreground">
-                                    Lista de Máquinas
-                                </label>
-                                <Select value={selectedEsp} onValueChange={handleEspChange}>
-                                    <SelectTrigger>
-                                        <SelectValue placeholder="Selecione uma máquina..." />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {machinesList.filter(m => m.id && m.id.trim() !== "" && m.serialNumber && m.serialNumber.trim() !== "").map(machine => (
-                                            <SelectItem key={machine.id} value={machine.serialNumber}>{machine.name} ({machine.serialNumber})</SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <div className="flex items-center gap-2 text-sm">
-                                    <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-                                    <span className="text-muted-foreground font-medium">
-                                        {isConnected ? "Conectado ao Servidor" : "Desconectado"}
-                                    </span>
+                        <div className="flex flex-col gap-4 bg-card p-4 rounded-lg border">
+                            {/* Linha 1: Seletor + status servidor + botão escuta */}
+                            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                                <div className="w-full md:w-80">
+                                    <label className="text-sm font-medium mb-1.5 block text-muted-foreground">
+                                        Lista de Máquinas
+                                    </label>
+                                    <Select value={selectedEsp} onValueChange={handleEspChange}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Selecione uma máquina..." />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {machinesList.filter(m => m.id && m.id.trim() !== "" && m.serialNumber && m.serialNumber.trim() !== "").map(machine => (
+                                                <SelectItem key={machine.id} value={machine.serialNumber}>{machine.name} ({machine.serialNumber})</SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="flex items-center gap-3 flex-wrap">
+                                    {/* Status do servidor WebSocket */}
+                                    <div className="flex items-center gap-2 text-sm">
+                                        <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
+                                        <span className="text-muted-foreground font-medium">
+                                            {isConnected ? "Servidor Conectado" : "Desconectado"}
+                                        </span>
+                                    </div>
+
+                                    {/* Botão modo escuta IoT */}
+                                    <Button
+                                        onClick={toggleListeningMode}
+                                        disabled={!isConnected}
+                                        variant={listeningMode ? "destructive" : "outline"}
+                                        className={`gap-2 transition-all ${listeningMode ? "shadow-md shadow-red-500/20" : "border-primary/40 text-primary hover:bg-primary/10"}`}
+                                    >
+                                        <Radio className={`w-4 h-4 ${listeningMode ? "animate-pulse" : ""}`} />
+                                        {listeningMode ? "Cancelar Escuta" : "Aguardar Máquina IoT"}
+                                    </Button>
                                 </div>
                             </div>
+
+                            {/* Linha 2: Badge do dispositivo detectado (só aparece se houver estado) */}
+                            {badge && (
+                                <div className={`flex items-center gap-2.5 rounded-md border px-3 py-2 text-sm font-mono transition-all ${badge.bg}`}>
+                                    <div className="relative flex items-center justify-center w-3 h-3">
+                                        {badge.ping && (
+                                            <span className={`absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping ${badge.dotClass}`}></span>
+                                        )}
+                                        <span className={`relative inline-flex rounded-full w-2 h-2 ${badge.dotClass}`}></span>
+                                    </div>
+                                    <span className={`flex items-center gap-1.5 ${badge.color}`}>
+                                        {badge.icon}
+                                        <span className="font-semibold">{badge.label}</span>
+                                    </span>
+                                    {badge.suffix && (
+                                        <span className="ml-auto text-xs text-muted-foreground">{badge.suffix}</span>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         {/* TERMINAL LOG */}
@@ -144,7 +277,13 @@ export default function Telemetry() {
                                 <div className="text-zinc-600 italic">Aguardando tráfego de dados...</div>
                             ) : (
                                 logs.map((log, i) => (
-                                    <div key={i} className={`mb-1 break-all ${log.startsWith("[ENVIADO]") ? "text-blue-400" : log.startsWith("[SISTEMA]") ? "text-yellow-400" : log.startsWith("[ERRO]") ? "text-red-400" : "text-green-400"}`}>
+                                    <div key={i} className={`mb-1 break-all ${
+                                        log.startsWith("[ENVIADO]") ? "text-blue-400" :
+                                        log.startsWith("[SISTEMA]") ? "text-yellow-400" :
+                                        log.startsWith("[ERRO]") ? "text-red-400" :
+                                        log.startsWith("[IOT]") ? "text-cyan-400 font-semibold" :
+                                        "text-green-400"
+                                    }`}>
                                         <span className="opacity-50 text-xs mr-2">[{new Date().toLocaleTimeString()}]</span>
                                         {log}
                                     </div>
@@ -180,9 +319,9 @@ export default function Telemetry() {
                                 <Button onClick={() => enviarMsg("ATUALIZAR_CONFIGURACAO")} variant="secondary" className="bg-teal-100 text-teal-700 hover:bg-teal-200">
                                     <RefreshCw className="w-4 h-4 mr-2" /> Atualizar Config
                                 </Button>
-                                
+
                                 <div className="flex-1" />
-                                
+
                                 <Button onClick={limparLog} variant="ghost" className="text-muted-foreground hover:text-red-600">
                                     <Trash2 className="w-4 h-4 mr-2" /> Limpar Log
                                 </Button>

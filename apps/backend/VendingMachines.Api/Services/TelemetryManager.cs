@@ -84,4 +84,18 @@ public class TelemetryManager
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(obj));
         await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
     }
+
+    public async Task BroadcastToAllSites(object obj)
+    {
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(obj));
+        var segment = new ArraySegment<byte>(bytes);
+        foreach (var kv in SiteClients.ToArray())
+        {
+            if (kv.Value.State == WebSocketState.Open)
+            {
+                try { await kv.Value.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None); }
+                catch { /* cliente pode ter desconectado */ }
+            }
+        }
+    }
 }

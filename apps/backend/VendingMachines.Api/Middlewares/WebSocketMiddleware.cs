@@ -133,7 +133,11 @@ public class WebSocketMiddleware
             state.ClearQueue();
             _telemetry.EspClients.TryRemove(clientId, out _);
             _telemetry.EspStates.TryRemove(clientId, out _);
-            _telemetry.ClientIdentifiers.TryRemove(clientId, out _);
+            // Notifica o frontend sobre a desconexão antes de remover o identificador
+            if (_telemetry.ClientIdentifiers.TryRemove(clientId, out var disconnectedSerial) && !string.IsNullOrEmpty(disconnectedSerial))
+            {
+                await _telemetry.BroadcastToAllSites(new { type = "device_disconnected", serial = disconnectedSerial });
+            }
         }
     }
 
@@ -200,6 +204,8 @@ public class WebSocketMiddleware
                     {
                         deviceSerial = targetProp.GetString() ?? "";
                         _telemetry.ClientIdentifiers[clientId] = deviceSerial;
+                        // Notifica todos os clientes site (frontend) que uma máquina IoT conectou
+                        await _telemetry.BroadcastToAllSites(new { type = "device_connected", serial = deviceSerial });
                     }
                     var ackStartBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { id = receivedId, type = "ack", data = "ok" }));
                     await socket.SendAsync(new ArraySegment<byte>(ackStartBytes), WebSocketMessageType.Text, true, CancellationToken.None);
