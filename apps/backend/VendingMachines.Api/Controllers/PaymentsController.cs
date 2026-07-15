@@ -25,15 +25,15 @@ namespace VendingMachines.Api.Controllers;
 public class PaymentsController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private readonly TelemetryManager _telemetry;
+    private readonly SessionOrchestrator _sessionOrchestrator;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _configuration;
     private readonly IWebHostEnvironment _environment;
 
-    public PaymentsController(AppDbContext context, TelemetryManager telemetry, IServiceScopeFactory scopeFactory, IConfiguration configuration, IWebHostEnvironment environment)
+    public PaymentsController(AppDbContext context, SessionOrchestrator sessionOrchestrator, IServiceScopeFactory scopeFactory, IConfiguration configuration, IWebHostEnvironment environment)
     {
         _context = context;
-        _telemetry = telemetry;
+        _sessionOrchestrator = sessionOrchestrator;
         _scopeFactory = scopeFactory;
         _configuration = configuration;
         _environment = environment;
@@ -989,8 +989,8 @@ public class PaymentsController : ControllerBase
 
         if (request.SendTelemetryToMachine)
         {
-            _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, request.Approved));
-            return Ok(new { message = "Status atualizado. Sequência de telemetria disparada em background.", transaction = tx });
+            await _sessionOrchestrator.HandlePaymentResultAsync(tx.Id, request.Approved, "simulated_webhook", HttpContext.RequestAborted);
+            return Ok(new { message = "Status atualizado e resultado encaminhado ao orquestrador da sessão.", transaction = tx });
         }
 
         await LogTelemetryAsync(tx.Id, "Info", "Simulador configurado para não enviar retorno MDB para a máquina.");
@@ -1132,7 +1132,7 @@ public class PaymentsController : ControllerBase
             return;
         }
 
-        if (tx.Status != "Pending")
+        if (tx.Status is "Approved" or "RefundPending" or "Refunded")
         {
             Console.WriteLine($"[WEBHOOK] Transação {tx.Id} já possui status '{tx.Status}'. Ignorando webhook duplicado.");
             await LogTelemetryAsync(tx.Id, "Info", $"Webhook duplicado ignorado (PaymentId: {paymentId}). Transação já possui status '{tx.Status}'.");
@@ -1205,7 +1205,8 @@ public class PaymentsController : ControllerBase
                     await LogTelemetryAsync(tx.Id, "Info", "Webhook real confirmado: Pagamento APROVADO pelo Mercado Pago.");
                     if (tx.SendTelemetryToMachine)
                     {
-                        _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, true));
+                        var orchestrator = scope.ServiceProvider.GetRequiredService<SessionOrchestrator>();
+                        await orchestrator.HandlePaymentResultAsync(tx.Id, true, "mercado_pago_webhook", CancellationToken.None);
                     }
                     else
                     {
@@ -1221,7 +1222,8 @@ public class PaymentsController : ControllerBase
                     await LogTelemetryAsync(tx.Id, "Info", $"Webhook real confirmado: Pagamento RECUSADO/CANCELADO pelo Mercado Pago (status: {status}).");
                     if (tx.SendTelemetryToMachine)
                     {
-                        _ = Task.Run(() => RunResilientTelemetrySequence(tx.Id, false));
+                        var orchestrator = scope.ServiceProvider.GetRequiredService<SessionOrchestrator>();
+                        await orchestrator.HandlePaymentResultAsync(tx.Id, false, $"mercado_pago:{status}", CancellationToken.None);
                     }
                     else
                     {
@@ -1250,101 +1252,6 @@ public class PaymentsController : ControllerBase
                 await LogTelemetryAsync(tx.Id, "Error", $"Erro interno ao processar webhook do Mercado Pago: {ex.Message}");
             }
             catch { }
-        }
-    }
-
-    private async Task RunResilientTelemetrySequence(Guid transactionId, bool approved)
-    {
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-        var tx = await db.PaymentTransactions
-            .Include(t => t.Machine)
-            .FirstOrDefaultAsync(t => t.Id == transactionId);
-
-        if (tx == null || tx.Machine == null) return;
-
-        string serialNumber = tx.Machine.SerialNumber;
-        if (string.IsNullOrEmpty(serialNumber))
-        {
-            await LogTelemetryAsync(transactionId, "Error", "Falha: Máquina não possui Serial Number configurado.");
-            return;
-        }
-
-        await LogTelemetryAsync(transactionId, "Info", $"Iniciando sequência resiliente de telemetria MDB para {tx.Machine.Name} (Serial: {serialNumber}).");
-
-        bool connected = false;
-
-        for (int attempt = 1; attempt <= 3; attempt++)
-        {
-            await LogTelemetryAsync(transactionId, "Info", $"Verificando conexão da máquina (Tentativa {attempt}/3)...");
-            
-            var clientConnection = _telemetry.ClientIdentifiers.FirstOrDefault(x => x.Value == serialNumber);
-            if (clientConnection.Key != null && _telemetry.EspClients.TryGetValue(clientConnection.Key, out var ws) && ws.State == System.Net.WebSockets.WebSocketState.Open)
-            {
-                connected = true;
-                break;
-            }
-
-            if (attempt < 3)
-            {
-                await LogTelemetryAsync(transactionId, "Info", "Máquina não respondeu. Nova verificação em 5 segundos.");
-                await Task.Delay(5000);
-            }
-        }
-
-        if (!connected)
-        {
-            await LogTelemetryAsync(transactionId, "Error", "A máquina permaneceu offline após 3 tentativas de conexão.");
-            
-            if (approved)
-            {
-                await LogTelemetryAsync(transactionId, "RefundTriggered", "Iniciando estorno automático da transação por falha técnica de comunicação.");
-                
-                tx.Status = "Failed";
-                await db.SaveChangesAsync();
-
-                bool refundSuccess = await RefundTransactionAsync(db, tx);
-                if (refundSuccess)
-                {
-                    tx.Status = "Refunded";
-                    await db.SaveChangesAsync();
-                    await LogTelemetryAsync(transactionId, "Info", "Estorno Pix concluído com sucesso e saldo devolvido ao comprador.");
-                }
-                else
-                {
-                    await LogTelemetryAsync(transactionId, "Error", "O estorno no Mercado Pago falhou. Requer conciliação manual do operador.");
-                }
-            }
-            return;
-        }
-
-        try
-        {
-            await LogTelemetryAsync(transactionId, "CommandSent", "Enviando comando: ABRIR_SESSAO");
-            _telemetry.EnqueueRawMessageToEsp(serialNumber, "ABRIR_SESSAO");
-            await Task.Delay(2000);
-
-            if (approved)
-            {
-                await LogTelemetryAsync(transactionId, "CommandSent", "Enviando comando: VENDA_APROVADA");
-                _telemetry.EnqueueRawMessageToEsp(serialNumber, "VENDA_APROVADA");
-            }
-            else
-            {
-                await LogTelemetryAsync(transactionId, "CommandSent", "Enviando comando: VENDA_NEGADA");
-                _telemetry.EnqueueRawMessageToEsp(serialNumber, "VENDA_NEGADA");
-            }
-            await Task.Delay(2000);
-
-            await LogTelemetryAsync(transactionId, "CommandSent", "Enviando comando: FECHAR_SESSAO");
-            _telemetry.EnqueueRawMessageToEsp(serialNumber, "FECHAR_SESSAO");
-            
-            await LogTelemetryAsync(transactionId, "Info", "Sequência de telemetria MDB remota concluída com sucesso.");
-        }
-        catch (Exception ex)
-        {
-            await LogTelemetryAsync(transactionId, "Error", $"Erro na transmissão MDB: {ex.Message}");
         }
     }
 

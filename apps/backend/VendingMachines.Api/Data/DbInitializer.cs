@@ -202,6 +202,12 @@ public static class DbInitializer
             context.Users.Add(partnerUser);
         }
 
+        foreach (var entry in context.ChangeTracker.Entries<Machine>())
+        {
+            var serial = entry.Entity.SerialNumber?.Trim().ToUpperInvariant();
+            entry.Entity.NormalizedSerialNumber = string.IsNullOrWhiteSpace(serial) ? null : serial;
+        }
+
         context.SaveChanges();
     }
 
@@ -242,6 +248,100 @@ ALTER TABLE "Machines" ADD COLUMN "LocationId" TEXT NULL;
         EnsureSqliteColumn(context, "ProductTypes", "CompanyId", "TEXT NULL");
         EnsureSqliteColumn(context, "ProductTypes", "OriginalId", "TEXT NULL");
         EnsureSqliteColumn(context, "PaymentTransactions", "SendTelemetryToMachine", "INTEGER NOT NULL DEFAULT 1");
+        EnsureSqliteColumn(context, "Machines", "NormalizedSerialNumber", "TEXT NULL");
+
+        context.Database.ExecuteSqlRaw("""
+UPDATE "Machines" SET "NormalizedSerialNumber" = upper(trim("SerialNumber"))
+WHERE "SerialNumber" IS NOT NULL AND trim("SerialNumber") <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_Machines_NormalizedSerialNumber"
+ON "Machines" ("NormalizedSerialNumber");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "MachineConnectionStates" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_MachineConnectionStates" PRIMARY KEY,
+    "MachineId" TEXT NOT NULL,
+    "CompanyId" TEXT NOT NULL,
+    "MonitoringEnabled" INTEGER NOT NULL DEFAULT 0,
+    "IsOnline" INTEGER NOT NULL DEFAULT 0,
+    "ConnectionId" TEXT NULL,
+    "ConnectedAt" TEXT NULL,
+    "DisconnectedAt" TEXT NULL,
+    "LastSeenAt" TEXT NULL,
+    "ActivatedAt" TEXT NULL,
+    "ActivatedByUserId" TEXT NULL,
+    "DeactivatedAt" TEXT NULL,
+    "DeactivatedByUserId" TEXT NULL,
+    CONSTRAINT "FK_MachineConnectionStates_Machines_MachineId" FOREIGN KEY ("MachineId") REFERENCES "Machines" ("Id") ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_MachineConnectionStates_MachineId" ON "MachineConnectionStates" ("MachineId");
+CREATE INDEX IF NOT EXISTS "IX_MachineConnectionStates_CompanyId_IsOnline" ON "MachineConnectionStates" ("CompanyId", "IsOnline");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "MachineSessions" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_MachineSessions" PRIMARY KEY,
+    "MachineId" TEXT NOT NULL,
+    "CompanyId" TEXT NOT NULL,
+    "StartedByUserId" TEXT NULL,
+    "Source" TEXT NOT NULL,
+    "State" TEXT NOT NULL,
+    "CloseReason" TEXT NULL,
+    "ItemNumber" INTEGER NULL,
+    "AmountCents" INTEGER NULL,
+    "TransactionId" TEXT NULL,
+    "StartedAt" TEXT NOT NULL,
+    "LastEventAt" TEXT NOT NULL,
+    "SelectionDeadlineAt" TEXT NULL,
+    "PaymentDeadlineAt" TEXT NULL,
+    "DeliveryDeadlineAt" TEXT NULL,
+    "ClosedAt" TEXT NULL,
+    CONSTRAINT "FK_MachineSessions_Machines_MachineId" FOREIGN KEY ("MachineId") REFERENCES "Machines" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_MachineSessions_PaymentTransactions_TransactionId" FOREIGN KEY ("TransactionId") REFERENCES "PaymentTransactions" ("Id") ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_MachineSessions_CompanyId_MachineId_State" ON "MachineSessions" ("CompanyId", "MachineId", "State");
+CREATE INDEX IF NOT EXISTS "IX_MachineSessions_MachineId" ON "MachineSessions" ("MachineId");
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_MachineSessions_TransactionId" ON "MachineSessions" ("TransactionId");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "TelemetryCommands" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_TelemetryCommands" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL, "MachineId" TEXT NOT NULL, "SessionId" TEXT NULL,
+    "TransactionId" TEXT NULL, "UserId" TEXT NULL, "MessageId" INTEGER NOT NULL,
+    "Direction" TEXT NOT NULL, "Command" TEXT NOT NULL, "DataJson" TEXT NULL,
+    "Status" TEXT NOT NULL, "Attempts" INTEGER NOT NULL, "CreatedAt" TEXT NOT NULL,
+    "SentAt" TEXT NULL, "AckAt" TEXT NULL, "Error" TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_TelemetryCommands_CompanyId_MachineId_CreatedAt" ON "TelemetryCommands" ("CompanyId", "MachineId", "CreatedAt");
+
+CREATE TABLE IF NOT EXISTS "TelemetryEvents" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_TelemetryEvents" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL, "MachineId" TEXT NOT NULL, "SessionId" TEXT NULL,
+    "TransactionId" TEXT NULL, "UserId" TEXT NULL, "EventType" TEXT NOT NULL,
+    "Detail" TEXT NULL, "DataJson" TEXT NULL, "CreatedAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_TelemetryEvents_CompanyId_MachineId_CreatedAt" ON "TelemetryEvents" ("CompanyId", "MachineId", "CreatedAt");
+""");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "DeliveryFailures" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_DeliveryFailures" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL, "MachineId" TEXT NOT NULL, "SessionId" TEXT NOT NULL,
+    "TransactionId" TEXT NOT NULL, "Reason" TEXT NOT NULL, "OriginalReason" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeliveryFailures_TransactionId" ON "DeliveryFailures" ("TransactionId");
+
+CREATE TABLE IF NOT EXISTS "OutboxMessages" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_OutboxMessages" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL, "MachineId" TEXT NOT NULL, "SessionId" TEXT NULL,
+    "TransactionId" TEXT NULL, "MessageType" TEXT NOT NULL, "PayloadJson" TEXT NOT NULL,
+    "Status" TEXT NOT NULL, "Attempts" INTEGER NOT NULL, "CreatedAt" TEXT NOT NULL,
+    "NextAttemptAt" TEXT NULL, "ProcessedAt" TEXT NULL, "LastError" TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_OutboxMessages_Status_NextAttemptAt" ON "OutboxMessages" ("Status", "NextAttemptAt");
+""");
 
         context.Database.ExecuteSqlRaw("""
 CREATE INDEX IF NOT EXISTS "IX_Machines_LocationId" ON "Machines" ("LocationId");

@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+builder.Services.AddHttpClient("MercadoPago");
 
 // Configure DbContext with PostgreSQL or SQLite fallback
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -108,8 +109,13 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Register Telemetry Manager for Raw WebSockets
-builder.Services.AddSingleton<TelemetryManager>();
+// Telemetria: conexões físicas em memória, estado durável no PostgreSQL/SQLite.
+builder.Services.AddSingleton<WebSocketTicketService>();
+builder.Services.AddSingleton<TelemetryPanelHub>();
+builder.Services.AddSingleton<TelemetryConnectionManager>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
+builder.Services.AddScoped<SessionOrchestrator>();
+builder.Services.AddHostedService<TelemetryDeadlineWorker>();
 
 var app = builder.Build();
 
@@ -121,6 +127,10 @@ using (var scope = app.Services.CreateScope())
     {
         var context = services.GetRequiredService<AppDbContext>();
         DbInitializer.Initialize(context, app.Environment.IsDevelopment());
+        context.MachineConnectionStates.ExecuteUpdate(setters => setters
+            .SetProperty(x => x.IsOnline, false)
+            .SetProperty(x => x.ConnectionId, (string?)null)
+            .SetProperty(x => x.DisconnectedAt, DateTime.UtcNow));
     }
     catch (Exception ex)
     {
@@ -136,12 +146,22 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors();
-app.UseWebSockets();
-app.UseMiddleware<VendingMachines.Api.Middlewares.WebSocketMiddleware>();
-
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseCors();
+var webSocketOptions = new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30),
+    KeepAliveTimeout = TimeSpan.FromSeconds(30)
+};
+var allowedOrigins = builder.Configuration.GetSection("WebSockets:AllowedOrigins").Get<string[]>();
+if (allowedOrigins is { Length: > 0 })
+{
+    foreach (var origin in allowedOrigins) webSocketOptions.AllowedOrigins.Add(origin);
+}
+app.UseWebSockets(webSocketOptions);
+app.UseMiddleware<VendingMachines.Api.Middlewares.WebSocketMiddleware>();
 
 app.MapControllers();
 

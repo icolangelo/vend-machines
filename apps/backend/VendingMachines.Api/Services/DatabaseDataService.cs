@@ -248,6 +248,17 @@ public class DatabaseDataService : IDataService
         }
 
         SyncMachineLocation(machine, machine.CompanyId.Value);
+        machine.NormalizedSerialNumber = NormalizeSerial(machine.SerialNumber);
+
+        if (machine.NormalizedSerialNumber == null)
+        {
+            throw new InvalidOperationException("A máquina precisa possuir um número de série.");
+        }
+
+        if (_context.Machines.Any(m => m.NormalizedSerialNumber == machine.NormalizedSerialNumber))
+        {
+            throw new InvalidOperationException("Já existe uma máquina cadastrada com este número de série.");
+        }
 
         if (string.IsNullOrWhiteSpace(machine.Id))
         {
@@ -434,10 +445,25 @@ public class DatabaseDataService : IDataService
             existing.TotalSales30d = machine.TotalSales30d;
             existing.LastSync = machine.LastSync;
             existing.SerialNumber = machine.SerialNumber;
+            existing.NormalizedSerialNumber = NormalizeSerial(machine.SerialNumber);
+            if (existing.NormalizedSerialNumber == null)
+            {
+                throw new InvalidOperationException("A máquina precisa possuir um número de série.");
+            }
+            if (_context.Machines.Any(m => m.Id != existing.Id && m.NormalizedSerialNumber == existing.NormalizedSerialNumber))
+            {
+                throw new InvalidOperationException("Já existe uma máquina cadastrada com este número de série.");
+            }
             existing.CompanyId = machine.CompanyId;
             existing.LocationId = machine.LocationId;
             existing.MercadoPagoEnabled = machine.MercadoPagoEnabled;
             _context.SaveChanges();
         }
+    }
+
+    private static string? NormalizeSerial(string? serial)
+    {
+        var normalized = serial?.Trim().ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
     }
 }

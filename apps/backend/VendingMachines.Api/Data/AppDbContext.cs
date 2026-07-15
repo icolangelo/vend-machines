@@ -22,6 +22,12 @@ public class AppDbContext : DbContext
     public DbSet<MercadoPagoIntegration> MercadoPagoIntegrations { get; set; } = null!;
     public DbSet<PaymentTransaction> PaymentTransactions { get; set; } = null!;
     public DbSet<TransactionTelemetryLog> TransactionTelemetryLogs { get; set; } = null!;
+    public DbSet<MachineConnectionState> MachineConnectionStates { get; set; } = null!;
+    public DbSet<MachineSession> MachineSessions { get; set; } = null!;
+    public DbSet<TelemetryCommand> TelemetryCommands { get; set; } = null!;
+    public DbSet<TelemetryEvent> TelemetryEvents { get; set; } = null!;
+    public DbSet<DeliveryFailure> DeliveryFailures { get; set; } = null!;
+    public DbSet<OutboxMessage> OutboxMessages { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -39,6 +45,12 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<MercadoPagoIntegration>().HasKey(mpi => mpi.Id);
         modelBuilder.Entity<PaymentTransaction>().HasKey(t => t.Id);
         modelBuilder.Entity<TransactionTelemetryLog>().HasKey(tl => tl.Id);
+        modelBuilder.Entity<MachineConnectionState>().HasKey(x => x.Id);
+        modelBuilder.Entity<MachineSession>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryCommand>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryEvent>().HasKey(x => x.Id);
+        modelBuilder.Entity<DeliveryFailure>().HasKey(x => x.Id);
+        modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
 
         // Relacionamento Empresa -> Usuários (Sócios)
         modelBuilder.Entity<User>()
@@ -85,6 +97,36 @@ public class AppDbContext : DbContext
             .WithMany(l => l.Machines)
             .HasForeignKey(m => m.LocationId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<Machine>()
+            .HasIndex(m => m.NormalizedSerialNumber)
+            .IsUnique();
+
+        modelBuilder.Entity<MachineConnectionState>()
+            .HasOne(x => x.Machine)
+            .WithMany()
+            .HasForeignKey(x => x.MachineId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<MachineConnectionState>().HasIndex(x => x.MachineId).IsUnique();
+        modelBuilder.Entity<MachineConnectionState>().HasIndex(x => new { x.CompanyId, x.IsOnline });
+
+        modelBuilder.Entity<MachineSession>()
+            .HasOne(x => x.Machine)
+            .WithMany()
+            .HasForeignKey(x => x.MachineId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<MachineSession>()
+            .HasOne(x => x.Transaction)
+            .WithMany()
+            .HasForeignKey(x => x.TransactionId)
+            .OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<MachineSession>().HasIndex(x => new { x.CompanyId, x.MachineId, x.State });
+        modelBuilder.Entity<MachineSession>().HasIndex(x => x.TransactionId).IsUnique();
+
+        modelBuilder.Entity<TelemetryCommand>().HasIndex(x => new { x.CompanyId, x.MachineId, x.CreatedAt });
+        modelBuilder.Entity<TelemetryEvent>().HasIndex(x => new { x.CompanyId, x.MachineId, x.CreatedAt });
+        modelBuilder.Entity<DeliveryFailure>().HasIndex(x => x.TransactionId).IsUnique();
+        modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.Status, x.NextAttemptAt });
 
         // Relacionamento Empresa -> Integração Mercado Pago
         modelBuilder.Entity<MercadoPagoIntegration>()

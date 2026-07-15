@@ -39,6 +39,113 @@ export async function getMachines(): Promise<Machine[]> {
     return response.json();
 }
 
+export interface TelemetrySessionSummary {
+    sessionId: string;
+    transactionId?: string | null;
+    state: string;
+    itemNumber?: number | null;
+    amountCents?: number | null;
+    closeReason?: string | null;
+    selectionDeadlineAt?: string | null;
+    paymentDeadlineAt?: string | null;
+    deliveryDeadlineAt?: string | null;
+    startedAt: string;
+}
+
+export interface TelemetryConnection {
+    machineId: string;
+    machineName: string;
+    serialNumber: string;
+    location: string;
+    online: boolean;
+    monitoringEnabled: boolean;
+    connectedAt?: string | null;
+    disconnectedAt?: string | null;
+    lastSeenAt?: string | null;
+    activeSession?: TelemetrySessionSummary | null;
+}
+
+export interface TelemetryEventItem {
+    id: string;
+    machineId: string;
+    sessionId?: string | null;
+    transactionId?: string | null;
+    eventType: string;
+    detail?: string | null;
+    dataJson?: string | null;
+    createdAt: string;
+}
+
+export async function getTelemetryConnections(): Promise<TelemetryConnection[]> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/connections?pageSize=200`);
+    if (!response.ok) throw new Error("Erro ao carregar conexões de telemetria.");
+    const result = await response.json();
+    return result.items;
+}
+
+export async function setTelemetryMonitoring(machineId: string, enabled: boolean): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/monitoring`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Não foi possível alterar o acompanhamento.");
+    }
+}
+
+export async function startTelemetrySession(machineId: string): Promise<TelemetrySessionSummary> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "panel" })
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Não foi possível abrir a sessão.");
+    }
+    return response.json();
+}
+
+export async function cancelTelemetrySession(sessionId: string, reason = "user_cancelled"): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/sessions/${sessionId}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason })
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Não foi possível encerrar a sessão.");
+    }
+}
+
+export async function sendTelemetryCommand(machineId: string, command: string): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/commands`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command })
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "A máquina não confirmou o comando.");
+    }
+}
+
+export async function getTelemetryEvents(machineId?: string): Promise<TelemetryEventItem[]> {
+    const suffix = machineId ? `&machineId=${encodeURIComponent(machineId)}` : "";
+    const response = await authFetch(`${API_BASE_URL}/telemetry/events?pageSize=100${suffix}`);
+    if (!response.ok) throw new Error("Erro ao carregar eventos de telemetria.");
+    const result = await response.json();
+    return result.items;
+}
+
+export async function createTelemetrySocketTicket(): Promise<{ ticket: string; expiresAt: string }> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/socket-ticket`, { method: "POST" });
+    if (!response.ok) throw new Error("Não foi possível autenticar o canal em tempo real.");
+    return response.json();
+}
+
 export async function getMachine(id: string): Promise<Machine | null> {
     if (isTestEnv()) {
         return mockMachines.find(m => m.id === id) || null;

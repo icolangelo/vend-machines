@@ -1,354 +1,322 @@
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, AlertTriangle, CircleDollarSign, DoorOpen, RefreshCw, Search, Send, Server, Wifi, WifiOff, XCircle } from "lucide-react";
 import { AppSidebar } from "@/components/AppSidebar";
-import { useState, useEffect, useRef } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Terminal, Send, Trash2, DoorOpen, DoorClosed, CheckCircle2, XCircle, FileText, Settings, RefreshCw, Radio, WifiOff } from "lucide-react";
-import { type Machine } from "@/data/mockData";
-import { getMachines, API_BASE_URL } from "@/lib/api";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { useToast } from "@/components/ui/use-toast";
+import {
+    API_BASE_URL,
+    cancelTelemetrySession,
+    createTelemetrySocketTicket,
+    getTelemetryConnections,
+    getTelemetryEvents,
+    sendTelemetryCommand,
+    setTelemetryMonitoring,
+    startTelemetrySession,
+    type TelemetryConnection,
+    type TelemetryEventItem,
+} from "@/lib/api";
 
-type DeviceStatus = "idle" | "listening" | "connected" | "disconnected";
+const stateLabels: Record<string, string> = {
+    Opening: "Abrindo sessão",
+    AwaitingSelection: "Aguardando escolha do produto",
+    ClosingWithoutSelection: "Encerrando sem seleção",
+    DeviceClosingBeforeSelection: "Máquina encerrando a sessão",
+    PaymentPending: "Aguardando pagamento Pix",
+    PaymentApproved: "Pagamento aprovado",
+    AwaitingDeliveryResult: "Aguardando entrega",
+    DeliveryFailed: "Falha na entrega",
+    RefundPending: "Estorno em processamento",
+    Refunded: "Pagamento estornado",
+    ReconciliationRequired: "Conciliação necessária",
+    DeniedAwaitingClosure: "Venda negada; encerrando",
+};
 
-interface DetectedDevice {
-    serial: string;
-    status: DeviceStatus;
-}
+const formatDate = (value?: string | null) => value
+    ? new Date(value).toLocaleString("pt-BR")
+    : "—";
 
 export default function Telemetry() {
-    const [logs, setLogs] = useState<string[]>([]);
-    const [selectedEsp, setSelectedEsp] = useState<string>("");
-    const [ws, setWs] = useState<WebSocket | null>(null);
-    const [isConnected, setIsConnected] = useState(false);
-    const logEndRef = useRef<HTMLDivElement>(null);
-    const [machinesList, setMachinesList] = useState<Machine[]>([]);
+    const { toast } = useToast();
+    const [connections, setConnections] = useState<TelemetryConnection[]>([]);
+    const [events, setEvents] = useState<TelemetryEventItem[]>([]);
+    const [selectedId, setSelectedId] = useState<string>("");
+    const [search, setSearch] = useState("");
+    const [loading, setLoading] = useState(true);
+    const [busy, setBusy] = useState(false);
+    const [realtimeConnected, setRealtimeConnected] = useState(false);
+    const socketRef = useRef<WebSocket | null>(null);
+    const reconnectTimerRef = useRef<number>();
+    const selectedIdRef = useRef(selectedId);
 
-    // Modo de escuta automática de máquinas IoT
-    const [listeningMode, setListeningMode] = useState(false);
-    const [detectedDevice, setDetectedDevice] = useState<DetectedDevice | null>(null);
-    const wsRef = useRef<WebSocket | null>(null);
-    const listeningRef = useRef(false);
+    const loadConnections = useCallback(async () => {
+        try {
+            const data = await getTelemetryConnections();
+            setConnections(data);
+            setSelectedId(current => current || data[0]?.machineId || "");
+        } catch (error) {
+            toast({ title: "Erro ao carregar conexões", description: (error as Error).message, variant: "destructive" });
+        } finally {
+            setLoading(false);
+        }
+    }, [toast]);
 
-    useEffect(() => {
-        getMachines().then(data => {
-            setMachinesList(data);
-        }).catch(err => {
-            console.error("Erro ao buscar máquinas para telemetria:", err);
-        });
+    const loadEvents = useCallback(async (machineId: string) => {
+        if (!machineId) return;
+        try { setEvents(await getTelemetryEvents(machineId)); }
+        catch { setEvents([]); }
     }, []);
 
-    useEffect(() => {
-        // Automatically scroll to bottom when new logs arrive
-        logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [logs]);
+    useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
     useEffect(() => {
-        const wsUrl = API_BASE_URL
-            .replace(/^http:/, "ws:")
-            .replace(/^https:/, "wss:")
-            .replace(/\/api$/, "/sitehandler.ashx");
-        const socket = new WebSocket(wsUrl);
+        loadConnections();
+        const timer = window.setInterval(loadConnections, 15000);
+        return () => window.clearInterval(timer);
+    }, [loadConnections]);
 
-        socket.onopen = () => {
-            setLogs(prev => [...prev, "[SISTEMA] Conectado ao WebSocket de Telemetria!"]);
-            setIsConnected(true);
-            setWs(socket);
-            wsRef.current = socket;
-        };
+    useEffect(() => { loadEvents(selectedId); }, [selectedId, loadEvents]);
 
-        socket.onmessage = (event) => {
-            // Tenta tratar eventos de dispositivo IoT antes de logar
+    useEffect(() => {
+        let disposed = false;
+        let attempts = 0;
+
+        const connect = async () => {
             try {
-                const parsed = JSON.parse(event.data);
-
-                if (parsed.type === "device_connected" && parsed.serial) {
-                    const serial: string = parsed.serial;
-                    setDetectedDevice({ serial, status: "connected" });
-                    setSelectedEsp(serial);
-                    setListeningMode(false);
-                    listeningRef.current = false;
-                    setLogs(prev => [...prev, `[IOT] Máquina identificada: ${serial} — Conectada! Recebendo telemetria...`]);
-                    return;
-                }
-
-                if (parsed.type === "device_disconnected" && parsed.serial) {
-                    const serial: string = parsed.serial;
-                    setDetectedDevice(prev => prev?.serial === serial ? { serial, status: "disconnected" } : prev);
-                    setLogs(prev => [...prev, `[IOT] Máquina ${serial} — Desconectada`]);
-                    return;
-                }
-
-                // Telemetria enviada pela máquina IoT ao backend (resposta a comandos ou dados espontâneos)
-                if (parsed.type === "telemetry" && parsed.serial !== undefined) {
-                    const serial: string = parsed.serial;
-                    const data: string = parsed.data ?? "";
-                    setLogs(prev => [...prev, `[${serial}] ${data}`]);
-                    return;
-                }
-
-                if (parsed.type === "ack") {
-                    // Filtrar acks de listen/subscribe para não poluir o log
-                    const data: string = parsed.data ?? "";
-                    if (data === "listen_ok" || data === "listen_cancelled") return;
-                    setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
-                    return;
-                }
+                const { ticket } = await createTelemetrySocketTicket();
+                if (disposed) return;
+                const origin = API_BASE_URL.replace(/\/api$/, "").replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+                const socket = new WebSocket(`${origin}/ws/telemetry?ticket=${encodeURIComponent(ticket)}`);
+                socketRef.current = socket;
+                socket.onopen = () => {
+                    attempts = 0;
+                    setRealtimeConnected(true);
+                    const machineId = selectedIdRef.current;
+                    if (machineId) socket.send(JSON.stringify({ type: "subscribe", machineIds: [machineId] }));
+                };
+                socket.onmessage = event => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message.type === "connection.updated") {
+                            setConnections(current => current.map(item => item.machineId === message.machineId
+                                ? { ...item, online: message.online, lastSeenAt: message.lastSeenAt ?? item.lastSeenAt }
+                                : item));
+                        }
+                        if (message.type === "monitoring.updated") {
+                            setConnections(current => current.map(item => item.machineId === message.machineId
+                                ? { ...item, monitoringEnabled: message.enabled }
+                                : item));
+                        }
+                        if (["sale.updated", "telemetry.received"].includes(message.type)) {
+                            if (message.machineId === selectedIdRef.current) loadEvents(message.machineId);
+                            if (message.type === "sale.updated") loadConnections();
+                        }
+                    } catch { /* mensagem fora do contrato */ }
+                };
+                socket.onclose = () => {
+                    setRealtimeConnected(false);
+                    socketRef.current = null;
+                    if (!disposed) {
+                        attempts += 1;
+                        reconnectTimerRef.current = window.setTimeout(connect, Math.min(30000, 1000 * 2 ** attempts));
+                    }
+                };
+                socket.onerror = () => socket.close();
             } catch {
-                // não é JSON ou não é evento de dispositivo
+                if (!disposed) reconnectTimerRef.current = window.setTimeout(connect, 5000);
             }
-
-            setLogs(prev => [...prev, `[RECEBIDO] ${event.data}`]);
         };
 
-
-        socket.onclose = () => {
-            setLogs(prev => [...prev, "[SISTEMA] Conexão encerrada com o servidor."]);
-            setIsConnected(false);
-            setWs(null);
-            wsRef.current = null;
-        };
-
-        socket.onerror = (err) => {
-            console.error("Erro WebSocket:", err);
-            setLogs(prev => [...prev, "[ERRO] Falha na conexão com o servidor WebSocket."]);
-        };
-
+        connect();
         return () => {
-            socket.close();
+            disposed = true;
+            if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+            socketRef.current?.close();
         };
-    }, []);
+    }, [loadConnections, loadEvents]);
 
-    const handleEspChange = (val: string) => {
-        setSelectedEsp(val);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            const subscribePayload = {
-                type: "subscribe",
-                target: val
-            };
-            ws.send(JSON.stringify(subscribePayload));
-            setLogs(prev => [...prev, `[ENVIADO] ${JSON.stringify(subscribePayload)}`]);
+    useEffect(() => {
+        const socket = socketRef.current;
+        if (socket?.readyState === WebSocket.OPEN && selectedId) {
+            socket.send(JSON.stringify({ type: "subscribe", machineIds: [selectedId] }));
         }
+    }, [selectedId]);
+
+    const selected = connections.find(item => item.machineId === selectedId);
+    const filtered = useMemo(() => {
+        const term = search.trim().toLowerCase();
+        return connections.filter(item => !term || item.machineName.toLowerCase().includes(term) || item.serialNumber.toLowerCase().includes(term));
+    }, [connections, search]);
+
+    const run = async (operation: () => Promise<unknown>, success: string) => {
+        setBusy(true);
+        try {
+            await operation();
+            toast({ title: success });
+            await loadConnections();
+            if (selectedId) await loadEvents(selectedId);
+        } catch (error) {
+            toast({ title: "Operação não concluída", description: (error as Error).message, variant: "destructive" });
+        } finally { setBusy(false); }
     };
-
-    const toggleListeningMode = () => {
-        if (listeningMode) {
-            // Cancelar modo escuta
-            setListeningMode(false);
-            listeningRef.current = false;
-            // Notifica backend para não auto-registrar mais
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: "listen", cancel: true }));
-            }
-            setLogs(prev => [...prev, "[SISTEMA] Modo de escuta cancelado."]);
-        } else {
-            setListeningMode(true);
-            listeningRef.current = true;
-            setDetectedDevice(null);
-            // Notifica backend para registrar este cliente quando o próximo ESP conectar
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: "listen" }));
-                setLogs(prev => [...prev, "[SISTEMA] Modo de escuta ativado — aguardando conexão de máquina IoT..."]);
-            } else {
-                setLogs(prev => [...prev, "[ERRO] WebSocket não está conectado."]);
-                setListeningMode(false);
-                listeningRef.current = false;
-            }
-        }
-    };
-
-    const enviarMsg = (command: string) => {
-        if (!selectedEsp) {
-            alert("Selecione um ESP válido (Serial Number).");
-            return;
-        }
-
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            alert("Conexão WebSocket não está aberta.");
-            return;
-        }
-
-        const payload = {
-            type: "msg",
-            target: selectedEsp,
-            data: command
-        };
-
-        ws.send(JSON.stringify(payload));
-        setLogs(prev => [...prev, `[ENVIADO] ${JSON.stringify(payload)}`]);
-    };
-
-    const limparLog = () => setLogs([]);
-
-    // Helpers de UI para o badge do dispositivo detectado
-    const deviceBadgeContent = () => {
-        if (!detectedDevice) {
-            if (listeningMode) return {
-                label: "Aguardando conexão IoT...",
-                color: "text-yellow-400",
-                bg: "bg-yellow-500/10 border-yellow-500/30",
-                dotClass: "bg-yellow-400",
-                ping: true,
-                icon: <Radio className="w-3.5 h-3.5" />,
-                suffix: null
-            };
-            return null;
-        }
-        if (detectedDevice.status === "connected") return {
-            label: detectedDevice.serial,
-            color: "text-green-400",
-            bg: "bg-green-500/10 border-green-500/30",
-            dotClass: "bg-green-400",
-            ping: false,
-            icon: <CheckCircle2 className="w-3.5 h-3.5" />,
-            suffix: "Telemetria ativa"
-        };
-        return {
-            label: detectedDevice.serial,
-            color: "text-red-400",
-            bg: "bg-red-500/10 border-red-500/30",
-            dotClass: "bg-red-400",
-            ping: false,
-            icon: <WifiOff className="w-3.5 h-3.5" />,
-            suffix: "Máquina desconectada"
-        };
-    };
-
-    const badge = deviceBadgeContent();
 
     return (
         <SidebarProvider>
-            <div className="min-h-screen flex w-full">
+            <div className="min-h-screen flex w-full bg-muted/20">
                 <AppSidebar />
-                <div className="flex-1 flex flex-col min-w-0 bg-background">
-                    <header className="h-12 flex items-center border-b bg-card px-4 gap-3">
-                        <SidebarTrigger />
-                        <div className="flex items-center gap-2">
-                            <Terminal className="w-4 h-4 text-primary" />
-                            <h1 className="text-sm font-semibold text-foreground">Telemetria (MDB Remoto)</h1>
+                <div className="flex-1 min-w-0">
+                    <header className="h-14 flex items-center justify-between border-b bg-card px-4">
+                        <div className="flex items-center gap-3">
+                            <SidebarTrigger />
+                            <div>
+                                <h1 className="text-sm font-semibold">Conexões e sessões MDB</h1>
+                                <p className="text-xs text-muted-foreground">Máquinas e vendas da sua empresa</p>
+                            </div>
                         </div>
+                        <Badge variant={realtimeConnected ? "default" : "destructive"} className="gap-1.5">
+                            {realtimeConnected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+                            {realtimeConnected ? "Tempo real conectado" : "Reconectando"}
+                        </Badge>
                     </header>
-                    <main className="flex-1 p-6 flex flex-col gap-6 h-[calc(100vh-3rem)]">
 
-                        {/* CONTROLS HEADER */}
-                        <div className="flex flex-col gap-4 bg-card p-4 rounded-lg border">
-                            {/* Linha 1: Seletor + status servidor + botão escuta */}
-                            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-                                <div className="w-full md:w-80">
-                                    <label className="text-sm font-medium mb-1.5 block text-muted-foreground">
-                                        Lista de Máquinas
-                                    </label>
-                                    <Select value={selectedEsp} onValueChange={handleEspChange}>
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Selecione uma máquina..." />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {machinesList.filter(m => m.id && m.id.trim() !== "" && m.serialNumber && m.serialNumber.trim() !== "").map(machine => (
-                                                <SelectItem key={machine.id} value={machine.serialNumber}>{machine.name} ({machine.serialNumber})</SelectItem>
+                    <main className="p-4 lg:p-6 grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+                        <Card className="lg:h-[calc(100vh-6.5rem)]">
+                            <CardHeader className="pb-3">
+                                <CardTitle className="text-base flex items-center justify-between">
+                                    Máquinas <Badge variant="secondary">{connections.length}</Badge>
+                                </CardTitle>
+                                <div className="relative">
+                                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                                    <Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar máquina ou serial" className="pl-9" />
+                                </div>
+                            </CardHeader>
+                            <CardContent className="p-0">
+                                <ScrollArea className="h-[calc(100vh-13rem)]">
+                                    {loading && <p className="p-4 text-sm text-muted-foreground">Carregando conexões...</p>}
+                                    {filtered.map(machine => (
+                                        <button key={machine.machineId} onClick={() => setSelectedId(machine.machineId)}
+                                            className={`w-full text-left p-4 border-t hover:bg-muted/60 transition-colors ${selectedId === machine.machineId ? "bg-primary/5 border-l-2 border-l-primary" : ""}`}>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <p className="font-medium text-sm truncate">{machine.machineName}</p>
+                                                    <p className="text-xs text-muted-foreground font-mono">{machine.serialNumber}</p>
+                                                </div>
+                                                <span className={`mt-1 h-2.5 w-2.5 rounded-full ${machine.online ? "bg-emerald-500" : "bg-slate-300"}`} />
+                                            </div>
+                                            <div className="mt-2 flex gap-1.5 flex-wrap">
+                                                <Badge variant={machine.monitoringEnabled ? "default" : "outline"}>{machine.monitoringEnabled ? "Ativa" : "Inativa"}</Badge>
+                                                {machine.activeSession && <Badge variant="secondary">{stateLabels[machine.activeSession.state] ?? machine.activeSession.state}</Badge>}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </ScrollArea>
+                            </CardContent>
+                        </Card>
+
+                        {selected ? (
+                            <div className="space-y-4 min-w-0">
+                                <Card>
+                                    <CardHeader className="pb-3">
+                                        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                                            <div>
+                                                <CardTitle className="text-lg">{selected.machineName}</CardTitle>
+                                                <p className="text-sm text-muted-foreground">{selected.serialNumber} · {selected.location}</p>
+                                            </div>
+                                            <div className="flex gap-2 flex-wrap">
+                                                <Button variant="outline" disabled={busy} onClick={() => run(
+                                                    () => setTelemetryMonitoring(selected.machineId, !selected.monitoringEnabled),
+                                                    selected.monitoringEnabled ? "Acompanhamento desativado" : "Acompanhamento ativado") }>
+                                                    <Activity className="h-4 w-4 mr-2" />
+                                                    {selected.monitoringEnabled ? "Desativar acompanhamento" : "Ativar acompanhamento"}
+                                                </Button>
+                                                {!selected.activeSession ? (
+                                                    <Button disabled={busy || !selected.online || !selected.monitoringEnabled} onClick={() => run(
+                                                        () => startTelemetrySession(selected.machineId), "Sessão solicitada") }>
+                                                        <DoorOpen className="h-4 w-4 mr-2" /> Abrir sessão
+                                                    </Button>
+                                                ) : (
+                                                    <Button variant="destructive" disabled={busy} onClick={() => run(
+                                                        () => cancelTelemetrySession(selected.activeSession!.sessionId), "Encerramento solicitado") }>
+                                                        <XCircle className="h-4 w-4 mr-2" />
+                                                        {selected.activeSession.state === "AwaitingSelection" ? "Encerrar sessão" : "Cancelar venda"}
+                                                    </Button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </CardHeader>
+                                    <CardContent className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                                        <StatusItem icon={selected.online ? Wifi : WifiOff} label="Conexão física" value={selected.online ? "Online" : "Offline"} alert={!selected.online} />
+                                        <StatusItem icon={Server} label="Último contato" value={formatDate(selected.lastSeenAt)} />
+                                        <StatusItem icon={Activity} label="Sessão MDB" value={selected.activeSession ? stateLabels[selected.activeSession.state] ?? selected.activeSession.state : "Sem sessão"} />
+                                        <StatusItem icon={CircleDollarSign} label="Venda" value={selected.activeSession?.amountCents != null ? (selected.activeSession.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "—"} />
+                                    </CardContent>
+                                </Card>
+
+                                {selected.activeSession && (
+                                    <Card className={selected.activeSession.state === "ReconciliationRequired" ? "border-red-300" : ""}>
+                                        <CardHeader><CardTitle className="text-base">Sessão em andamento</CardTitle></CardHeader>
+                                        <CardContent className="grid sm:grid-cols-2 gap-3 text-sm">
+                                            <Detail label="Estado" value={stateLabels[selected.activeSession.state] ?? selected.activeSession.state} />
+                                            <Detail label="Iniciada em" value={formatDate(selected.activeSession.startedAt)} />
+                                            <Detail label="Produto" value={selected.activeSession.itemNumber != null ? `Item ${selected.activeSession.itemNumber}` : "Aguardando seleção"} />
+                                            <Detail label="Prazo atual" value={formatDate(selected.activeSession.selectionDeadlineAt ?? selected.activeSession.paymentDeadlineAt ?? selected.activeSession.deliveryDeadlineAt)} />
+                                            {selected.activeSession.closeReason && <Detail label="Motivo" value={selected.activeSession.closeReason} />}
+                                        </CardContent>
+                                    </Card>
+                                )}
+
+                                <Card>
+                                    <CardHeader className="flex flex-row items-center justify-between">
+                                        <CardTitle className="text-base">Eventos em tempo real</CardTitle>
+                                        <Button size="sm" variant="ghost" onClick={() => loadEvents(selected.machineId)}><RefreshCw className="h-4 w-4" /></Button>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <ScrollArea className="h-[320px] rounded-md bg-slate-950 p-3">
+                                            {events.length === 0 && <p className="text-xs text-slate-500">Nenhum evento registrado.</p>}
+                                            {events.map(event => (
+                                                <div key={event.id} className="border-b border-slate-800 py-2 text-xs font-mono">
+                                                    <div className="flex justify-between gap-3 text-slate-500">
+                                                        <span>{event.eventType}</span><span>{formatDate(event.createdAt)}</span>
+                                                    </div>
+                                                    {event.detail && <p className="mt-1 text-slate-200">{event.detail}</p>}
+                                                    {event.dataJson && <p className="mt-1 text-emerald-400 break-all">{event.dataJson}</p>}
+                                                </div>
                                             ))}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="flex items-center gap-3 flex-wrap">
-                                    {/* Status do servidor WebSocket */}
-                                    <div className="flex items-center gap-2 text-sm">
-                                        <div className={`w-3 h-3 rounded-full ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />
-                                        <span className="text-muted-foreground font-medium">
-                                            {isConnected ? "Servidor Conectado" : "Desconectado"}
-                                        </span>
-                                    </div>
-
-                                    {/* Botão modo escuta IoT */}
-                                    <Button
-                                        onClick={toggleListeningMode}
-                                        disabled={!isConnected}
-                                        variant={listeningMode ? "destructive" : "outline"}
-                                        className={`gap-2 transition-all ${listeningMode ? "shadow-md shadow-red-500/20" : "border-primary/40 text-primary hover:bg-primary/10"}`}
-                                    >
-                                        <Radio className={`w-4 h-4 ${listeningMode ? "animate-pulse" : ""}`} />
-                                        {listeningMode ? "Cancelar Escuta" : "Aguardar Máquina IoT"}
-                                    </Button>
-                                </div>
+                                        </ScrollArea>
+                                        <div className="mt-3 flex gap-2 flex-wrap">
+                                            {["RELATORIO_AUDITORIA", "REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
+                                                <Button key={command} size="sm" variant="outline" disabled={busy || !selected.online || !selected.monitoringEnabled}
+                                                    onClick={() => run(() => sendTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
+                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.replaceAll("_", " ")}
+                                                </Button>
+                                            ))}
+                                        </div>
+                                    </CardContent>
+                                </Card>
                             </div>
-
-                            {/* Linha 2: Badge do dispositivo detectado (só aparece se houver estado) */}
-                            {badge && (
-                                <div className={`flex items-center gap-2.5 rounded-md border px-3 py-2 text-sm font-mono transition-all ${badge.bg}`}>
-                                    <div className="relative flex items-center justify-center w-3 h-3">
-                                        {badge.ping && (
-                                            <span className={`absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping ${badge.dotClass}`}></span>
-                                        )}
-                                        <span className={`relative inline-flex rounded-full w-2 h-2 ${badge.dotClass}`}></span>
-                                    </div>
-                                    <span className={`flex items-center gap-1.5 ${badge.color}`}>
-                                        {badge.icon}
-                                        <span className="font-semibold">{badge.label}</span>
-                                    </span>
-                                    {badge.suffix && (
-                                        <span className="ml-auto text-xs text-muted-foreground">{badge.suffix}</span>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* TERMINAL LOG */}
-                        <div className="flex-1 bg-zinc-950 text-zinc-300 font-mono text-sm p-4 rounded-lg overflow-y-auto border shadow-inner flex flex-col">
-                            {logs.length === 0 ? (
-                                <div className="text-zinc-600 italic">Aguardando tráfego de dados...</div>
-                            ) : (
-                                logs.map((log, i) => (
-                                    <div key={i} className={`mb-1 break-all ${
-                                        log.startsWith("[ENVIADO]") ? "text-blue-400" :
-                                        log.startsWith("[SISTEMA]") ? "text-yellow-400" :
-                                        log.startsWith("[ERRO]") ? "text-red-400" :
-                                        log.startsWith("[IOT]") ? "text-cyan-400 font-semibold" :
-                                        "text-green-400"
-                                    }`}>
-                                        <span className="opacity-50 text-xs mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                        {log}
-                                    </div>
-                                ))
-                            )}
-                            <div ref={logEndRef} />
-                        </div>
-
-                        {/* ACTIONS */}
-                        <div className="bg-card p-4 rounded-lg border">
-                            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                                <Send className="w-4 h-4" /> Enviar Comandos MDB
-                            </h3>
-                            <div className="flex flex-wrap gap-3">
-                                <Button onClick={() => enviarMsg("ABRIR_SESSAO")} variant="default" className="bg-blue-600 hover:bg-blue-700">
-                                    <DoorOpen className="w-4 h-4 mr-2" /> Abrir Sessão
-                                </Button>
-                                <Button onClick={() => enviarMsg("FECHAR_SESSAO")} variant="destructive">
-                                    <DoorClosed className="w-4 h-4 mr-2" /> Fechar Sessão
-                                </Button>
-                                <Button onClick={() => enviarMsg("VENDA_APROVADA")} variant="outline" className="text-green-600 border-green-600 hover:bg-green-50">
-                                    <CheckCircle2 className="w-4 h-4 mr-2" /> Venda Aprovada
-                                </Button>
-                                <Button onClick={() => enviarMsg("VENDA_NEGADA")} variant="outline" className="text-red-600 border-red-600 hover:bg-red-50">
-                                    <XCircle className="w-4 h-4 mr-2" /> Venda Negada
-                                </Button>
-                                <Button onClick={() => enviarMsg("RELATORIO_AUDITORIA")} variant="secondary">
-                                    <FileText className="w-4 h-4 mr-2" /> Relatório
-                                </Button>
-                                <Button onClick={() => enviarMsg("REQUISICAO_CONFIGURACAO")} variant="secondary" className="bg-purple-100 text-purple-700 hover:bg-purple-200">
-                                    <Settings className="w-4 h-4 mr-2" /> Requisição Config
-                                </Button>
-                                <Button onClick={() => enviarMsg("ATUALIZAR_CONFIGURACAO")} variant="secondary" className="bg-teal-100 text-teal-700 hover:bg-teal-200">
-                                    <RefreshCw className="w-4 h-4 mr-2" /> Atualizar Config
-                                </Button>
-
-                                <div className="flex-1" />
-
-                                <Button onClick={limparLog} variant="ghost" className="text-muted-foreground hover:text-red-600">
-                                    <Trash2 className="w-4 h-4 mr-2" /> Limpar Log
-                                </Button>
-                            </div>
-                        </div>
-
+                        ) : (
+                            <Card className="flex items-center justify-center min-h-80"><p className="text-muted-foreground">Selecione uma máquina.</p></Card>
+                        )}
                     </main>
                 </div>
             </div>
         </SidebarProvider>
     );
+}
+
+function StatusItem({ icon: Icon, label, value, alert = false }: { icon: typeof Wifi; label: string; value: string; alert?: boolean }) {
+    return <div className="rounded-lg border p-3 flex gap-3 items-center">
+        <div className={`rounded-full p-2 ${alert ? "bg-red-50 text-red-600" : "bg-primary/10 text-primary"}`}>
+            {alert ? <AlertTriangle className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0"><p className="text-xs text-muted-foreground">{label}</p><p className="text-sm font-medium truncate">{value}</p></div>
+    </div>;
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+    return <div className="rounded-md bg-muted/50 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 font-medium">{value}</p></div>;
 }
