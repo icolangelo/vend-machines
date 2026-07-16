@@ -26,6 +26,17 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
     if (token) {
         headers.set("Authorization", `Bearer ${token}`);
     }
+
+    // Inject impersonation header when SuperAdmin is viewing another company
+    try {
+        const impersonated = sessionStorage.getItem("impersonatedCompany");
+        if (impersonated) {
+            const { id } = JSON.parse(impersonated) as { id: string };
+            if (id) headers.set("X-Impersonate-Company-Id", id);
+        }
+    } catch {
+        // ignore parse errors
+    }
     
     return fetch(url, { ...options, headers });
 }

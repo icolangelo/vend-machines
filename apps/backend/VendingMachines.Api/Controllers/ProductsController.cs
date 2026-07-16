@@ -9,7 +9,7 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/[controller]")]
-public class ProductsController : ControllerBase
+public class ProductsController : BaseApiController
 {
     private readonly IDataService _dataService;
 
@@ -21,7 +21,7 @@ public class ProductsController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<FullProduct>> GetAll()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -31,7 +31,7 @@ public class ProductsController : ControllerBase
     [HttpGet("top")]
     public ActionResult<IEnumerable<Product>> GetTop()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -42,7 +42,7 @@ public class ProductsController : ControllerBase
     [HttpGet("bottom")]
     public ActionResult<IEnumerable<Product>> GetBottom()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -53,7 +53,7 @@ public class ProductsController : ControllerBase
     [HttpGet("types")]
     public ActionResult<IEnumerable<ProductType>> GetTypes()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -63,7 +63,7 @@ public class ProductsController : ControllerBase
     [HttpPost]
     public ActionResult<FullProduct> CreateProduct([FromBody] FullProduct product)
     {
-        if (!TryGetCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!TryGetEffectiveCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
         
         product.CompanyId = companyId;
         try
@@ -80,7 +80,7 @@ public class ProductsController : ControllerBase
     [HttpPut("{id}")]
     public ActionResult<FullProduct> UpdateProduct(string id, [FromBody] FullProduct product)
     {
-        if (!TryGetCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!TryGetEffectiveCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
 
         product.Id = id;
         product.CompanyId = companyId;
@@ -98,7 +98,7 @@ public class ProductsController : ControllerBase
     [HttpPost("types")]
     public ActionResult<ProductType> CreateProductType([FromBody] ProductType type)
     {
-        if (!TryGetCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!TryGetEffectiveCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
 
         type.CompanyId = companyId;
         try
@@ -115,7 +115,7 @@ public class ProductsController : ControllerBase
     [HttpPut("types/{id}")]
     public ActionResult<ProductType> UpdateProductType(string id, [FromBody] ProductType type)
     {
-        if (!TryGetCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!TryGetEffectiveCompanyId(out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
 
         type.Id = id;
         type.CompanyId = companyId;
@@ -130,11 +130,7 @@ public class ProductsController : ControllerBase
         }
     }
 
-    private bool TryGetCompanyId(out Guid companyId)
-    {
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        return Guid.TryParse(companyIdClaim, out companyId);
-    }
+
 
     [AllowAnonymous]
     [HttpGet("debug")]

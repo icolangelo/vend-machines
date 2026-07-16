@@ -123,6 +123,7 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
+    var logger = services.GetRequiredService<ILogger<Program>>();
     try
     {
         var context = services.GetRequiredService<AppDbContext>();
@@ -134,8 +135,8 @@ using (var scope = app.Services.CreateScope())
     }
     catch (Exception ex)
     {
-        var logger = services.GetRequiredService<ILogger<Program>>();
-        logger.LogError(ex, "Ocorreu um erro ao inicializar/semear o banco de dados.");
+        logger.LogCritical(ex, "Falha crítica ao inicializar o banco de dados. A aplicação será encerrada.");
+        throw; // Impede o app de subir com banco desatualizado
     }
 }
 
@@ -148,6 +149,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<VendingMachines.Api.Middlewares.ImpersonationMiddleware>();
 
 app.UseCors();
 var webSocketOptions = new WebSocketOptions

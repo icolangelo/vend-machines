@@ -10,7 +10,7 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/[controller]")]
-public class LocationsController : ControllerBase
+public class LocationsController : BaseApiController
 {
     private readonly AppDbContext _context;
     private readonly IDataService _dataService;
@@ -24,7 +24,7 @@ public class LocationsController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<LocationDto>> GetAll()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -35,7 +35,7 @@ public class LocationsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -68,7 +68,7 @@ public class LocationsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] LocationRequest request)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -110,7 +110,7 @@ public class LocationsController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] LocationRequest request)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -156,7 +156,7 @@ public class LocationsController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -183,11 +183,7 @@ public class LocationsController : ControllerBase
         return NoContent();
     }
 
-    private bool TryGetCompanyId(out Guid companyId)
-    {
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        return Guid.TryParse(companyIdClaim, out companyId);
-    }
+
 }
 
 public class LocationRequest

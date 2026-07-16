@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { CookieConsent } from "@/components/CookieConsent";
 import Index from "./pages/Index.tsx";
@@ -95,6 +96,7 @@ const App = () => {
         <QueryClientProvider client={queryClient}>
             <TooltipProvider>
                 <AuthProvider>
+                    <ImpersonationProvider>
                     <Toaster />
                     <Sonner />
                     <CookieConsent />
@@ -129,6 +131,7 @@ const App = () => {
                             </div>
                         </OauthInterceptor>
                     </HashRouter>
+                    </ImpersonationProvider>
                 </AuthProvider>
             </TooltipProvider>
         </QueryClientProvider>

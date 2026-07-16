@@ -9,7 +9,7 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/[controller]")]
-public class MachinesController : ControllerBase
+public class MachinesController : BaseApiController
 {
     private readonly IDataService _dataService;
 
@@ -21,7 +21,7 @@ public class MachinesController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<Machine>> GetAll()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -32,7 +32,7 @@ public class MachinesController : ControllerBase
     [HttpGet("{id}")]
     public ActionResult<Machine> GetById(string id)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -45,7 +45,7 @@ public class MachinesController : ControllerBase
     [HttpPost]
     public ActionResult Create([FromBody] Machine machine)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -76,7 +76,7 @@ public class MachinesController : ControllerBase
     [HttpPut("{id}")]
     public ActionResult Update(string id, [FromBody] Machine machine)
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -97,9 +97,5 @@ public class MachinesController : ControllerBase
         }
     }
 
-    private bool TryGetCompanyId(out Guid companyId)
-    {
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        return Guid.TryParse(companyIdClaim, out companyId);
-    }
+
 }
