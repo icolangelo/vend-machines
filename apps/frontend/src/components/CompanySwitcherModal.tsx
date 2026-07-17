@@ -54,14 +54,23 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
   const handleSelect = (company: Company) => {
     setImpersonatedCompany({ id: company.id, name: company.name });
     onClose();
-    // Reload the page so all data refetches with the new company context
-    window.location.reload();
+    // Navigate away and back to force all page components to remount and refetch
+    // This avoids a full page reload which would trigger the auth loading race condition
+    const currentPath = window.location.hash.replace("#", "") || "/dashboard";
+    window.location.hash = "/";
+    setTimeout(() => {
+      window.location.hash = currentPath;
+    }, 50);
   };
 
   const handleClear = () => {
     clearImpersonation();
     onClose();
-    window.location.reload();
+    const currentPath = window.location.hash.replace("#", "") || "/dashboard";
+    window.location.hash = "/";
+    setTimeout(() => {
+      window.location.hash = currentPath;
+    }, 50);
   };
 
   if (!isOpen) return null;

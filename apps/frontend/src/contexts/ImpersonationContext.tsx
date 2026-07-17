@@ -20,7 +20,7 @@ interface ImpersonationContextType {
 const ImpersonationContext = createContext<ImpersonationContextType | undefined>(undefined);
 
 export const ImpersonationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const isSuperAdmin = user?.email === SUPER_ADMIN_EMAIL;
 
   const [impersonatedCompany, setImpersonatedCompanyState] = useState<ImpersonatedCompany | null>(() => {
@@ -32,21 +32,21 @@ export const ImpersonationProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   });
 
-  // Clear impersonation when user logs out
+  // Clear impersonation only after auth finishes loading and user logged out
   useEffect(() => {
-    if (!user) {
+    if (!loading && !user) {
       sessionStorage.removeItem(STORAGE_KEY);
       setImpersonatedCompanyState(null);
     }
-  }, [user]);
+  }, [loading, user]);
 
-  // Clear if not SuperAdmin (safety net)
+  // Safety net: clear impersonation if confirmed non-SuperAdmin (wait for auth to finish loading)
   useEffect(() => {
-    if (!isSuperAdmin && impersonatedCompany) {
+    if (!loading && !isSuperAdmin && impersonatedCompany) {
       sessionStorage.removeItem(STORAGE_KEY);
       setImpersonatedCompanyState(null);
     }
-  }, [isSuperAdmin, impersonatedCompany]);
+  }, [loading, isSuperAdmin, impersonatedCompany]);
 
   const setImpersonatedCompany = useCallback((company: ImpersonatedCompany | null) => {
     if (company) {
