@@ -11,7 +11,7 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/telemetry")]
-public sealed class TelemetryController : ControllerBase
+public sealed class TelemetryController : BaseApiController
 {
     private readonly AppDbContext _db;
     private readonly SessionOrchestrator _orchestrator;
@@ -229,7 +229,7 @@ public sealed class TelemetryController : ControllerBase
     private bool TryGetIdentity(out Guid userId, out Guid companyId)
     {
         var hasUser = Guid.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out userId);
-        var hasCompany = Guid.TryParse(User.FindFirst("company_id")?.Value, out companyId);
+        var hasCompany = TryGetEffectiveCompanyId(out companyId);
         return hasUser && hasCompany;
     }
 
