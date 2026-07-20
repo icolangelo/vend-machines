@@ -280,18 +280,25 @@ public sealed class TelemetryConnectionManager : BackgroundService
 
     private static async Task WriteLoopAsync(DeviceConnection connection, CancellationToken cancellationToken)
     {
+        Task<bool>? highReady = null;
+        Task<bool>? normalReady = null;
+
         while (!cancellationToken.IsCancellationRequested && connection.Socket.State == WebSocketState.Open)
         {
-            string? json = null;
-            if (!connection.Priority.Reader.TryRead(out json) && !connection.Normal.Reader.TryRead(out json))
+            if (connection.Priority.Reader.TryRead(out var json) || connection.Normal.Reader.TryRead(out json))
             {
-                var highReady = connection.Priority.Reader.WaitToReadAsync(cancellationToken).AsTask();
-                var normalReady = connection.Normal.Reader.WaitToReadAsync(cancellationToken).AsTask();
-                await Task.WhenAny(highReady, normalReady);
+                var bytes = Encoding.UTF8.GetBytes(json);
+                await connection.Socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
                 continue;
             }
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await connection.Socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
+
+            highReady ??= connection.Priority.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            normalReady ??= connection.Normal.Reader.WaitToReadAsync(cancellationToken).AsTask();
+
+            await Task.WhenAny(highReady, normalReady);
+
+            if (highReady.IsCompleted) highReady = null;
+            if (normalReady.IsCompleted) normalReady = null;
         }
     }
 

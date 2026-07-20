@@ -1,5 +1,15 @@
 # vend-machines
 
+## Simulador de vending machine
+
+Para manter uma máquina simulada conectada ao WebSocket de telemetria durante o desenvolvimento:
+
+```powershell
+dotnet run --project tools/VendingMachines.Simulator -- --serial SN-123456
+```
+
+Cada processo representa uma máquina e permanece online até o terminal ser encerrado. Consulte a [documentação do simulador](tools/VendingMachines.Simulator/README.md) para os cenários interativos.
+
 ## Como iniciar o projeto
 
 Para iniciar a **API (.NET)** e o **Frontend (Vite/React)** juntos, você pode usar um dos scripts fornecidos na raiz do projeto:

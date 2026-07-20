@@ -619,7 +619,11 @@ public sealed class SessionOrchestrator
             if (integration == null) return false;
             var client = _httpClientFactory.CreateClient("MercadoPago");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", EncryptionService.Decrypt(integration.AccessToken));
-            var response = await client.PostAsync($"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}/refunds", null, cancellationToken);
+            
+            client.DefaultRequestHeaders.Add("X-Idempotency-Key", $"refund-{transaction.Id}");
+            var body = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+            
+            var response = await client.PostAsync($"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}/refunds", body, cancellationToken);
             return response.IsSuccessStatusCode;
         }
         catch (Exception ex)
