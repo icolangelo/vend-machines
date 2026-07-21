@@ -34,7 +34,14 @@ const stateLabels: Record<string, string> = {
     Refunded: "Pagamento estornado",
     ReconciliationRequired: "Conciliação necessária",
     DeniedAwaitingClosure: "Venda negada; encerrando",
+    Completed: "Entrega concluída",
+    ClosedWithoutSelection: "Encerrada sem seleção",
+    ClosedByDeviceBeforeSelection: "Encerrada pela máquina",
+    ClosureIncomplete: "Encerramento incompleto",
+    Denied: "Venda negada",
 };
+
+const cancellableSessionStates = new Set(["Opening", "AwaitingSelection", "PaymentPending"]);
 
 const formatDate = (value?: string | null) => value
     ? new Date(value).toLocaleString("pt-BR")
@@ -147,6 +154,9 @@ export default function Telemetry() {
     }, [selectedId]);
 
     const selected = connections.find(item => item.machineId === selectedId);
+    const canCancelSession = selected?.activeSession
+        ? cancellableSessionStates.has(selected.activeSession.state)
+        : false;
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
         return connections.filter(item => !term || item.machineName.toLowerCase().includes(term) || item.serialNumber.toLowerCase().includes(term));
@@ -238,13 +248,15 @@ export default function Telemetry() {
                                                         () => startTelemetrySession(selected.machineId), "Sessão solicitada") }>
                                                         <DoorOpen className="h-4 w-4 mr-2" /> Abrir sessão
                                                     </Button>
-                                                ) : (
+                                                ) : canCancelSession ? (
                                                     <Button variant="destructive" disabled={busy} onClick={() => run(
                                                         () => cancelTelemetrySession(selected.activeSession!.sessionId), "Encerramento solicitado") }>
                                                         <XCircle className="h-4 w-4 mr-2" />
-                                                        {selected.activeSession.state === "AwaitingSelection" ? "Encerrar sessão" : "Cancelar venda"}
+                                                        {selected.activeSession.state === "Opening" || selected.activeSession.state === "AwaitingSelection"
+                                                            ? "Encerrar sessão"
+                                                            : "Cancelar venda"}
                                                     </Button>
-                                                )}
+                                                ) : null}
                                             </div>
                                         </div>
                                     </CardHeader>

@@ -149,6 +149,21 @@ public sealed class SessionOrchestrator
         session.LastEventAt = message.ReceivedAt;
         await AddEventAsync(session, $"{command}.{type}", null, null, message.DataJson, cancellationToken);
 
+        var transactionCorrelation = GetTransactionCorrelation(session, data);
+        if (transactionCorrelation is TransactionCorrelation.Invalid or TransactionCorrelation.Mismatch)
+        {
+            var eventType = transactionCorrelation == TransactionCorrelation.Invalid
+                ? "protocol.invalid_transaction_id"
+                : "protocol.transaction_mismatch";
+            var detail = transactionCorrelation == TransactionCorrelation.Invalid
+                ? "O transactionId informado pela máquina é inválido."
+                : "O transactionId informado não pertence à sessão ativa da máquina.";
+            await AddEventAsync(session, eventType, detail, null, message.DataJson, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await BroadcastSessionAsync(session);
+            return;
+        }
+
         if (command == "pool" && type == "begin_session")
         {
             if (session.State == MachineSessionStates.Opening)
@@ -183,12 +198,12 @@ public sealed class SessionOrchestrator
         }
         else if (command == "pool" && type == "vend_approved")
         {
-            if (MatchesTransaction(session, data) && session.State == MachineSessionStates.PaymentApproved)
+            if (session.State == MachineSessionStates.PaymentApproved)
                 session.State = MachineSessionStates.AwaitingDeliveryResult;
         }
         else if (command == "pool" && type == "vend_denied")
         {
-            if (MatchesTransaction(session, data) && session.State == MachineSessionStates.DeniedAwaitingClosure)
+            if (session.State == MachineSessionStates.DeniedAwaitingClosure)
                 session.CloseReason ??= "payment_rejected";
         }
         else if (command == "vend" && type == "success")
@@ -489,7 +504,6 @@ public sealed class SessionOrchestrator
 
     private async Task HandleDeliverySuccessAsync(MachineSession session, JsonElement data, CancellationToken cancellationToken)
     {
-        if (!MatchesTransaction(session, data)) return;
         if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
         {
             session.State = MachineSessionStates.Completed;
@@ -505,7 +519,6 @@ public sealed class SessionOrchestrator
 
     private async Task HandleDeliveryFailureAsync(MachineSession session, JsonElement data, string rawData, CancellationToken cancellationToken)
     {
-        if (!MatchesTransaction(session, data)) return;
         if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
         {
             var original = GetString(data, "reason") ?? "unknown";
@@ -536,13 +549,9 @@ public sealed class SessionOrchestrator
 
     private async Task HandleEndSessionAsync(MachineSession session, JsonElement data, CancellationToken cancellationToken)
     {
-        if (session.TransactionId.HasValue && !MatchesTransaction(session, data)) return;
-        session.ClosedAt = DateTime.UtcNow;
-        session.SelectionDeadlineAt = null;
-        session.PaymentDeadlineAt = null;
         if (session.State == MachineSessionStates.ClosingWithoutSelection)
             session.State = MachineSessionStates.ClosedWithoutSelection;
-        else if (session.State is MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.AwaitingSelection)
+        else if (session.State is MachineSessionStates.Opening or MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.AwaitingSelection)
         {
             session.State = MachineSessionStates.ClosedByDeviceBeforeSelection;
             session.CloseReason = "device_closed_before_selection";
@@ -550,6 +559,35 @@ public sealed class SessionOrchestrator
         }
         else if (session.State == MachineSessionStates.DeniedAwaitingClosure)
             session.State = MachineSessionStates.Denied;
+        else if (session.State == MachineSessionStates.PaymentPending)
+        {
+            await CancelPendingPaymentAsync(
+                session,
+                "device_closed_during_payment",
+                null,
+                cancellationToken,
+                notifyMachine: false);
+            session.State = MachineSessionStates.Denied;
+        }
+        else if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
+        {
+            session.CloseReason ??= "delivery_result_missing";
+            session.DeliveryDeadlineAt = null;
+            await AddEventAsync(
+                session,
+                "delivery.result_missing",
+                "A máquina encerrou a sessão sem informar success ou failure.",
+                null,
+                data.GetRawText(),
+                cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await BeginRefundAsync(session, "delivery_result_missing", cancellationToken);
+        }
+
+        session.ClosedAt = DateTime.UtcNow;
+        session.SelectionDeadlineAt = null;
+        session.PaymentDeadlineAt = null;
+        session.DeliveryDeadlineAt = null;
     }
 
     private async Task EvaluateEarlyCloseAlertAsync(MachineSession session, CancellationToken cancellationToken)
@@ -565,7 +603,12 @@ public sealed class SessionOrchestrator
             await AddEventAsync(session, "alert.repeated_early_close", $"{count} encerramentos antes da seleção em 15 minutos.", null, null, cancellationToken);
     }
 
-    private async Task CancelPendingPaymentAsync(MachineSession session, string reason, Guid? userId, CancellationToken cancellationToken)
+    private async Task CancelPendingPaymentAsync(
+        MachineSession session,
+        string reason,
+        Guid? userId,
+        CancellationToken cancellationToken,
+        bool notifyMachine = true)
     {
         session.State = MachineSessionStates.DeniedAwaitingClosure;
         session.CloseReason = reason;
@@ -578,7 +621,7 @@ public sealed class SessionOrchestrator
         }
         await AddEventAsync(session, "payment.cancelled", reason, userId, null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        if (session.Machine != null)
+        if (notifyMachine && session.Machine != null)
             await SendTrackedCommandAsync(session.Machine, session, "VENDA_NEGADA", userId, cancellationToken);
     }
 
@@ -745,11 +788,33 @@ public sealed class SessionOrchestrator
     private IQueryable<MachineSession> ActiveSessions() =>
         _db.MachineSessions.Where(x => x.ClosedAt == null);
 
-    private static bool MatchesTransaction(MachineSession session, JsonElement data)
+    private static TransactionCorrelation GetTransactionCorrelation(MachineSession session, JsonElement data)
     {
-        if (!session.TransactionId.HasValue) return true;
-        var value = GetString(data, "transactionId");
-        return Guid.TryParse(value, out var parsed) && parsed == session.TransactionId.Value;
+        if (!data.TryGetProperty("transactionId", out var transactionId) ||
+            transactionId.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return TransactionCorrelation.Missing;
+
+        if (transactionId.ValueKind != JsonValueKind.String)
+            return TransactionCorrelation.Invalid;
+
+        var value = transactionId.GetString();
+        if (string.IsNullOrWhiteSpace(value))
+            return TransactionCorrelation.Missing;
+
+        if (!Guid.TryParse(value, out var parsed))
+            return TransactionCorrelation.Invalid;
+
+        return session.TransactionId.HasValue && parsed == session.TransactionId.Value
+            ? TransactionCorrelation.Matched
+            : TransactionCorrelation.Mismatch;
+    }
+
+    private enum TransactionCorrelation
+    {
+        Missing,
+        Matched,
+        Invalid,
+        Mismatch
     }
 
     private static string? GetString(JsonElement element, string property) =>
