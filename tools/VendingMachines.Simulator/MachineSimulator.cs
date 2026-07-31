@@ -29,6 +29,7 @@ public sealed class MachineSimulator
     private int _selectedPrice;
     private DateTime? _connectedAt;
     private DateTime? _lastPongAt;
+    private string? _mdbStatusOverride;
 
     public MachineSimulator(CliOptions options, SimulatorLog log)
     {
@@ -47,6 +48,7 @@ public sealed class MachineSimulator
     public int ReceivedMessages => Volatile.Read(ref _receivedMessages);
     public DateTime? ConnectedAt => _connectedAt;
     public DateTime? LastPongAt => _lastPongAt;
+    public string MdbStatus => _mdbStatusOverride ?? GetAutomaticMdbStatus();
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -132,6 +134,26 @@ public sealed class MachineSimulator
         if (signal is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(signal), "O sinal deve estar entre 0 e 100.");
         Volatile.Write(ref _signal, signal);
         _log.Info(Serial, $"Sinal alterado para {signal}.");
+    }
+
+    public void SetMdbStatus(string? status)
+    {
+        if (status == null || status.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            _mdbStatusOverride = null;
+            _log.Info(Serial, $"Status MDB em modo automático: {MdbStatus}.");
+            return;
+        }
+
+        var normalized = status.Trim().ToLowerInvariant();
+        if (normalized is not ("inactive_state" or "disable_state" or "enabled_state" or "idle_state" or "vend_state"))
+        {
+            throw new InvalidOperationException(
+                "Status MDB inválido. Use inactive_state, disable_state, enabled_state, idle_state, vend_state ou auto.");
+        }
+
+        _mdbStatusOverride = normalized;
+        _log.Info(Serial, $"Status MDB fixado em {normalized}.");
     }
 
     public void Reconnect()
@@ -293,8 +315,6 @@ public sealed class MachineSimulator
                 return;
             }
 
-            await QueueEnvelopeAsync(new { id, target = Serial, type = "ack", data = "OK" }, cancellationToken);
-            _log.Sent(Serial, $"ack id={id}");
             if (!_receivedMessageIds.TryAdd(id, 0)) return;
             TrimReceivedIds();
 
@@ -302,17 +322,44 @@ public sealed class MachineSimulator
             {
                 var command = data.GetString() ?? string.Empty;
                 _log.Received(Serial, $"msg id={id} data={command}");
+                if (command.Equals("MDB_STATUS", StringComparison.OrdinalIgnoreCase))
+                {
+                    RunDetached(ct => SendMdbStatusAsync(id, ct), cancellationToken);
+                    return;
+                }
+
+                await QueueEnvelopeAsync(new { id, target = Serial, type = "ack", data = "OK" }, cancellationToken);
+                _log.Sent(Serial, $"ack id={id}");
                 HandleServerCommand(command, cancellationToken);
                 return;
             }
 
             if (data.ValueKind == JsonValueKind.Object)
             {
+                await QueueEnvelopeAsync(new { id, target = Serial, type = "ack", data = "OK" }, cancellationToken);
+                _log.Sent(Serial, $"ack id={id}");
                 var clone = data.Clone();
                 _log.Received(Serial, $"msg id={id} data={clone.GetRawText()}");
                 HandleServerPayload(clone, cancellationToken);
             }
         }
+    }
+
+    private async Task SendMdbStatusAsync(int requestId, CancellationToken cancellationToken)
+    {
+        var status = MdbStatus;
+        await QueueEnvelopeAsync(new
+        {
+            id = requestId,
+            target = Serial,
+            type = "msg",
+            data = new
+            {
+                command = "status",
+                status
+            }
+        }, cancellationToken);
+        _log.Sent(Serial, $"status id={requestId} status={status} (sem ACK separado)");
     }
 
     private void HandleServerCommand(string command, CancellationToken connectionToken)
@@ -476,6 +523,18 @@ public sealed class MachineSimulator
         _transactionId = null;
         _selectedPrice = 0;
     }
+
+    private string GetAutomaticMdbStatus() => _state switch
+    {
+        SimulatorState.Disconnected or SimulatorState.Connecting => "inactive_state",
+        SimulatorState.AwaitingSelection => "idle_state",
+        SimulatorState.WaitingPix or
+            SimulatorState.WaitingPaymentResult or
+            SimulatorState.PaymentApproved or
+            SimulatorState.Closing => "vend_state",
+        SimulatorState.Failed => "disable_state",
+        _ => "enabled_state"
+    };
 
     private Dictionary<string, object?> WithTransaction(Dictionary<string, object?> payload)
     {

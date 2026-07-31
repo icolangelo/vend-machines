@@ -1,11 +1,12 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, Settings } from "lucide-react";
+import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -26,8 +27,19 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
-import { getMachine, createMachine, updateMachine, getIntegration, getLocations } from "@/lib/api";
+import {
+    getMachine,
+    createMachine,
+    updateMachine,
+    getIntegration,
+    getLocations,
+    getTelemetryConnections,
+    requestMdbStatus,
+    startTelemetrySession,
+    type TelemetryConnection,
+} from "@/lib/api";
 import { type Location } from "@/data/mockData";
+import { getMdbStatusDetail } from "@/lib/mdbStatus";
 
 const machineFormSchema = z.object({
     id: z.string().optional(),
@@ -76,6 +88,7 @@ const machineFormSchema = z.object({
     ftpPassword: z.string().optional(),
     ftpDirectoryPath: z.string().default("/evadts/"),
     mercadoPagoEnabled: z.boolean().default(false),
+    autoOpenSessionEnabled: z.boolean().default(false),
 });
 
 type MachineFormValues = z.infer<typeof machineFormSchema>;
@@ -86,6 +99,8 @@ export default function MachineFormPage() {
     const isEditMode = !!id;
     const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
     const [locations, setLocations] = useState<Location[]>([]);
+    const [mdbConnection, setMdbConnection] = useState<TelemetryConnection | null>(null);
+    const [mdbBusy, setMdbBusy] = useState(false);
 
     const form = useForm<MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
@@ -101,7 +116,8 @@ export default function MachineFormPage() {
             ftpDirectoryPath: "/evadts/",
             evaBaudRateOption: "0",
             locationId: "",
-            mercadoPagoEnabled: false
+            mercadoPagoEnabled: false,
+            autoOpenSessionEnabled: false,
         },
     });
 
@@ -145,7 +161,8 @@ export default function MachineFormPage() {
                         ftpServerPort: 21,
                         ftpDirectoryPath: "/evadts/",
                         evaBaudRateOption: "0",
-                        mercadoPagoEnabled: machine.mercadoPagoEnabled || false
+                        mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
+                        autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
                     });
                 }
             }).catch(err => {
@@ -154,6 +171,13 @@ export default function MachineFormPage() {
         }
     }, [id, isEditMode, form, locations]);
 
+    useEffect(() => {
+        if (!isEditMode || !id) return;
+        getTelemetryConnections()
+            .then(items => setMdbConnection(items.find(item => item.machineId === id) ?? null))
+            .catch(() => setMdbConnection(null));
+    }, [id, isEditMode]);
+
     function onSubmit(data: MachineFormValues) {
         console.log("Form Submitted:", data);
         
@@ -161,11 +185,12 @@ export default function MachineFormPage() {
         const machineData = {
             name: data.modelo,
             serialNumber: data.serialNumber,
-            status: (data.ativo ? "online" : "offline") as any,
+            status: data.ativo ? "online" as const : "offline" as const,
             locationId: data.locationId,
             location: selectedLocation?.name || "Localização principal",
             clientName: selectedLocation?.name || "",
-            mercadoPagoEnabled: data.mercadoPagoEnabled
+            mercadoPagoEnabled: data.mercadoPagoEnabled,
+            autoOpenSessionEnabled: data.autoOpenSessionEnabled,
         };
 
         const savePromise = isEditMode && id
@@ -181,6 +206,46 @@ export default function MachineFormPage() {
                 console.error("Erro ao salvar máquina:", err);
                 toast.error(err.message || "Erro ao salvar máquina.");
             });
+    }
+
+    async function refreshMdbConnection() {
+        if (!id) return;
+        const items = await getTelemetryConnections();
+        setMdbConnection(items.find(item => item.machineId === id) ?? null);
+    }
+
+    async function handleMdbStatusRequest() {
+        if (!id) return;
+        setMdbBusy(true);
+        try {
+            const result = await requestMdbStatus(id);
+            setMdbConnection(current => current ? {
+                ...current,
+                mdbStatus: result.mdbStatus,
+                mdbStatusUpdatedAt: result.mdbStatusUpdatedAt,
+                mdbStatusFresh: true,
+            } : current);
+            toast.success("Status MDB atualizado.");
+            await refreshMdbConnection();
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setMdbBusy(false);
+        }
+    }
+
+    async function handleOpenSession() {
+        if (!id) return;
+        setMdbBusy(true);
+        try {
+            await startTelemetrySession(id);
+            toast.success("Sessão solicitada.");
+            await refreshMdbConnection();
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setMdbBusy(false);
+        }
     }
 
     return (
@@ -464,6 +529,87 @@ export default function MachineFormPage() {
 
                                         {/* ABA VENDING */}
                                         <TabsContent value="vending" className="space-y-6 animate-in fade-in-50 duration-300">
+                                            <div className="p-4 border rounded-md bg-muted/10 space-y-4">
+                                                <div>
+                                                    <h3 className="text-sm font-semibold text-foreground">Sessão MDB</h3>
+                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                        Controle como esta máquina disponibiliza uma sessão para o usuário.
+                                                    </p>
+                                                </div>
+
+                                                <FormField control={form.control} name="autoOpenSessionEnabled" render={({ field }) => (
+                                                    <FormItem className="flex flex-row items-start space-x-3 space-y-0 p-4 border rounded-md bg-background">
+                                                        <FormControl>
+                                                            <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                                                        </FormControl>
+                                                        <div>
+                                                            <FormLabel className="font-semibold cursor-pointer">Abrir sessão automaticamente</FormLabel>
+                                                            <p className="text-xs text-muted-foreground mt-1">
+                                                                Quando o MDB estiver disponível, o sistema abrirá e reabrirá sessões sem ação do operador.
+                                                                O acompanhamento de telemetria será ativado ao salvar.
+                                                            </p>
+                                                        </div>
+                                                    </FormItem>
+                                                )} />
+
+                                                {isEditMode && (
+                                                    <div className="p-4 border rounded-md bg-background space-y-3">
+                                                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                                                            <div className="flex gap-3">
+                                                                <Activity className="w-5 h-5 mt-0.5 text-muted-foreground" />
+                                                                <div>
+                                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                                        <span className="text-sm font-semibold">
+                                                                            {getMdbStatusDetail(mdbConnection?.mdbStatus).label}
+                                                                        </span>
+                                                                        <Badge variant={mdbConnection?.mdbStatusFresh ? "default" : "outline"}>
+                                                                            {mdbConnection?.mdbStatusFresh ? "Atual" : "Desatualizado"}
+                                                                        </Badge>
+                                                                    </div>
+                                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                                        {getMdbStatusDetail(mdbConnection?.mdbStatus).description}
+                                                                    </p>
+                                                                    <p className="text-xs text-muted-foreground mt-1">
+                                                                        Última atualização: {mdbConnection?.mdbStatusUpdatedAt
+                                                                            ? new Date(mdbConnection.mdbStatusUpdatedAt).toLocaleString("pt-BR")
+                                                                            : "—"}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex gap-2 flex-wrap">
+                                                                <Button
+                                                                    type="button"
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    disabled={mdbBusy || !mdbConnection?.online || !mdbConnection?.monitoringEnabled}
+                                                                    onClick={handleMdbStatusRequest}
+                                                                >
+                                                                    <RefreshCw className={`w-4 h-4 mr-2 ${mdbBusy ? "animate-spin" : ""}`} />
+                                                                    Consultar status
+                                                                </Button>
+                                                                {!mdbConnection?.activeSession && (
+                                                                    <Button
+                                                                        type="button"
+                                                                        size="sm"
+                                                                        disabled={
+                                                                            mdbBusy ||
+                                                                            !mdbConnection?.online ||
+                                                                            !mdbConnection?.monitoringEnabled ||
+                                                                            (mdbConnection?.manualStartRequiresMdb &&
+                                                                                (!mdbConnection.mdbStatusFresh || mdbConnection.mdbStatus !== "enabled_state"))
+                                                                        }
+                                                                        onClick={handleOpenSession}
+                                                                    >
+                                                                        <DoorOpen className="w-4 h-4 mr-2" />
+                                                                        Abrir sessão
+                                                                    </Button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                                 <FormField control={form.control} name="evaSecurityPassword" render={({ field }) => (
                                                     <FormItem><FormLabel>EVA Security</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>

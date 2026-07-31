@@ -57,6 +57,10 @@ public sealed class InteractiveShell
                 Require(parts, 2, "signal <0-100>");
                 _simulator.SetSignal(ParseInt(parts[1], "sinal"));
                 break;
+            case "mdb":
+                Require(parts, 2, "mdb <inactive_state|disable_state|enabled_state|idle_state|vend_state|auto>");
+                _simulator.SetMdbStatus(parts[1]);
+                break;
             case "send": case "enviar": await SendCustomAsync(line, cancellationToken); break;
             case "logs": _log.PrintHistory(); break;
             case "reconnect": case "reconectar": _simulator.Reconnect(); break;
@@ -136,6 +140,7 @@ public sealed class InteractiveShell
             Serial:               {_simulator.Serial}
             Conectada:            {(_simulator.IsConnected ? "sim" : "não")}
             Estado:               {_simulator.State}
+            Status MDB:           {_simulator.MdbStatus}
             Cenário:              {_simulator.Scenario.Kind}
             Transação:            {_simulator.TransactionId ?? "-"}
             Sinal:                {_simulator.Signal}
@@ -173,6 +178,7 @@ public sealed class InteractiveShell
               deliver failure <motivo>
               cancel
               signal <0-100>
+              mdb <inactive_state|disable_state|enabled_state|idle_state|vend_state|auto>
               send <objeto-json-ou-string-json>
               logs
               reconnect

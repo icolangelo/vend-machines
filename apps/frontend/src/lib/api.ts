@@ -70,9 +70,16 @@ export interface TelemetryConnection {
     location: string;
     online: boolean;
     monitoringEnabled: boolean;
+    autoOpenSessionEnabled: boolean;
+    manualStartRequiresMdb: boolean;
     connectedAt?: string | null;
     disconnectedAt?: string | null;
     lastSeenAt?: string | null;
+    mdbStatus?: string | null;
+    mdbStatusUpdatedAt?: string | null;
+    mdbStatusFresh: boolean;
+    autoOpenLastAttemptAt?: string | null;
+    autoOpenLastError?: string | null;
     activeSession?: TelemetrySessionSummary | null;
 }
 
@@ -115,6 +122,22 @@ export async function startTelemetrySession(machineId: string): Promise<Telemetr
     if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.message || "Não foi possível abrir a sessão.");
+    }
+    return response.json();
+}
+
+export async function requestMdbStatus(machineId: string): Promise<{
+    machineId: string;
+    messageId: number;
+    mdbStatus: string;
+    mdbStatusUpdatedAt: string;
+}> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/mdb-status`, {
+        method: "POST",
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Não foi possível consultar o status MDB.");
     }
     return response.json();
 }
@@ -181,7 +204,8 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
             revenue30d: machine.revenue30d ?? 0,
             totalSales30d: machine.totalSales30d ?? 0,
             lastSync: "Agora",
-            serialNumber: machine.serialNumber || ""
+            serialNumber: machine.serialNumber || "",
+            autoOpenSessionEnabled: machine.autoOpenSessionEnabled ?? false,
         };
         mockMachines.push(newMachine);
         return newMachine;

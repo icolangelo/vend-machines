@@ -457,6 +457,7 @@ public class DatabaseDataService : IDataService
             existing.CompanyId = machine.CompanyId;
             existing.LocationId = machine.LocationId;
             existing.MercadoPagoEnabled = machine.MercadoPagoEnabled;
+            existing.AutoOpenSessionEnabled = machine.AutoOpenSessionEnabled;
             _context.SaveChanges();
         }
     }

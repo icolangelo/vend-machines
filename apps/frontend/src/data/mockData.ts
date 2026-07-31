@@ -11,6 +11,7 @@ export interface Machine {
   lastSync: string;
   serialNumber: string;
   mercadoPagoEnabled?: boolean;
+  autoOpenSessionEnabled?: boolean;
 }
 
 export interface Client {

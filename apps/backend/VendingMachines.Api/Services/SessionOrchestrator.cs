@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
@@ -9,6 +10,8 @@ namespace VendingMachines.Api.Services;
 
 public sealed class SessionOrchestrator
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionStartGates = new();
+
     private static readonly string[] TerminalStates =
     {
         MachineSessionStates.Completed,
@@ -53,12 +56,56 @@ public sealed class SessionOrchestrator
         string source,
         CancellationToken cancellationToken)
     {
+        var gate = SessionStartGates.GetOrAdd($"{companyId:N}:{machineId}", static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await StartSessionCoreAsync(machineId, companyId, userId, source, cancellationToken);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<MachineSession> StartSessionCoreAsync(
+        string machineId,
+        Guid companyId,
+        Guid? userId,
+        string source,
+        CancellationToken cancellationToken)
+    {
         var machine = await _db.Machines.FirstOrDefaultAsync(
             x => x.Id == machineId && x.CompanyId == companyId, cancellationToken)
             ?? throw new KeyNotFoundException("Máquina não encontrada.");
 
         if (!_connections.IsOnline(machine.SerialNumber))
             throw new InvalidOperationException("machine_offline");
+
+        var automatic = string.Equals(source, "automatic_mdb", StringComparison.Ordinal);
+        if (automatic && !machine.AutoOpenSessionEnabled)
+            throw new InvalidOperationException("automatic_session_disabled");
+
+        var enforceMdb = automatic || _configuration.GetValue<bool>("MdbStatus:EnforceOnManualStart");
+        if (enforceMdb)
+        {
+            var connection = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
+                x => x.MachineId == machineId && x.CompanyId == companyId,
+                cancellationToken);
+            if (connection?.MonitoringEnabled != true)
+                throw new InvalidOperationException("monitoring_inactive");
+            if (connection.MdbStatusUpdatedAt == null)
+                throw new InvalidOperationException("mdb_status_unavailable");
+
+            var staleAfter = Math.Clamp(
+                _configuration.GetValue<int?>("MdbStatus:StaleAfterSeconds") ?? 90,
+                10,
+                3600);
+            if (connection.MdbStatusUpdatedAt < DateTime.UtcNow.AddSeconds(-staleAfter))
+                throw new InvalidOperationException("mdb_status_stale");
+            if (connection.MdbStatus != MdbStatuses.Enabled)
+                throw new InvalidOperationException("mdb_not_ready");
+        }
 
         var existing = await ActiveSessions().FirstOrDefaultAsync(x => x.MachineId == machineId, cancellationToken);
         if (existing != null) throw new InvalidOperationException("session_already_active");
@@ -73,7 +120,20 @@ public sealed class SessionOrchestrator
         };
         _db.MachineSessions.Add(session);
         await AddEventAsync(session, "session.opening", "Sessão MDB solicitada.", userId, null, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsOpenSessionConstraintViolation(ex))
+        {
+            _db.Entry(session).State = EntityState.Detached;
+            foreach (var entry in _db.ChangeTracker.Entries<TelemetryEvent>()
+                         .Where(x => x.State == EntityState.Added && x.Entity.SessionId == session.Id))
+            {
+                entry.State = EntityState.Detached;
+            }
+            throw new InvalidOperationException("session_already_active", ex);
+        }
 
         var result = await SendTrackedCommandAsync(machine, session, "ABRIR_SESSAO", userId, cancellationToken);
         if (!result.Success)
@@ -135,6 +195,12 @@ public sealed class SessionOrchestrator
         if (data.ValueKind != JsonValueKind.Object) return;
 
         var command = GetString(data, "command");
+        if (string.Equals(command, "status", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleMdbStatusAsync(message, data, cancellationToken);
+            return;
+        }
+
         var type = GetString(data, "type");
         if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(type)) return;
 
@@ -636,6 +702,141 @@ public sealed class SessionOrchestrator
         await SendTrackedCommandAsync(machine, session, "VENDA_NEGADA", null, cancellationToken);
     }
 
+    private async Task HandleMdbStatusAsync(
+        InboundDeviceMessage message,
+        JsonElement data,
+        CancellationToken cancellationToken)
+    {
+        var rawStatus = GetString(data, "status");
+        var normalizedStatus = MdbStatuses.Normalize(rawStatus);
+        var state = await _db.MachineConnectionStates.FirstOrDefaultAsync(
+            x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId,
+            cancellationToken);
+        if (state == null)
+        {
+            state = new MachineConnectionState
+            {
+                MachineId = message.MachineId,
+                CompanyId = message.CompanyId
+            };
+            _db.MachineConnectionStates.Add(state);
+        }
+
+        var previousStatus = state.MdbStatus;
+        var previousRaw = state.MdbStatusRaw;
+        state.MdbStatus = normalizedStatus;
+        state.MdbStatusRaw = message.DataJson;
+        state.MdbStatusUpdatedAt = message.ReceivedAt;
+
+        if (!string.Equals(previousStatus, normalizedStatus, StringComparison.Ordinal) ||
+            (normalizedStatus == null && !string.Equals(previousRaw, message.DataJson, StringComparison.Ordinal)))
+        {
+            _db.TelemetryEvents.Add(new TelemetryEvent
+            {
+                CompanyId = message.CompanyId,
+                MachineId = message.MachineId,
+                EventType = normalizedStatus == null ? "mdb.status.invalid" : "mdb.status.changed",
+                Detail = normalizedStatus == null
+                    ? $"Status MDB não reconhecido: {rawStatus ?? "(ausente)"}."
+                    : $"{previousStatus ?? "unknown"} -> {normalizedStatus}",
+                DataJson = message.DataJson,
+                CreatedAt = message.ReceivedAt
+            });
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+        await _panelHub.BroadcastCompanyAsync(message.CompanyId, new
+        {
+            type = "mdb.status.updated",
+            machineId = message.MachineId,
+            mdbStatus = normalizedStatus,
+            mdbStatusRaw = rawStatus,
+            mdbStatusUpdatedAt = message.ReceivedAt,
+            mdbStatusFresh = normalizedStatus != null
+        });
+
+        if (normalizedStatus == MdbStatuses.Enabled)
+        {
+            await TryAutoOpenSessionAsync(message, state, cancellationToken);
+        }
+    }
+
+    private async Task TryAutoOpenSessionAsync(
+        InboundDeviceMessage message,
+        MachineConnectionState connectionState,
+        CancellationToken cancellationToken)
+    {
+        var machine = await _db.Machines.FirstOrDefaultAsync(
+            x => x.Id == message.MachineId && x.CompanyId == message.CompanyId,
+            cancellationToken);
+        if (machine?.AutoOpenSessionEnabled != true ||
+            !connectionState.MonitoringEnabled ||
+            !_connections.IsOnline(machine.SerialNumber))
+        {
+            return;
+        }
+
+        if (await ActiveSessions().AnyAsync(x => x.MachineId == message.MachineId, cancellationToken))
+        {
+            return;
+        }
+
+        var lastClosedAt = await _db.MachineSessions.AsNoTracking()
+            .Where(x => x.MachineId == message.MachineId && x.ClosedAt != null)
+            .OrderByDescending(x => x.ClosedAt)
+            .Select(x => x.ClosedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (lastClosedAt.HasValue && message.ReceivedAt <= lastClosedAt.Value)
+        {
+            return;
+        }
+
+        var cooldownSeconds = Math.Clamp(
+            _configuration.GetValue<int?>("MdbStatus:AutoOpenCooldownSeconds") ?? 30,
+            1,
+            3600);
+        if (connectionState.AutoOpenLastAttemptAt >= DateTime.UtcNow.AddSeconds(-cooldownSeconds))
+        {
+            return;
+        }
+
+        connectionState.AutoOpenLastAttemptAt = DateTime.UtcNow;
+        connectionState.AutoOpenLastError = null;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await StartSessionAsync(
+                message.MachineId,
+                message.CompanyId,
+                null,
+                "automatic_mdb",
+                cancellationToken);
+        }
+        catch (InvalidOperationException ex) when (ex.Message == "session_already_active")
+        {
+            // Outra requisição venceu a corrida; a restrição no banco preservou a idempotência.
+        }
+        catch (Exception ex)
+        {
+            connectionState.AutoOpenLastError = ex is InvalidOperationException
+                ? ex.Message
+                : "automatic_session_failed";
+            _db.TelemetryEvents.Add(new TelemetryEvent
+            {
+                CompanyId = message.CompanyId,
+                MachineId = message.MachineId,
+                EventType = "session.auto_open_failed",
+                Detail = connectionState.AutoOpenLastError
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+            _logger.LogWarning(
+                ex,
+                "Falha ao abrir sessão automática para a máquina {MachineId}.",
+                message.MachineId);
+        }
+    }
+
     private async Task BeginRefundAsync(MachineSession session, string reason, CancellationToken cancellationToken)
     {
         if (session.Transaction == null && session.TransactionId.HasValue)
@@ -822,4 +1023,11 @@ public sealed class SessionOrchestrator
 
     private static int GetInt(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.TryGetInt32(out var parsed) ? parsed : -1;
+
+    private static bool IsOpenSessionConstraintViolation(DbUpdateException exception)
+    {
+        var text = exception.ToString();
+        return text.Contains("UX_MachineSessions_OneOpenPerMachine", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("UNIQUE constraint failed: MachineSessions.MachineId", StringComparison.OrdinalIgnoreCase);
+    }
 }

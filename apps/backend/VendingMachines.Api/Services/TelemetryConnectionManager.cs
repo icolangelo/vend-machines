@@ -20,6 +20,14 @@ public sealed record InboundDeviceMessage(
 
 public sealed record DeviceCommandResult(bool Success, int MessageId, int Attempts, string? Error = null);
 
+public sealed record DeviceStatusResult(
+    bool Success,
+    int MessageId,
+    string? Status,
+    string? DataJson,
+    DateTime? ResponseAt,
+    string? Error = null);
+
 public sealed class TelemetryConnectionManager : BackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -81,11 +89,10 @@ public sealed class TelemetryConnectionManager : BackgroundService
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(requestAborted, connection.Cts.Token);
             var writer = WriteLoopAsync(connection, linked.Token);
-            await MarkOnlineAsync(connection, linked.Token);
-
             var startId = first.TryGetProperty("id", out var startIdElement) && startIdElement.TryGetInt32(out var parsedStartId)
                 ? parsedStartId : 0;
             await QueuePriorityAsync(connection, new { id = startId, target = serial, type = "ack", data = "OK" }, linked.Token);
+            await MarkOnlineAsync(connection, linked.Token);
 
             while (socket.State == WebSocketState.Open && !linked.IsCancellationRequested)
             {
@@ -151,6 +158,62 @@ public sealed class TelemetryConnectionManager : BackgroundService
         finally
         {
             if (commandId != 0) connection.PendingAcks.TryRemove(commandId, out _);
+            connection.CommandGate.Release();
+        }
+    }
+
+    public async Task<DeviceStatusResult> SendStatusRequestAsync(
+        string serial,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_devices.TryGetValue(NormalizeSerial(serial), out var connection) ||
+            connection.Socket.State != WebSocketState.Open)
+        {
+            return new DeviceStatusResult(false, 0, null, null, null, "machine_offline");
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, connection.Cts.Token);
+        await connection.CommandGate.WaitAsync(linked.Token);
+        PendingStatusRequest? pending = null;
+        try
+        {
+            var id = Interlocked.Increment(ref connection.LastServerMessageId);
+            var json = JsonSerializer.Serialize(
+                new { id, target = connection.Serial, type = "msg", data = "MDB_STATUS" },
+                JsonOptions);
+            pending = new PendingStatusRequest(
+                id,
+                new TaskCompletionSource<InboundStatusResponse>(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(ref connection.PendingStatusRequest, pending);
+
+            await connection.Normal.Writer.WriteAsync(json, linked.Token);
+
+            InboundStatusResponse response;
+            try
+            {
+                response = await pending.Completion.Task.WaitAsync(timeout, linked.Token);
+            }
+            catch (TimeoutException)
+            {
+                return new DeviceStatusResult(false, id, null, null, null, "response_timeout");
+            }
+
+            var normalized = MdbStatuses.Normalize(response.Status);
+            return normalized == null
+                ? new DeviceStatusResult(false, id, null, response.DataJson, response.ReceivedAt, "invalid_mdb_status")
+                : new DeviceStatusResult(true, id, normalized, response.DataJson, response.ReceivedAt);
+        }
+        catch (OperationCanceledException) when (connection.Cts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            return new DeviceStatusResult(false, pending?.MessageId ?? 0, null, null, null, "machine_offline");
+        }
+        finally
+        {
+            if (pending != null)
+            {
+                Interlocked.CompareExchange(ref connection.PendingStatusRequest, null, pending);
+            }
             connection.CommandGate.Release();
         }
     }
@@ -246,10 +309,38 @@ public sealed class TelemetryConnectionManager : BackgroundService
         }
 
         if (type != "msg" || !root.TryGetProperty("data", out var data)) return;
+
+        var isStatusResponse = data.ValueKind == JsonValueKind.Object &&
+                               data.TryGetProperty("command", out var commandElement) &&
+                               string.Equals(commandElement.GetString(), "status", StringComparison.OrdinalIgnoreCase);
+        if (isStatusResponse)
+        {
+            var status = data.TryGetProperty("status", out var statusElement)
+                ? statusElement.GetString()
+                : null;
+            var pendingStatus = Volatile.Read(ref connection.PendingStatusRequest);
+            if (pendingStatus?.MessageId == id)
+            {
+                pendingStatus.Completion.TrySetResult(new InboundStatusResponse(
+                    status,
+                    data.GetRawText(),
+                    DateTime.UtcNow));
+            }
+        }
+
         await QueuePriorityAsync(connection, new { id, target = connection.Serial, type = "ack", data = "OK" }, cancellationToken);
 
-        if (!connection.ReceivedIds.TryAdd(id, 0)) return;
-        if (connection.ReceivedIds.Count > 512)
+        // A resposta de MDB_STATUS pode reutilizar o id gerado pelo servidor. Ela não
+        // participa da deduplicação dos eventos iniciados pelo dispositivo, pois os dois
+        // lados podem possuir sequências de ids independentes.
+        if (isStatusResponse && !connection.ReceivedStatusIds.TryAdd(id, 0)) return;
+        if (isStatusResponse && connection.ReceivedStatusIds.Count > 512)
+        {
+            foreach (var oldId in connection.ReceivedStatusIds.Keys.OrderBy(x => x).Take(128))
+                connection.ReceivedStatusIds.TryRemove(oldId, out _);
+        }
+        if (!isStatusResponse && !connection.ReceivedIds.TryAdd(id, 0)) return;
+        if (!isStatusResponse && connection.ReceivedIds.Count > 512)
         {
             foreach (var oldId in connection.ReceivedIds.Keys.OrderBy(x => x).Take(128))
                 connection.ReceivedIds.TryRemove(oldId, out _);
@@ -323,6 +414,8 @@ public sealed class TelemetryConnectionManager : BackgroundService
         state.ConnectionId = connection.ConnectionId;
         state.ConnectedAt = DateTime.UtcNow;
         state.LastSeenAt = DateTime.UtcNow;
+        state.MdbStatusRequestAt = null;
+        state.MdbStatusRequestMessageId = null;
         await db.SaveChangesAsync(cancellationToken);
         await _panelHub.BroadcastCompanyAsync(connection.CompanyId, new
         {
@@ -412,7 +505,9 @@ public sealed class TelemetryConnectionManager : BackgroundService
         public CancellationTokenSource Cts { get; } = new();
         public SemaphoreSlim CommandGate { get; } = new(1, 1);
         public ConcurrentDictionary<int, TaskCompletionSource<bool>> PendingAcks { get; } = new();
+        public PendingStatusRequest? PendingStatusRequest;
         public ConcurrentDictionary<int, byte> ReceivedIds { get; } = new();
+        public ConcurrentDictionary<int, byte> ReceivedStatusIds { get; } = new();
         public Channel<string> Priority { get; } = Channel.CreateBounded<string>(1000);
         public Channel<string> Normal { get; } = Channel.CreateBounded<string>(1000);
         public int LastServerMessageId;
@@ -420,4 +515,13 @@ public sealed class TelemetryConnectionManager : BackgroundService
         public DateTime LastSeenAt { get; set; } = DateTime.UtcNow;
         public DateTime LastPersistedSeenAt { get; set; } = DateTime.MinValue;
     }
+
+    private sealed record PendingStatusRequest(
+        int MessageId,
+        TaskCompletionSource<InboundStatusResponse> Completion);
+
+    private sealed record InboundStatusResponse(
+        string? Status,
+        string DataJson,
+        DateTime ReceivedAt);
 }

@@ -5,7 +5,8 @@ public sealed record CliOptions(
     Uri ServerUri,
     int Signal,
     bool Reconnect,
-    TimeSpan HeartbeatInterval)
+    TimeSpan HeartbeatInterval,
+    bool Headless)
 {
     public static bool TryParse(string[] args, out CliOptions? options, out string? error)
     {
@@ -19,6 +20,7 @@ public sealed record CliOptions(
         var signal = 20;
         var reconnect = true;
         var heartbeatSeconds = 30;
+        var headless = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -38,6 +40,7 @@ public sealed record CliOptions(
                     case "--signal": signal = int.Parse(NextValue()); break;
                     case "--heartbeat": heartbeatSeconds = int.Parse(NextValue()); break;
                     case "--no-reconnect": reconnect = false; break;
+                    case "--headless": headless = true; break;
                     default: throw new ArgumentException($"Argumento desconhecido: {argument}");
                 }
             }
@@ -73,7 +76,7 @@ public sealed record CliOptions(
             return false;
         }
 
-        options = new CliOptions(serial, uri, signal, reconnect, TimeSpan.FromSeconds(heartbeatSeconds));
+        options = new CliOptions(serial, uri, signal, reconnect, TimeSpan.FromSeconds(heartbeatSeconds), headless);
         return true;
     }
 
@@ -91,6 +94,7 @@ public sealed record CliOptions(
                   --signal <0-100>       Intensidade inicial do sinal (padrão: 20)
                   --heartbeat <segundos> Intervalo do ping (padrão: 30)
                   --no-reconnect         Não reconectar depois de uma queda
+                  --headless             Executar sem o console interativo
               -h, --help                 Exibir esta ajuda
             """);
     }

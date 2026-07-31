@@ -42,9 +42,34 @@ public class MachineConnectionState
     public Guid? ActivatedByUserId { get; set; }
     public DateTime? DeactivatedAt { get; set; }
     public Guid? DeactivatedByUserId { get; set; }
+    public string? MdbStatus { get; set; }
+    public string? MdbStatusRaw { get; set; }
+    public DateTime? MdbStatusUpdatedAt { get; set; }
+    public DateTime? MdbStatusRequestAt { get; set; }
+    public int? MdbStatusRequestMessageId { get; set; }
+    public DateTime? AutoOpenLastAttemptAt { get; set; }
+    public string? AutoOpenLastError { get; set; }
 
     [JsonIgnore]
     public Machine? Machine { get; set; }
+}
+
+public static class MdbStatuses
+{
+    public const string Inactive = "inactive_state";
+    public const string Disabled = "disable_state";
+    public const string Enabled = "enabled_state";
+    public const string Idle = "idle_state";
+    public const string Vend = "vend_state";
+
+    public static bool IsKnown(string? status) => status is
+        Inactive or Disabled or Enabled or Idle or Vend;
+
+    public static string? Normalize(string? status)
+    {
+        var normalized = status?.Trim().ToLowerInvariant();
+        return IsKnown(normalized) ? normalized : null;
+    }
 }
 
 public class MachineSession

@@ -122,6 +122,11 @@ public class AppDbContext : DbContext
             .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<MachineSession>().HasIndex(x => new { x.CompanyId, x.MachineId, x.State });
         modelBuilder.Entity<MachineSession>().HasIndex(x => x.TransactionId).IsUnique();
+        modelBuilder.Entity<MachineSession>()
+            .HasIndex(x => x.MachineId)
+            .IsUnique()
+            .HasFilter("\"ClosedAt\" IS NULL")
+            .HasDatabaseName("UX_MachineSessions_OneOpenPerMachine");
 
         modelBuilder.Entity<TelemetryCommand>().HasIndex(x => new { x.CompanyId, x.MachineId, x.CreatedAt });
         modelBuilder.Entity<TelemetryEvent>().HasIndex(x => new { x.CompanyId, x.MachineId, x.CreatedAt });

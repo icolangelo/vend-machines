@@ -23,11 +23,19 @@ public static class Program
             shutdown.Cancel();
         };
 
+        var parsedOptions = options!;
         var log = new SimulatorLog();
-        var simulator = new MachineSimulator(options!, log);
+        var simulator = new MachineSimulator(parsedOptions, log);
         var shell = new InteractiveShell(simulator, log);
 
         var connectionTask = simulator.RunAsync(shutdown.Token);
+        if (parsedOptions.Headless)
+        {
+            try { await connectionTask; }
+            catch (OperationCanceledException) { }
+            return 0;
+        }
+
         await shell.RunAsync(shutdown.Token);
         shutdown.Cancel();
 

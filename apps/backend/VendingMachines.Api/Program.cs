@@ -115,7 +115,10 @@ builder.Services.AddSingleton<TelemetryPanelHub>();
 builder.Services.AddSingleton<TelemetryConnectionManager>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
 builder.Services.AddScoped<SessionOrchestrator>();
+builder.Services.Configure<MdbStatusOptions>(builder.Configuration.GetSection("MdbStatus"));
+builder.Services.AddScoped<MdbStatusRequestService>();
 builder.Services.AddHostedService<TelemetryDeadlineWorker>();
+builder.Services.AddHostedService<MdbStatusPollingWorker>();
 
 var app = builder.Build();
 

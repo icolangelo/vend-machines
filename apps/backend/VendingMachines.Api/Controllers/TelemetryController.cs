@@ -18,19 +18,25 @@ public sealed class TelemetryController : BaseApiController
     private readonly TelemetryConnectionManager _connections;
     private readonly TelemetryPanelHub _panelHub;
     private readonly WebSocketTicketService _tickets;
+    private readonly MdbStatusRequestService _mdbStatusRequests;
+    private readonly MdbStatusOptions _mdbOptions;
 
     public TelemetryController(
         AppDbContext db,
         SessionOrchestrator orchestrator,
         TelemetryConnectionManager connections,
         TelemetryPanelHub panelHub,
-        WebSocketTicketService tickets)
+        WebSocketTicketService tickets,
+        MdbStatusRequestService mdbStatusRequests,
+        Microsoft.Extensions.Options.IOptions<MdbStatusOptions> mdbOptions)
     {
         _db = db;
         _orchestrator = orchestrator;
         _connections = connections;
         _panelHub = panelHub;
         _tickets = tickets;
+        _mdbStatusRequests = mdbStatusRequests;
+        _mdbOptions = mdbOptions.Value;
     }
 
     [HttpGet("connections")]
@@ -62,6 +68,8 @@ public sealed class TelemetryController : BaseApiController
             .Where(x => ids.Contains(x.MachineId) && x.ClosedAt == null)
             .ToDictionaryAsync(x => x.MachineId, cancellationToken);
 
+        var now = DateTime.UtcNow;
+        var staleAfter = TimeSpan.FromSeconds(Math.Clamp(_mdbOptions.StaleAfterSeconds, 10, 3600));
         var items = machines.Select(machine =>
         {
             states.TryGetValue(machine.Id, out var connection);
@@ -74,9 +82,19 @@ public sealed class TelemetryController : BaseApiController
                 location = machine.Location,
                 online = connection?.IsOnline == true && _connections.IsOnline(machine.SerialNumber),
                 monitoringEnabled = connection?.MonitoringEnabled == true,
+                autoOpenSessionEnabled = machine.AutoOpenSessionEnabled,
+                manualStartRequiresMdb = _mdbOptions.EnforceOnManualStart,
                 connectedAt = connection?.ConnectedAt,
                 disconnectedAt = connection?.DisconnectedAt,
                 lastSeenAt = connection?.LastSeenAt,
+                mdbStatus = connection?.MdbStatus,
+                mdbStatusUpdatedAt = connection?.MdbStatusUpdatedAt,
+                mdbStatusFresh = connection?.MdbStatus != null &&
+                                 connection.MdbStatusUpdatedAt >= now - staleAfter &&
+                                 connection.IsOnline &&
+                                 _connections.IsOnline(machine.SerialNumber),
+                autoOpenLastAttemptAt = connection?.AutoOpenLastAttemptAt,
+                autoOpenLastError = connection?.AutoOpenLastError,
                 signal = (int?)null,
                 activeSession = session == null ? null : new
                 {
@@ -144,11 +162,52 @@ public sealed class TelemetryController : BaseApiController
         if (state?.MonitoringEnabled != true) return Conflict(new { code = "monitoring_inactive", message = "Ative o acompanhamento da máquina." });
         try
         {
-            var session = await _orchestrator.StartSessionAsync(machineId, companyId, userId, request?.Source ?? "panel", cancellationToken);
+            var session = await _orchestrator.StartSessionAsync(machineId, companyId, userId, "panel", cancellationToken);
             return CreatedAtAction(nameof(GetSession), new { sessionId = session.Id }, session);
         }
         catch (KeyNotFoundException) { return NotFound(); }
         catch (InvalidOperationException ex) { return Conflict(new { code = ex.Message, message = MapError(ex.Message) }); }
+    }
+
+    [HttpPost("machines/{machineId}/mdb-status")]
+    public async Task<IActionResult> RequestMdbStatus(string machineId, CancellationToken cancellationToken)
+    {
+        if (!TryGetIdentity(out var userId, out var companyId))
+            return BadRequest(new { message = "Usuário sem empresa." });
+
+        try
+        {
+            var result = await _mdbStatusRequests.RequestAsync(
+                machineId,
+                companyId,
+                userId,
+                "panel",
+                cancellationToken);
+            if (!result.Success)
+            {
+                return StatusCode(StatusCodes.Status504GatewayTimeout, new
+                {
+                    code = result.Error,
+                    message = MapError(result.Error ?? "mdb_status_unavailable")
+                });
+            }
+
+            return Ok(new
+            {
+                machineId,
+                messageId = result.MessageId,
+                mdbStatus = result.Status,
+                mdbStatusUpdatedAt = result.ResponseAt
+            });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { code = ex.Message, message = MapError(ex.Message) });
+        }
     }
 
     [HttpGet("sessions/{sessionId:guid}")]
@@ -236,7 +295,14 @@ public sealed class TelemetryController : BaseApiController
     private static string MapError(string code) => code switch
     {
         "machine_offline" => "A máquina está offline.",
+        "monitoring_inactive" => "Ative o acompanhamento da máquina.",
         "session_already_active" => "A máquina já possui uma sessão ativa.",
+        "mdb_status_unavailable" => "O status MDB ainda não está disponível.",
+        "mdb_status_stale" => "O status MDB está desatualizado. Consulte novamente.",
+        "mdb_not_ready" => "O MDB não está disponível para abrir uma sessão.",
+        "response_timeout" => "A máquina não respondeu à consulta MDB.",
+        "invalid_mdb_status" => "A máquina retornou um status MDB desconhecido.",
+        "automatic_session_disabled" => "A abertura automática está desativada.",
         "payment_already_approved" => "O pagamento já foi aprovado e não pode ser cancelado desta forma.",
         _ => "Não foi possível concluir a operação."
     };

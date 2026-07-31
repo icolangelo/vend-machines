@@ -249,6 +249,7 @@ ALTER TABLE "Machines" ADD COLUMN "LocationId" TEXT NULL;
         EnsureSqliteColumn(context, "ProductTypes", "OriginalId", "TEXT NULL");
         EnsureSqliteColumn(context, "PaymentTransactions", "SendTelemetryToMachine", "INTEGER NOT NULL DEFAULT 1");
         EnsureSqliteColumn(context, "Machines", "NormalizedSerialNumber", "TEXT NULL");
+        EnsureSqliteColumn(context, "Machines", "AutoOpenSessionEnabled", "INTEGER NOT NULL DEFAULT 0");
 
         context.Database.ExecuteSqlRaw("""
 UPDATE "Machines" SET "NormalizedSerialNumber" = upper(trim("SerialNumber"))
@@ -272,11 +273,26 @@ CREATE TABLE IF NOT EXISTS "MachineConnectionStates" (
     "ActivatedByUserId" TEXT NULL,
     "DeactivatedAt" TEXT NULL,
     "DeactivatedByUserId" TEXT NULL,
+    "MdbStatus" TEXT NULL,
+    "MdbStatusRaw" TEXT NULL,
+    "MdbStatusUpdatedAt" TEXT NULL,
+    "MdbStatusRequestAt" TEXT NULL,
+    "MdbStatusRequestMessageId" INTEGER NULL,
+    "AutoOpenLastAttemptAt" TEXT NULL,
+    "AutoOpenLastError" TEXT NULL,
     CONSTRAINT "FK_MachineConnectionStates_Machines_MachineId" FOREIGN KEY ("MachineId") REFERENCES "Machines" ("Id") ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_MachineConnectionStates_MachineId" ON "MachineConnectionStates" ("MachineId");
 CREATE INDEX IF NOT EXISTS "IX_MachineConnectionStates_CompanyId_IsOnline" ON "MachineConnectionStates" ("CompanyId", "IsOnline");
 """);
+
+        EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatus", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRaw", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusUpdatedAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRequestAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRequestMessageId", "INTEGER NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "AutoOpenLastAttemptAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "AutoOpenLastError", "TEXT NULL");
 
         context.Database.ExecuteSqlRaw("""
 CREATE TABLE IF NOT EXISTS "MachineSessions" (
@@ -302,6 +318,13 @@ CREATE TABLE IF NOT EXISTS "MachineSessions" (
 CREATE INDEX IF NOT EXISTS "IX_MachineSessions_CompanyId_MachineId_State" ON "MachineSessions" ("CompanyId", "MachineId", "State");
 CREATE INDEX IF NOT EXISTS "IX_MachineSessions_MachineId" ON "MachineSessions" ("MachineId");
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_MachineSessions_TransactionId" ON "MachineSessions" ("TransactionId");
+""");
+
+        EnsureNoDuplicateOpenSessions(context);
+        context.Database.ExecuteSqlRaw("""
+CREATE UNIQUE INDEX IF NOT EXISTS "UX_MachineSessions_OneOpenPerMachine"
+ON "MachineSessions" ("MachineId")
+WHERE "ClosedAt" IS NULL;
 """);
 
         context.Database.ExecuteSqlRaw("""
@@ -458,6 +481,42 @@ ALTER TABLE "{tableName}" ADD COLUMN "{columnName}" {columnDefinition};
             }
 
             return false;
+        }
+        finally
+        {
+            if (shouldClose)
+            {
+                connection.Close();
+            }
+        }
+    }
+
+    private static void EnsureNoDuplicateOpenSessions(AppDbContext context)
+    {
+        var connection = context.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        if (shouldClose)
+        {
+            connection.Open();
+        }
+
+        try
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+SELECT "MachineId"
+FROM "MachineSessions"
+WHERE "ClosedAt" IS NULL
+GROUP BY "MachineId"
+HAVING COUNT(*) > 1
+LIMIT 1;
+""";
+            var duplicateMachineId = command.ExecuteScalar()?.ToString();
+            if (!string.IsNullOrWhiteSpace(duplicateMachineId))
+            {
+                throw new InvalidOperationException(
+                    $"A máquina {duplicateMachineId} possui mais de uma sessão aberta. Corrija os dados antes de iniciar a aplicação.");
+            }
         }
         finally
         {

@@ -35,6 +35,20 @@ scenario sale-success 2 2200
 
 Quando chegar `ABRIR_SESSAO`, o CLI executa `begin_session`, solicita o produto, exibe o Pix recebido e aguarda a aprovação real do backend. Após `VENDA_APROVADA`, conclui a entrega e encerra a sessão.
 
+O simulador também responde ao comando `MDB_STATUS` diretamente com uma mensagem
+`type: "msg"`, `command: "status"` e o estado MDB atual, sem enviar um ACK separado.
+Por padrão, o estado acompanha o ciclo da máquina. Para fixar um estado durante os
+testes, use:
+
+```text
+mdb inactive_state
+mdb disable_state
+mdb enabled_state
+mdb idle_state
+mdb vend_state
+mdb auto
+```
+
 Outros exemplos:
 
 ```text

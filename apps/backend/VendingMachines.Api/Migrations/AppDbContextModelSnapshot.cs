@@ -158,6 +158,9 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("Id")
                         .HasColumnType("text");
 
+                    b.Property<bool>("AutoOpenSessionEnabled")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("ClientName")
                         .IsRequired()
                         .HasColumnType("text");
@@ -228,6 +231,12 @@ namespace VendingMachines.Api.Migrations
                     b.Property<Guid?>("ActivatedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("AutoOpenLastAttemptAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AutoOpenLastError")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uuid");
 
@@ -255,6 +264,21 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("MachineId")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("MdbStatus")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MdbStatusRaw")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("MdbStatusRequestAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("MdbStatusRequestMessageId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("MdbStatusUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<bool>("MonitoringEnabled")
                         .HasColumnType("boolean");
@@ -325,7 +349,10 @@ namespace VendingMachines.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MachineId");
+                    b.HasIndex("MachineId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_MachineSessions_OneOpenPerMachine")
+                        .HasFilter("\"ClosedAt\" IS NULL");
 
                     b.HasIndex("TransactionId")
                         .IsUnique();

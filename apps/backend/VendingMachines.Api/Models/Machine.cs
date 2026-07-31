@@ -18,4 +18,5 @@ public class Machine
     public Guid? LocationId { get; set; }
     public Location? AssignedLocation { get; set; }
     public bool MercadoPagoEnabled { get; set; } = false;
+    public bool AutoOpenSessionEnabled { get; set; } = false;
 }

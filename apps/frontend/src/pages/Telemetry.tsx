@@ -14,12 +14,14 @@ import {
     createTelemetrySocketTicket,
     getTelemetryConnections,
     getTelemetryEvents,
+    requestMdbStatus,
     sendTelemetryCommand,
     setTelemetryMonitoring,
     startTelemetrySession,
     type TelemetryConnection,
     type TelemetryEventItem,
 } from "@/lib/api";
+import { getMdbStatusDetail } from "@/lib/mdbStatus";
 
 const stateLabels: Record<string, string> = {
     Opening: "Abrindo sessão",
@@ -118,6 +120,16 @@ export default function Telemetry() {
                                 ? { ...item, monitoringEnabled: message.enabled }
                                 : item));
                         }
+                        if (message.type === "mdb.status.updated") {
+                            setConnections(current => current.map(item => item.machineId === message.machineId
+                                ? {
+                                    ...item,
+                                    mdbStatus: message.mdbStatus,
+                                    mdbStatusUpdatedAt: message.mdbStatusUpdatedAt,
+                                    mdbStatusFresh: message.mdbStatusFresh,
+                                }
+                                : item));
+                        }
                         if (["sale.updated", "telemetry.received"].includes(message.type)) {
                             if (message.machineId === selectedIdRef.current) loadEvents(message.machineId);
                             if (message.type === "sale.updated") loadConnections();
@@ -157,6 +169,11 @@ export default function Telemetry() {
     const canCancelSession = selected?.activeSession
         ? cancellableSessionStates.has(selected.activeSession.state)
         : false;
+    const mdbReady = selected?.mdbStatusFresh && selected.mdbStatus === "enabled_state";
+    const canStartSession = !!selected &&
+        selected.online &&
+        selected.monitoringEnabled &&
+        (!selected.manualStartRequiresMdb || mdbReady);
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
         return connections.filter(item => !term || item.machineName.toLowerCase().includes(term) || item.serialNumber.toLowerCase().includes(term));
@@ -219,6 +236,9 @@ export default function Telemetry() {
                                             </div>
                                             <div className="mt-2 flex gap-1.5 flex-wrap">
                                                 <Badge variant={machine.monitoringEnabled ? "default" : "outline"}>{machine.monitoringEnabled ? "Ativa" : "Inativa"}</Badge>
+                                                <Badge variant={machine.mdbStatusFresh ? "secondary" : "outline"}>
+                                                    {getMdbStatusDetail(machine.mdbStatus).label}
+                                                </Badge>
                                                 {machine.activeSession && <Badge variant="secondary">{stateLabels[machine.activeSession.state] ?? machine.activeSession.state}</Badge>}
                                             </div>
                                         </button>
@@ -243,8 +263,18 @@ export default function Telemetry() {
                                                     <Activity className="h-4 w-4 mr-2" />
                                                     {selected.monitoringEnabled ? "Desativar acompanhamento" : "Ativar acompanhamento"}
                                                 </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    disabled={busy || !selected.online || !selected.monitoringEnabled}
+                                                    onClick={() => run(
+                                                        () => requestMdbStatus(selected.machineId),
+                                                        "Status MDB atualizado")}
+                                                >
+                                                    <RefreshCw className="h-4 w-4 mr-2" />
+                                                    Consultar MDB
+                                                </Button>
                                                 {!selected.activeSession ? (
-                                                    <Button disabled={busy || !selected.online || !selected.monitoringEnabled} onClick={() => run(
+                                                    <Button disabled={busy || !canStartSession} onClick={() => run(
                                                         () => startTelemetrySession(selected.machineId), "Sessão solicitada") }>
                                                         <DoorOpen className="h-4 w-4 mr-2" /> Abrir sessão
                                                     </Button>
@@ -260,11 +290,29 @@ export default function Telemetry() {
                                             </div>
                                         </div>
                                     </CardHeader>
-                                    <CardContent className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                                    <CardContent className="grid sm:grid-cols-2 xl:grid-cols-5 gap-3">
                                         <StatusItem icon={selected.online ? Wifi : WifiOff} label="Conexão física" value={selected.online ? "Online" : "Offline"} alert={!selected.online} />
                                         <StatusItem icon={Server} label="Último contato" value={formatDate(selected.lastSeenAt)} />
+                                        <StatusItem
+                                            icon={Activity}
+                                            label="Status MDB"
+                                            value={getMdbStatusDetail(selected.mdbStatus).label}
+                                            alert={!selected.mdbStatusFresh}
+                                        />
                                         <StatusItem icon={Activity} label="Sessão MDB" value={selected.activeSession ? stateLabels[selected.activeSession.state] ?? selected.activeSession.state : "Sem sessão"} />
                                         <StatusItem icon={CircleDollarSign} label="Venda" value={selected.activeSession?.amountCents != null ? (selected.activeSession.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "—"} />
+                                    </CardContent>
+                                    <CardContent className="pt-0">
+                                        <p className="text-xs text-muted-foreground">
+                                            {getMdbStatusDetail(selected.mdbStatus).description}
+                                            {" "}Última atualização: {formatDate(selected.mdbStatusUpdatedAt)}.
+                                        </p>
+                                        {selected.autoOpenSessionEnabled && (
+                                            <p className="text-xs text-primary mt-1">Abertura automática habilitada para esta máquina.</p>
+                                        )}
+                                        {selected.autoOpenLastError && (
+                                            <p className="text-xs text-red-600 mt-1">Última tentativa automática: {selected.autoOpenLastError}.</p>
+                                        )}
                                     </CardContent>
                                 </Card>
 
