@@ -395,6 +395,7 @@ public sealed class SessionOrchestrator
     public async Task ProcessOutboxAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var sessionsToBroadcast = new List<MachineSession>();
         var messages = await _db.OutboxMessages
             .Where(x => x.Status == "pending" && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
             .OrderBy(x => x.CreatedAt)
@@ -433,7 +434,12 @@ public sealed class SessionOrchestrator
                     session.State = MachineSessionStates.Refunded;
                     transaction.Status = "Refunded";
                     await AddEventAsync(session, "refund.completed", null, null, null, cancellationToken);
-                    await BroadcastSessionAsync(session);
+                    sessionsToBroadcast.Add(session);
+                }
+                else if (message.MessageType == "cancel_payment")
+                {
+                    transaction.Status = "Cancelled";
+                    transaction.CompletedAt = now;
                 }
             }
             else if (message.Attempts >= 5)
@@ -443,9 +449,25 @@ public sealed class SessionOrchestrator
                 if (message.MessageType == "refund_payment" && session != null)
                 {
                     session.State = MachineSessionStates.ReconciliationRequired;
-                    transaction.Status = "Failed";
+                    transaction.Status = "ReconciliationRequired";
                     await AddEventAsync(session, "refund.failed", "Estorno falhou após cinco tentativas.", null, null, cancellationToken);
-                    await BroadcastSessionAsync(session);
+                    sessionsToBroadcast.Add(session);
+                }
+                else if (message.MessageType == "cancel_payment")
+                {
+                    transaction.Status = "ReconciliationRequired";
+                    if (session != null)
+                    {
+                        session.State = MachineSessionStates.ReconciliationRequired;
+                        await AddEventAsync(
+                            session,
+                            "payment.cancellation_failed",
+                            "Cancelamento financeiro falhou após cinco tentativas.",
+                            null,
+                            null,
+                            cancellationToken);
+                        sessionsToBroadcast.Add(session);
+                    }
                 }
             }
             else
@@ -456,6 +478,8 @@ public sealed class SessionOrchestrator
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+        foreach (var session in sessionsToBroadcast.DistinctBy(x => x.Id))
+            await BroadcastSessionAsync(session);
     }
 
     private async Task CreateAndSendPixAsync(MachineSession session, int amountCents, int itemNumber, CancellationToken cancellationToken)
@@ -615,6 +639,8 @@ public sealed class SessionOrchestrator
 
     private async Task HandleEndSessionAsync(MachineSession session, JsonElement data, CancellationToken cancellationToken)
     {
+        var processFinancialOutbox = false;
+
         if (session.State == MachineSessionStates.ClosingWithoutSelection)
             session.State = MachineSessionStates.ClosedWithoutSelection;
         else if (session.State is MachineSessionStates.Opening or MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.AwaitingSelection)
@@ -627,13 +653,24 @@ public sealed class SessionOrchestrator
             session.State = MachineSessionStates.Denied;
         else if (session.State == MachineSessionStates.PaymentPending)
         {
-            await CancelPendingPaymentAsync(
-                session,
-                "device_closed_during_payment",
-                null,
-                cancellationToken,
-                notifyMachine: false);
             session.State = MachineSessionStates.Denied;
+            session.CloseReason = "device_closed_during_payment";
+            if (session.Transaction != null)
+            {
+                session.Transaction.Status = "CancellationPending";
+                await EnqueueOutboxAsync(
+                    session,
+                    "cancel_payment",
+                    new { reason = session.CloseReason },
+                    cancellationToken);
+            }
+            await AddEventAsync(
+                session,
+                "payment.cancelled",
+                session.CloseReason,
+                null,
+                null,
+                cancellationToken);
         }
         else if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
         {
@@ -646,14 +683,23 @@ public sealed class SessionOrchestrator
                 null,
                 data.GetRawText(),
                 cancellationToken);
-            await _db.SaveChangesAsync(cancellationToken);
-            await BeginRefundAsync(session, "delivery_result_missing", cancellationToken);
+            processFinancialOutbox = await QueueRefundAsync(
+                session,
+                "delivery_result_missing",
+                cancellationToken);
         }
 
+        // O encerramento físico é durável antes de qualquer chamada ao provedor. A
+        // intenção financeira é salva na mesma unidade de trabalho e pode ser retomada
+        // pelo worker mesmo que o processamento imediato falhe.
         session.ClosedAt = DateTime.UtcNow;
         session.SelectionDeadlineAt = null;
         session.PaymentDeadlineAt = null;
         session.DeliveryDeadlineAt = null;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        if (processFinancialOutbox)
+            await ProcessOutboxAsync(cancellationToken);
     }
 
     private async Task EvaluateEarlyCloseAlertAsync(MachineSession session, CancellationToken cancellationToken)
@@ -681,9 +727,8 @@ public sealed class SessionOrchestrator
         session.PaymentDeadlineAt = null;
         if (session.Transaction != null)
         {
-            session.Transaction.Status = "Rejected";
-            session.Transaction.CompletedAt = DateTime.UtcNow;
-            EnqueueOutbox(session, "cancel_payment", new { reason });
+            session.Transaction.Status = "CancellationPending";
+            await EnqueueOutboxAsync(session, "cancel_payment", new { reason }, cancellationToken);
         }
         await AddEventAsync(session, "payment.cancelled", reason, userId, null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -839,19 +884,28 @@ public sealed class SessionOrchestrator
 
     private async Task BeginRefundAsync(MachineSession session, string reason, CancellationToken cancellationToken)
     {
+        if (!await QueueRefundAsync(session, reason, cancellationToken)) return;
+        await _db.SaveChangesAsync(cancellationToken);
+        await ProcessOutboxAsync(cancellationToken);
+        await BroadcastSessionAsync(session);
+    }
+
+    private async Task<bool> QueueRefundAsync(
+        MachineSession session,
+        string reason,
+        CancellationToken cancellationToken)
+    {
         if (session.Transaction == null && session.TransactionId.HasValue)
             session.Transaction = await _db.PaymentTransactions.FirstOrDefaultAsync(x => x.Id == session.TransactionId, cancellationToken);
-        if (session.Transaction == null) return;
-        if (session.Transaction.Status is "Refunded" or "RefundPending") return;
+        if (session.Transaction == null) return false;
+        if (session.Transaction.Status is "Refunded" or "RefundPending" or "ReconciliationRequired") return false;
 
         session.State = MachineSessionStates.RefundPending;
         session.Transaction.Status = "RefundPending";
         session.DeliveryDeadlineAt = null;
         await AddEventAsync(session, "refund.requested", reason, null, null, cancellationToken);
-        EnqueueOutbox(session, "refund_payment", new { reason });
-        await _db.SaveChangesAsync(cancellationToken);
-        await ProcessOutboxAsync(cancellationToken);
-        await BroadcastSessionAsync(session);
+        await EnqueueOutboxAsync(session, "refund_payment", new { reason }, cancellationToken);
+        return true;
     }
 
     private async Task<bool> RefundProviderPaymentAsync(PaymentTransaction transaction, CancellationToken cancellationToken)
@@ -896,9 +950,20 @@ public sealed class SessionOrchestrator
         }
     }
 
-    private void EnqueueOutbox(MachineSession session, string messageType, object payload)
+    private async Task EnqueueOutboxAsync(
+        MachineSession session,
+        string messageType,
+        object payload,
+        CancellationToken cancellationToken)
     {
-        if (_db.OutboxMessages.Local.Any(x => x.SessionId == session.Id && x.MessageType == messageType && x.Status == "pending")) return;
+        if (_db.OutboxMessages.Local.Any(x => x.SessionId == session.Id && x.MessageType == messageType) ||
+            await _db.OutboxMessages.AnyAsync(
+                x => x.SessionId == session.Id && x.MessageType == messageType,
+                cancellationToken))
+        {
+            return;
+        }
+
         _db.OutboxMessages.Add(new OutboxMessage
         {
             CompanyId = session.CompanyId,

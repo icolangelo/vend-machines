@@ -127,9 +127,14 @@ public sealed class SessionOrchestratorFlowTests
         await scenario.SendAsync("pool", "vend_denied", includeTransactionId);
         await scenario.CloseFromDeviceAsync(includeTransactionId);
 
+        var pending = await scenario.ReloadSessionAsync();
+        Assert.Equal("CancellationPending", pending.Transaction!.Status);
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
         var session = await scenario.ReloadSessionAsync();
         Assert.Equal(MachineSessionStates.Denied, session.State);
-        Assert.Equal("Rejected", session.Transaction!.Status);
+        Assert.Equal("Cancelled", session.Transaction!.Status);
+        Assert.NotNull(session.Transaction.CompletedAt);
         Assert.Equal("user_cancelled", session.CloseReason);
         Assert.NotNull(session.ClosedAt);
         Assert.Equal(1, await scenario.EventCountAsync("payment.cancelled"));
@@ -166,6 +171,118 @@ public sealed class SessionOrchestratorFlowTests
         Assert.Equal("delivery_result_missing", session.CloseReason);
         Assert.NotNull(session.ClosedAt);
         Assert.Equal(1, await scenario.EventCountAsync("delivery.result_missing"));
+        Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+        Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EndSession_ProviderFailureKeepsPhysicalSessionClosedAndRefundPending(bool includeTransactionId)
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId);
+
+        var session = await scenario.ReloadSessionAsync();
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.NotNull(session.ClosedAt);
+        Assert.Equal(MachineSessionStates.RefundPending, session.State);
+        Assert.Equal("RefundPending", session.Transaction!.Status);
+        Assert.Equal("pending", outbox.Status);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+        Assert.Equal(0, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ClosedSession_FinancialOutboxCanResumeAfterProviderRecovery(bool includeTransactionId)
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
+        await scenario.SendAsync("pool", "end_session", includeTransactionId);
+        var physicallyClosedAt = (await scenario.ReloadSessionAsync()).ClosedAt;
+
+        await scenario.SetProviderPaymentIdAsync($"mock_{Guid.NewGuid():N}");
+        await scenario.MakeOutboxDueAsync("refund_payment");
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.Equal(physicallyClosedAt, session.ClosedAt);
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(2, outbox.Attempts);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EndSessionDuringPendingPayment_ClosesBeforeCancellationIsProcessed(bool includeTransactionId)
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+        await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId);
+
+        var session = await scenario.ReloadSessionAsync();
+        var outbox = await scenario.SingleOutboxAsync("cancel_payment");
+        Assert.NotNull(session.ClosedAt);
+        Assert.Equal(MachineSessionStates.Denied, session.State);
+        Assert.Equal("CancellationPending", session.Transaction!.Status);
+        Assert.Equal("pending", outbox.Status);
+        Assert.Equal(0, outbox.Attempts);
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+        session = await scenario.ReloadSessionAsync();
+        outbox = await scenario.SingleOutboxAsync("cancel_payment");
+        Assert.NotNull(session.ClosedAt);
+        Assert.Equal("CancellationPending", session.Transaction!.Status);
+        Assert.Equal(1, outbox.Attempts);
+    }
+
+    [Fact]
+    public async Task RefundFailureAfterFiveAttempts_RequiresReconciliationButStaysClosed()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
+        await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
+
+        for (var attempt = 1; attempt < 5; attempt++)
+        {
+            await scenario.MakeOutboxDueAsync("refund_payment");
+            await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+        }
+
+        var session = await scenario.ReloadSessionAsync();
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.NotNull(session.ClosedAt);
+        Assert.Equal(MachineSessionStates.ReconciliationRequired, session.State);
+        Assert.Equal("ReconciliationRequired", session.Transaction!.Status);
+        Assert.Equal("failed", outbox.Status);
+        Assert.Equal(5, outbox.Attempts);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.failed"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DuplicateEndSession_DoesNotDuplicateFinancialWork(bool includeTransactionId)
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId);
+        await scenario.SendAsync("pool", "end_session", includeTransactionId);
+
+        Assert.NotNull((await scenario.ReloadSessionAsync()).ClosedAt);
+        Assert.Equal(1, await scenario.OutboxCountAsync("refund_payment"));
         Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
         Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
     }
@@ -540,6 +657,24 @@ public sealed class SessionOrchestratorFlowTests
 
         public Task<int> OutboxCountAsync(string messageType) =>
             Db.OutboxMessages.AsNoTracking().CountAsync(x => x.SessionId == SessionId && x.MessageType == messageType);
+
+        public Task<OutboxMessage> SingleOutboxAsync(string messageType) =>
+            Db.OutboxMessages.AsNoTracking().SingleAsync(x => x.SessionId == SessionId && x.MessageType == messageType);
+
+        public async Task SetProviderPaymentIdAsync(string paymentId)
+        {
+            var transaction = await Db.PaymentTransactions.SingleAsync(x => x.Id == TransactionId);
+            transaction.MercadoPagoPaymentId = paymentId;
+            await Db.SaveChangesAsync();
+        }
+
+        public async Task MakeOutboxDueAsync(string messageType)
+        {
+            var outbox = await Db.OutboxMessages.SingleAsync(
+                x => x.SessionId == SessionId && x.MessageType == messageType);
+            outbox.NextAttemptAt = DateTime.UtcNow.AddSeconds(-1);
+            await Db.SaveChangesAsync();
+        }
 
         public async ValueTask DisposeAsync()
         {
