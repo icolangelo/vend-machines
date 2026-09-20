@@ -1,8 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, type Machine, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type Machine, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import { getErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +13,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
 export default function PaymentSimulator() {
-    const navigate = useNavigate();
     const { toast } = useToast();
     const [machines, setMachines] = useState<Machine[]>([]);
     const [loadingMachines, setLoadingMachines] = useState(true);
@@ -48,11 +47,6 @@ export default function PaymentSimulator() {
     const [pollingActive, setPollingActive] = useState(false);
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         setLoadingMachines(true);
         getMachines()
             .then(data => {
@@ -68,7 +62,7 @@ export default function PaymentSimulator() {
                 console.error("Erro ao carregar máquinas:", err);
                 setLoadingMachines(false);
             });
-    }, [navigate]);
+    }, []);
 
     // Polling effect for telemetry logs
     useEffect(() => {
@@ -147,15 +141,15 @@ export default function PaymentSimulator() {
                 title: "Sucesso",
                 description: "Cobrança Pix criada! Aguardando pagamento..."
             });
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Erro ao criar cobrança:", err);
-            if (err.transactionId) {
+            if (err instanceof PaymentRequestError && err.transactionId) {
                 setTransaction({ transactionId: err.transactionId, qrCode: "", qrCodeBase64: "", status: "Failed" });
                 setPollingActive(true);
             }
             toast({
                 title: "Erro na Operação",
-                description: err.message || "Erro ao criar cobrança Pix no Mercado Pago.",
+                description: getErrorMessage(err, "Erro ao criar cobrança Pix no Mercado Pago."),
                 variant: "destructive"
             });
         } finally {

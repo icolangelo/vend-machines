@@ -11,6 +11,16 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddControllers();
 builder.Services.AddHttpClient("MercadoPago");
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddOptions<AuthOptions>()
+    .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
+    .Validate(x => x.AccessTokenMinutes > 0, "Auth:AccessTokenMinutes deve ser maior que zero.")
+    .Validate(x => x.RefreshTokenDays > 0, "Auth:RefreshTokenDays deve ser maior que zero.")
+    .Validate(x => x.RefreshReuseGraceSeconds >= 0, "Auth:RefreshReuseGraceSeconds não pode ser negativo.")
+    .ValidateOnStart();
+builder.Services.AddScoped<AuthTokenService>();
+builder.Services.AddScoped<RefreshSessionService>();
+builder.Services.AddScoped<AuthCookieService>();
 
 // Configure DbContext with PostgreSQL or SQLite fallback
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -43,7 +53,33 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<IDataService, DatabaseDataService>();
 
 // Configure JWT Authentication
-var jwtKey = builder.Configuration["Jwt:Key"] ?? "SuperSecretKeyForVendingMachinesManager2026!";
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    if (!builder.Environment.IsDevelopment())
+    {
+        throw new InvalidOperationException("A configuração Jwt:Key é obrigatória fora do ambiente de desenvolvimento.");
+    }
+
+    jwtKey = "DevelopmentOnlyKeyForVendingMachines2026!";
+}
+if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
+{
+    throw new InvalidOperationException("A configuração Jwt:Key deve ter pelo menos 32 bytes.");
+}
+builder.Configuration["Jwt:Key"] = jwtKey;
+
+if (!builder.Environment.IsDevelopment())
+{
+    foreach (var requiredSecret in new[] { "MercadoPago:ClientSecret", "MercadoPago:WebhookSecret" })
+    {
+        if (string.IsNullOrWhiteSpace(builder.Configuration[requiredSecret]))
+        {
+            throw new InvalidOperationException($"A configuração {requiredSecret} é obrigatória fora do ambiente de desenvolvimento.");
+        }
+    }
+}
+
 var issuer = builder.Configuration["Jwt:Issuer"] ?? "VendingMachinesApi";
 var audience = builder.Configuration["Jwt:Audience"] ?? "VendingMachinesApp";
 
@@ -99,11 +135,26 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configure CORS
+var allowedCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+if (builder.Environment.IsDevelopment())
+{
+    allowedCorsOrigins = allowedCorsOrigins
+        .Concat(new[] { "http://localhost:5173", "http://localhost:8080" })
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+}
+
+if (allowedCorsOrigins.Length == 0)
+{
+    throw new InvalidOperationException("Configure ao menos uma origem em Cors:AllowedOrigins.");
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.WithOrigins(allowedCorsOrigins)
+              .AllowCredentials()
               .AllowAnyMethod()
               .AllowAnyHeader();
     });
@@ -150,11 +201,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseMiddleware<VendingMachines.Api.Middlewares.ImpersonationMiddleware>();
-
-app.UseCors();
 var webSocketOptions = new WebSocketOptions
 {
     KeepAliveInterval = TimeSpan.FromSeconds(30),
@@ -169,5 +219,9 @@ app.UseWebSockets(webSocketOptions);
 app.UseMiddleware<VendingMachines.Api.Middlewares.WebSocketMiddleware>();
 
 app.MapControllers();
+
+// Health check endpoints para monitoramento do Coolify e testes
+app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }));
+app.MapGet("/", () => Results.Ok(new { app = "Vending Machines API", status = "Online" }));
 
 app.Run();

@@ -228,6 +228,26 @@ CREATE TABLE IF NOT EXISTS "Locations" (
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_Locations_CompanyId_Name" ON "Locations" ("CompanyId", "Name");
 """);
 
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "RefreshSessions" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_RefreshSessions" PRIMARY KEY,
+    "UserId" TEXT NOT NULL,
+    "FamilyId" TEXT NOT NULL,
+    "TokenHash" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL,
+    "ExpiresAt" TEXT NOT NULL,
+    "LastUsedAt" TEXT NULL,
+    "RevokedAt" TEXT NULL,
+    "ReplacedBySessionId" TEXT NULL,
+    "CreatedByIp" TEXT NULL,
+    "UserAgent" TEXT NULL,
+    CONSTRAINT "FK_RefreshSessions_Users_UserId" FOREIGN KEY ("UserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_RefreshSessions_TokenHash" ON "RefreshSessions" ("TokenHash");
+CREATE INDEX IF NOT EXISTS "IX_RefreshSessions_FamilyId_RevokedAt" ON "RefreshSessions" ("FamilyId", "RevokedAt");
+CREATE INDEX IF NOT EXISTS "IX_RefreshSessions_UserId_ExpiresAt" ON "RefreshSessions" ("UserId", "ExpiresAt");
+""");
+
         if (!SqliteColumnExists(context, "Machines", "LocationId"))
         {
             context.Database.ExecuteSqlRaw("""

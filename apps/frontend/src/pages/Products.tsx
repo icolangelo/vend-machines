@@ -2,7 +2,6 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { type FullProduct, type ProductType } from "@/data/mockData";
 import { getProducts, getProductTypes, createProduct, updateProduct, deleteProduct } from "@/lib/api";
@@ -35,9 +34,9 @@ import {
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function Products() {
-    const navigate = useNavigate();
     const { logout } = useAuth();
     const { toast } = useToast();
     const [products, setProducts] = useState<FullProduct[]>([]);
@@ -45,11 +44,6 @@ export default function Products() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         setLoading(true);
         Promise.all([getProducts(), getProductTypes()])
             .then(([pList, ptList]) => {
@@ -61,7 +55,7 @@ export default function Products() {
                 console.error("Erro ao carregar produtos:", err);
                 setLoading(false);
             });
-    }, [navigate]);
+    }, []);
 
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingProduct, setEditingProduct] = useState<FullProduct | null>(null);
@@ -117,10 +111,10 @@ export default function Products() {
                 isAlcoholic: false,
                 cost: 0,
             });
-        } catch (err: any) {
+        } catch (err: unknown) {
             toast({
                 title: "Erro",
-                description: err.message || "Erro ao salvar produto.",
+                description: getErrorMessage(err, "Erro ao salvar produto."),
                 variant: "destructive",
             });
         }
@@ -141,10 +135,10 @@ export default function Products() {
                     title: "Sucesso",
                     description: "Produto excluído com sucesso.",
                 });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 toast({
                     title: "Erro",
-                    description: err.message || "Erro ao excluir produto.",
+                    description: getErrorMessage(err, "Erro ao excluir produto."),
                     variant: "destructive",
                 });
             }

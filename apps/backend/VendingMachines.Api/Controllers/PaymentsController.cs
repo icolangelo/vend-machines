@@ -1492,7 +1492,9 @@ public class PaymentsController : ControllerBase
 
     private string SignOAuthState(string encodedPayload)
     {
-        var key = Encoding.UTF8.GetBytes(_configuration["Jwt:Key"] ?? "SuperSecretKeyForVendingMachinesManager2026!");
+        var jwtKey = _configuration["Jwt:Key"]
+            ?? throw new InvalidOperationException("A configuração Jwt:Key é obrigatória.");
+        var key = Encoding.UTF8.GetBytes(jwtKey);
         using var hmac = new HMACSHA256(key);
         return Base64UrlEncode(hmac.ComputeHash(Encoding.UTF8.GetBytes(encodedPayload)));
     }

@@ -10,6 +10,7 @@ import { ArrowLeft, ArrowRight, Box, DollarSign, Edit, ExternalLink, MapPin, Plu
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function Locations() {
     const navigate = useNavigate();
@@ -36,13 +37,8 @@ export default function Locations() {
     };
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         loadLocations();
-    }, [navigate]);
+    }, []);
 
     const { totalLocations, linkedMachines, totalRevenue, totalSales } = useMemo(() => {
         return {
@@ -87,8 +83,8 @@ export default function Locations() {
             }
             setIsDialogOpen(false);
             loadLocations();
-        } catch (err: any) {
-            toast.error(err.message || "Erro ao salvar localização.");
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, "Erro ao salvar localização."));
         }
     };
 
@@ -106,8 +102,8 @@ export default function Locations() {
             await deleteLocation(location.id);
             toast.success("Localização excluída com sucesso.");
             loadLocations();
-        } catch (err: any) {
-            toast.error(err.message || "Erro ao excluir localização.");
+        } catch (err: unknown) {
+            toast.error(getErrorMessage(err, "Erro ao excluir localização."));
         }
     };
 

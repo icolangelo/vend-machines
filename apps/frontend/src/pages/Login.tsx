@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Package, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
+import { getErrorMessage } from "@/lib/utils";
 
 const formatCPF = (value: string) => {
   return value
@@ -28,7 +29,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { login, register, token } = useAuth();
+  const { login, register, token, sessionMessage, clearSessionMessage } = useAuth();
   const navigate = useNavigate();
 
   // Estados para Cadastro
@@ -51,6 +52,13 @@ export default function Login() {
     }
   }, [token, navigate]);
 
+  useEffect(() => {
+    if (sessionMessage) {
+      setError(sessionMessage);
+      clearSessionMessage();
+    }
+  }, [clearSessionMessage, sessionMessage]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
@@ -59,8 +67,8 @@ export default function Login() {
     try {
       await login(email, password);
       navigate("/dashboard");
-    } catch (err: any) {
-      setError(err.message || "Ocorreu um erro ao tentar entrar. Tente novamente.");
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Ocorreu um erro ao tentar entrar. Tente novamente."));
     } finally {
       setIsSubmitting(false);
     }
@@ -97,8 +105,8 @@ export default function Login() {
     try {
       await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
       navigate("/dashboard");
-    } catch (err: any) {
-      setError(err.message || "Ocorreu um erro ao tentar se cadastrar. Tente novamente.");
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, "Ocorreu um erro ao tentar se cadastrar. Tente novamente."));
     } finally {
       setIsSubmitting(false);
     }

@@ -1,32 +1,23 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, ArrowRight, Power, PowerOff, ShieldCheck, User, Building, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { getIntegration, toggleIntegration, getOauthConfig, disconnectIntegration, type MercadoPagoIntegration } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { Badge } from "@/components/ui/badge";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function Integrations() {
-    const navigate = useNavigate();
     const { logout, user } = useAuth();
     const { toast } = useToast();
 
     const [integration, setIntegration] = useState<MercadoPagoIntegration | null>(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-        loadIntegration();
-    }, [navigate]);
-
-    const loadIntegration = async () => {
+    const loadIntegration = useCallback(async () => {
         setLoading(true);
         try {
             const data = await getIntegration();
@@ -41,7 +32,11 @@ export default function Integrations() {
         } finally {
             setLoading(false);
         }
-    };
+    }, [toast]);
+
+    useEffect(() => {
+        void loadIntegration();
+    }, [loadIntegration]);
 
     const handleToggleStatus = async () => {
         if (!integration) return;
@@ -91,11 +86,11 @@ export default function Integrations() {
                 const authUrl = `https://auth.mercadopago.com/authorization?client_id=${config.clientId}&response_type=code&platform_id=mp&redirect_uri=${encodeURIComponent(config.redirectUri)}${stateParam}`;
                 window.location.href = authUrl;
             }
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error(err);
             toast({
                 title: "Erro",
-                description: err.message || "Não foi possível iniciar a conexão com o Mercado Pago.",
+                description: getErrorMessage(err, "Não foi possível iniciar a conexão com o Mercado Pago."),
                 variant: "destructive"
             });
             setLoading(false);
@@ -115,11 +110,11 @@ export default function Integrations() {
                 description: "Sua conta do Mercado Pago foi desconectada com sucesso."
             });
             await loadIntegration();
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error(err);
             toast({
                 title: "Erro",
-                description: err.message || "Ocorreu um erro ao desconectar a conta.",
+                description: getErrorMessage(err, "Ocorreu um erro ao desconectar a conta."),
                 variant: "destructive"
             });
             setLoading(false);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search, Building2, X, Eye, LogOut } from "lucide-react";
 import { useImpersonation } from "@/contexts/ImpersonationContext";
-import { API_BASE_URL } from "@/lib/api";
+import { getCompanies } from "@/lib/api";
 
 interface Company {
   id: string;
@@ -37,15 +37,8 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
   const fetchCompanies = async (term: string) => {
     setLoading(true);
     try {
-      const token = sessionStorage.getItem("token") || localStorage.getItem("token");
-      const res = await fetch(
-        `${API_BASE_URL}/companies?pageSize=50&searchTerm=${encodeURIComponent(term)}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        setCompanies(data.items ?? []);
-      }
+      const data = await getCompanies(1, 50, term);
+      setCompanies(data.items ?? []);
     } finally {
       setLoading(false);
     }

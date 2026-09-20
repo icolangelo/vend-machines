@@ -2,7 +2,6 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { type ProductType } from "@/data/mockData";
 import { getProductTypes, createProductType, updateProductType, deleteProductType } from "@/lib/api";
@@ -25,9 +24,9 @@ import {
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function Settings() {
-    const navigate = useNavigate();
     const { logout, user } = useAuth();
     const { toast } = useToast();
     const [types, setTypes] = useState<ProductType[]>([]);
@@ -36,11 +35,6 @@ export default function Settings() {
 
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         setLoading(true);
         getProductTypes()
             .then(data => {
@@ -51,7 +45,7 @@ export default function Settings() {
                 console.error("Erro ao buscar tipos de produtos:", err);
                 setLoading(false);
             });
-    }, [navigate]);
+    }, []);
 
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingType, setEditingType] = useState<ProductType | null>(null);
@@ -91,10 +85,10 @@ export default function Settings() {
             setIsDialogOpen(false);
             setEditingType(null);
             setNewTypeName("");
-        } catch (err: any) {
+        } catch (err: unknown) {
             toast({
                 title: "Erro",
-                description: err.message || "Erro ao salvar tipo de produto.",
+                description: getErrorMessage(err, "Erro ao salvar tipo de produto."),
                 variant: "destructive",
             });
         }
@@ -115,10 +109,10 @@ export default function Settings() {
                     title: "Sucesso",
                     description: "Tipo de produto excluído com sucesso.",
                 });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 toast({
                     title: "Erro",
-                    description: err.message || "Erro ao excluir tipo de produto.",
+                    description: getErrorMessage(err, "Erro ao excluir tipo de produto."),
                     variant: "destructive",
                 });
             }

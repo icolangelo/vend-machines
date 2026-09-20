@@ -1,12 +1,9 @@
 using System;
-using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
 using VendingMachines.Api.Services;
@@ -18,12 +15,20 @@ namespace VendingMachines.Api.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly AppDbContext _context;
-    private readonly IConfiguration _configuration;
+    private readonly AuthTokenService _tokenService;
+    private readonly RefreshSessionService _refreshSessions;
+    private readonly AuthCookieService _cookieService;
 
-    public AuthController(AppDbContext context, IConfiguration configuration)
+    public AuthController(
+        AppDbContext context,
+        AuthTokenService tokenService,
+        RefreshSessionService refreshSessions,
+        AuthCookieService cookieService)
     {
         _context = context;
-        _configuration = configuration;
+        _tokenService = tokenService;
+        _refreshSessions = refreshSessions;
+        _cookieService = cookieService;
     }
 
     [HttpPost("login")]
@@ -48,22 +53,7 @@ public class AuthController : ControllerBase
             return Unauthorized(new { message = "Credenciais inválidas. E-mail ou senha incorretos." });
         }
 
-        // Gerar token JWT
-        var token = GenerateJwtToken(user);
-
-        return Ok(new
-        {
-            token,
-            user = new
-            {
-                id = user.Id,
-                name = user.Name,
-                email = user.Email,
-                role = user.Role,
-                companyId = user.CompanyId,
-                companyName = user.Company?.Name
-            }
-        });
+        return Ok(await CreateSessionAsync(user));
     }
 
     [HttpPost("register")]
@@ -142,31 +132,85 @@ public class AuthController : ControllerBase
             company.CreatedByUserId = user.Id;
             await _context.SaveChangesAsync();
 
-            await transaction.CommitAsync();
-
-            // Gerar token JWT e realizar login automático
             user.Company = company;
-            var token = GenerateJwtToken(user);
-
-            return Ok(new
-            {
-                token,
-                user = new
-                {
-                    id = user.Id,
-                    name = user.Name,
-                    email = user.Email,
-                    role = user.Role,
-                    companyId = user.CompanyId,
-                    companyName = company.Name
-                }
-            });
+            var session = await IssueSessionAsync(user);
+            await transaction.CommitAsync();
+            _cookieService.Write(Response, session.Refresh.Token, session.Refresh.ExpiresAt);
+            return Ok(session.Response);
         }
         catch (Exception ex)
         {
-            await transaction.RollbackAsync();
+            try
+            {
+                await transaction.RollbackAsync();
+            }
+            catch (InvalidOperationException)
+            {
+                // A transação pode já ter sido confirmada antes de uma falha ao criar a sessão.
+            }
             return StatusCode(500, new { message = "Erro ao processar o cadastro: " + ex.Message });
         }
+    }
+
+    [AllowAnonymous]
+    [HttpPost("refresh")]
+    public async Task<IActionResult> Refresh(CancellationToken cancellationToken)
+    {
+        var refreshToken = _cookieService.Read(Request);
+        if (string.IsNullOrWhiteSpace(refreshToken))
+        {
+            return Unauthorized(new
+            {
+                code = "session_expired",
+                message = "Sua sessão expirou. Entre novamente."
+            });
+        }
+
+        var result = await _refreshSessions.RotateAsync(
+            refreshToken,
+            GetRemoteIpAddress(),
+            Request.Headers.UserAgent.ToString(),
+            cancellationToken);
+
+        if (result.Status == RefreshRotationStatus.Concurrent)
+        {
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                code = "refresh_in_progress",
+                message = "A sessão já está sendo renovada. Tente novamente."
+            });
+        }
+
+        if (result.Status != RefreshRotationStatus.Succeeded ||
+            result.User == null ||
+            result.Token == null ||
+            !result.ExpiresAt.HasValue)
+        {
+            _cookieService.Delete(Response);
+            return Unauthorized(new
+            {
+                code = "session_expired",
+                message = "Sua sessão expirou. Entre novamente."
+            });
+        }
+
+        var accessToken = _tokenService.CreateAccessToken(result.User);
+        _cookieService.Write(Response, result.Token, result.ExpiresAt.Value);
+        return Ok(CreateAuthResponse(result.User, accessToken));
+    }
+
+    [AllowAnonymous]
+    [HttpPost("logout")]
+    public async Task<IActionResult> Logout(CancellationToken cancellationToken)
+    {
+        var refreshToken = _cookieService.Read(Request);
+        if (!string.IsNullOrWhiteSpace(refreshToken))
+        {
+            await _refreshSessions.RevokeAsync(refreshToken, cancellationToken);
+        }
+
+        _cookieService.Delete(Response);
+        return NoContent();
     }
 
     [Authorize]
@@ -196,45 +240,39 @@ public class AuthController : ControllerBase
         });
     }
 
-    private string GenerateJwtToken(User user)
+    private async Task<AuthResponse> CreateSessionAsync(User user)
     {
-        var jwtKey = _configuration["Jwt:Key"] ?? "SuperSecretKeyForVendingMachinesManager2026!";
-        var issuer = _configuration["Jwt:Issuer"] ?? "VendingMachinesApi";
-        var audience = _configuration["Jwt:Audience"] ?? "VendingMachinesApp";
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-
-        var claimsList = new List<Claim>
-        {
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new Claim(ClaimTypes.Name, user.Name),
-            new Claim(ClaimTypes.Email, user.Email),
-            new Claim(ClaimTypes.Role, user.Role),
-            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
-        };
-
-        if (user.CompanyId.HasValue)
-        {
-            claimsList.Add(new Claim("company_id", user.CompanyId.Value.ToString()));
-            if (user.Company != null)
-            {
-                claimsList.Add(new Claim("company_name", user.Company.Name));
-            }
-        }
-
-        var claims = claimsList.ToArray();
-
-        var token = new JwtSecurityToken(
-            issuer: issuer,
-            audience: audience,
-            claims: claims,
-            expires: DateTime.UtcNow.AddDays(7), // Expira em 7 dias
-            signingCredentials: creds
-        );
-
-        return new JwtSecurityTokenHandler().WriteToken(token);
+        var session = await IssueSessionAsync(user);
+        _cookieService.Write(Response, session.Refresh.Token, session.Refresh.ExpiresAt);
+        return session.Response;
     }
+
+    private async Task<(AuthResponse Response, IssuedRefreshSession Refresh)> IssueSessionAsync(User user)
+    {
+        var accessToken = _tokenService.CreateAccessToken(user);
+        var refreshSession = await _refreshSessions.CreateAsync(
+            user,
+            GetRemoteIpAddress(),
+            Request.Headers.UserAgent.ToString(),
+            HttpContext.RequestAborted);
+        return (CreateAuthResponse(user, accessToken), refreshSession);
+    }
+
+    private static AuthResponse CreateAuthResponse(User user, AccessTokenResult accessToken)
+    {
+        return new AuthResponse(
+            accessToken.Token,
+            accessToken.ExpiresAt,
+            new AuthUserResponse(
+                user.Id,
+                user.Name,
+                user.Email,
+                user.Role,
+                user.CompanyId,
+                user.Company?.Name));
+    }
+
+    private string? GetRemoteIpAddress() => HttpContext.Connection.RemoteIpAddress?.ToString();
 
     private static IEnumerable<Location> CreateDefaultLocations(Company company)
     {
@@ -246,6 +284,16 @@ public class AuthController : ControllerBase
         };
     }
 }
+
+public sealed record AuthResponse(string Token, DateTime ExpiresAt, AuthUserResponse User);
+
+public sealed record AuthUserResponse(
+    Guid Id,
+    string Name,
+    string Email,
+    string Role,
+    Guid? CompanyId,
+    string? CompanyName);
 
 public class LoginRequest
 {

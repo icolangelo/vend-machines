@@ -48,7 +48,7 @@ export interface ProductType {
   name: string;
 }
 
-export let productTypes: ProductType[] = [
+export const productTypes: ProductType[] = [
   { id: "pt-1", name: "Bebidas Frias" },
   { id: "pt-2", name: "Bebidas Quentes" },
   { id: "pt-3", name: "Carne" },

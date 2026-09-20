@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { CookieConsent } from "@/components/CookieConsent";
@@ -22,7 +23,7 @@ import Alerts from "./pages/Alerts.tsx";
 import Admin from "./pages/Admin.tsx";
 import PaymentSimulator from "./pages/PaymentSimulator.tsx";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { exchangeOauthCode } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
@@ -33,16 +34,17 @@ const queryClient = new QueryClient();
 const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
     const navigate = useNavigate();
     const { toast } = useToast();
+    const { loading: authLoading, token } = useAuth();
     const [processing, setProcessing] = useState(false);
+    const processedCodeRef = useRef<string | null>(null);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("code");
         const state = params.get("state") || undefined;
 
-        if (code) {
-            const token = sessionStorage.getItem("token") || localStorage.getItem("token");
-            if (!token) return;
+        if (code && !authLoading && token && processedCodeRef.current !== code) {
+            processedCodeRef.current = code;
 
             setProcessing(true);
             const redirectUri = window.location.origin + "/";
@@ -74,7 +76,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
                     setProcessing(false);
                 });
         }
-    }, [navigate, toast]);
+    }, [authLoading, navigate, toast, token]);
 
     if (processing) {
         return (

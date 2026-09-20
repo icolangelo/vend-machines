@@ -7,27 +7,21 @@ import { RevenueChart } from "@/components/dashboard/RevenueChart";
 import { ClientRanking } from "@/components/dashboard/ClientRanking";
 import { ProductRanking } from "@/components/dashboard/ProductRanking";
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
-import { getMachines, getLocations, getTopProducts, getBottomProducts, getDashboardStats } from "@/lib/api";
+import { getMachines, getLocations, getTopProducts, getBottomProducts, getDashboardStats, type DashboardStats } from "@/lib/api";
+import type { Location, Machine, Product } from "@/data/mockData";
 import { DollarSign, ShoppingCart, Box, Zap, LogOut } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function Index() {
-    const navigate = useNavigate();
     const { logout } = useAuth();
-    const [machinesList, setMachinesList] = useState<any[]>([]);
-    const [clientsList, setClientsList] = useState<any[]>([]);
-    const [topProductsList, setTopProductsList] = useState<any[]>([]);
-    const [bottomProductsList, setBottomProductsList] = useState<any[]>([]);
-    const [stats, setStats] = useState<any>(null);
+    const [machinesList, setMachinesList] = useState<Machine[]>([]);
+    const [clientsList, setClientsList] = useState<Location[]>([]);
+    const [topProductsList, setTopProductsList] = useState<Product[]>([]);
+    const [bottomProductsList, setBottomProductsList] = useState<Product[]>([]);
+    const [stats, setStats] = useState<DashboardStats | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         setLoading(true);
         Promise.all([
             getMachines(),
@@ -46,7 +40,7 @@ export default function Index() {
             console.error("Erro ao carregar dados do dashboard:", err);
             setLoading(false);
         });
-    }, [navigate]);
+    }, []);
 
     const kpis = useMemo(() => {
         if (loading || !stats) {

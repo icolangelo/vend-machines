@@ -14,6 +14,7 @@ public class AppDbContext : DbContext
     public DbSet<ProductType> ProductTypes { get; set; } = null!;
     public DbSet<ProductPerformance> ProductPerformances { get; set; } = null!;
     public DbSet<User> Users { get; set; } = null!;
+    public DbSet<RefreshSession> RefreshSessions { get; set; } = null!;
     public DbSet<Company> Companies { get; set; } = null!;
     public DbSet<Location> Locations { get; set; } = null!;
     
@@ -39,6 +40,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<ProductType>().HasKey(pt => pt.Id);
         modelBuilder.Entity<ProductPerformance>().HasKey(pp => pp.Name);
         modelBuilder.Entity<User>().HasKey(u => u.Id);
+        modelBuilder.Entity<RefreshSession>().HasKey(x => x.Id);
         modelBuilder.Entity<Company>().HasKey(c => c.Id);
         modelBuilder.Entity<Location>().HasKey(l => l.Id);
         modelBuilder.Entity<SystemSettings>().HasKey(s => s.Id);
@@ -58,6 +60,28 @@ public class AppDbContext : DbContext
             .WithMany(c => c.Users)
             .HasForeignKey(u => u.CompanyId)
             .OnDelete(DeleteBehavior.SetNull);
+
+        modelBuilder.Entity<RefreshSession>()
+            .HasOne(x => x.User)
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+        modelBuilder.Entity<RefreshSession>()
+            .HasIndex(x => x.TokenHash)
+            .IsUnique();
+        modelBuilder.Entity<RefreshSession>()
+            .HasIndex(x => new { x.FamilyId, x.RevokedAt });
+        modelBuilder.Entity<RefreshSession>()
+            .HasIndex(x => new { x.UserId, x.ExpiresAt });
+        modelBuilder.Entity<RefreshSession>()
+            .Property(x => x.TokenHash)
+            .HasMaxLength(64);
+        modelBuilder.Entity<RefreshSession>()
+            .Property(x => x.CreatedByIp)
+            .HasMaxLength(64);
+        modelBuilder.Entity<RefreshSession>()
+            .Property(x => x.UserAgent)
+            .HasMaxLength(512);
 
         // Relacionamento Empresa -> Máquinas
         modelBuilder.Entity<Machine>()

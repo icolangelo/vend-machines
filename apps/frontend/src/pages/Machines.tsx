@@ -27,11 +27,6 @@ export default function Machines() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (sessionStorage.getItem("isAuthenticated") !== "true") {
-            navigate("/");
-            return;
-        }
-
         setLoading(true);
         Promise.all([getMachines(), getLocations()])
             .then(([mList, locationList]) => {
@@ -43,7 +38,7 @@ export default function Machines() {
                 console.error("Erro ao carregar máquinas:", err);
                 setLoading(false);
             });
-    }, [navigate]);
+    }, []);
 
     const [selectedLocationId, setSelectedLocationId] = useState<string>(
         location.state?.selectedLocationId || "all"

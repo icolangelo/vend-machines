@@ -13,33 +13,13 @@ import {
     type Product,
     type ProductType
 } from "@/data/mockData";
+import { API_BASE_URL, authenticatedFetch } from "@/lib/authClient";
 
-const rawApiUrl = import.meta.env.VITE_API_URL || "http://localhost:5118/api";
-export const API_BASE_URL = rawApiUrl.endsWith("/") ? rawApiUrl.slice(0, -1) : rawApiUrl;
+export { API_BASE_URL } from "@/lib/authClient";
 
 const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
-async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-    const token = sessionStorage.getItem("token") || localStorage.getItem("token");
-    const headers = new Headers(options.headers || {});
-    
-    if (token) {
-        headers.set("Authorization", `Bearer ${token}`);
-    }
-
-    // Inject impersonation header when SuperAdmin is viewing another company
-    try {
-        const impersonated = sessionStorage.getItem("impersonatedCompany");
-        if (impersonated) {
-            const { id } = JSON.parse(impersonated) as { id: string };
-            if (id) headers.set("X-Impersonate-Company-Id", id);
-        }
-    } catch {
-        // ignore parse errors
-    }
-    
-    return fetch(url, { ...options, headers });
-}
+const authFetch = authenticatedFetch;
 
 export async function getMachines(): Promise<Machine[]> {
     if (isTestEnv()) {
@@ -431,7 +411,17 @@ export async function getBottomProducts(): Promise<Product[]> {
     return response.json();
 }
 
-export async function getDashboardStats(): Promise<any> {
+export interface DashboardStats {
+    totalRevenue30d: number;
+    totalSales30d: number;
+    onlineMachines: number;
+    warningMachines: number;
+    offlineMachines: number;
+    revenueHistory: { day: string; revenue: number }[];
+    performanceHistory: { date: string; revenue: number; products: number }[];
+}
+
+export async function getDashboardStats(): Promise<DashboardStats> {
     if (isTestEnv()) {
         const totalRevenue = mockMachines.reduce((s, m) => s + m.revenue30d, 0);
         const totalSales = mockMachines.reduce((s, m) => s + m.totalSales30d, 0);
@@ -649,6 +639,13 @@ export interface TransactionTelemetryLog {
     message: string;
 }
 
+export class PaymentRequestError extends Error {
+    constructor(message: string, public readonly transactionId?: string) {
+        super(message);
+        this.name = "PaymentRequestError";
+    }
+}
+
 export async function getGlobalSettings(): Promise<SystemSettings> {
     if (isTestEnv()) {
         const local = localStorage.getItem("mock_global_settings");
@@ -675,8 +672,7 @@ export async function updateGlobalSettings(settings: SystemSettings): Promise<vo
 export async function getIntegration(): Promise<MercadoPagoIntegration> {
     if (isTestEnv()) {
         const local = localStorage.getItem("mock_mp_integration");
-        const userStr = sessionStorage.getItem("user");
-        const companyId = userStr ? JSON.parse(userStr).companyId : "11111111-1111-1111-1111-111111111111";
+        const companyId = "11111111-1111-1111-1111-111111111111";
         return local ? JSON.parse(local) : {
             companyId,
             ownerName: "", ownerCpf: "", ownerEmail: "", ownerPhone: "",
@@ -740,8 +736,7 @@ export async function getOauthConfig(): Promise<OauthConfig> {
 
 export async function exchangeOauthCode(code: string, redirectUri: string, state?: string): Promise<MercadoPagoIntegration> {
     if (isTestEnv()) {
-        const userStr = sessionStorage.getItem("user");
-        const companyId = userStr ? JSON.parse(userStr).companyId : "11111111-1111-1111-1111-111111111111";
+        const companyId = "11111111-1111-1111-1111-111111111111";
         const mockIntegration: MercadoPagoIntegration = {
             companyId,
             ownerName: "Admin Ivan (Mock)",
@@ -877,10 +872,14 @@ export async function createPixQrCode(params: {
         body: JSON.stringify(params)
     });
     if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const err = new Error(errorData.message || "Erro ao gerar QR Code Pix.") as any;
-        err.transactionId = errorData.transactionId;
-        throw err;
+        const errorData = await response.json().catch(() => ({})) as {
+            message?: string;
+            transactionId?: string;
+        };
+        throw new PaymentRequestError(
+            errorData.message || "Erro ao gerar QR Code Pix.",
+            errorData.transactionId,
+        );
     }
     return response.json();
 }
@@ -933,7 +932,7 @@ export async function simulateWebhook(transactionId: string, approved: boolean, 
 export async function getTransactions(machineId?: string): Promise<PaymentTransaction[]> {
     if (isTestEnv()) {
         const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
-        return list.filter((t: any) => !machineId || t.machineId === machineId);
+        return (list as PaymentTransaction[]).filter((transaction) => !machineId || transaction.machineId === machineId);
     }
     const url = machineId ? `${API_BASE_URL}/payments/transactions?machineId=${machineId}` : `${API_BASE_URL}/payments/transactions`;
     const response = await authFetch(url);
