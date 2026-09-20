@@ -63,7 +63,7 @@ jobs:
           fi
           echo "Avisando o Coolify para atualizar o container..."
           RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}" \
-            -X GET "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" \
+            -X POST "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" \
             -H "Accept: application/json" \
             -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
           
