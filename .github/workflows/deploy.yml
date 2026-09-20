@@ -62,5 +62,16 @@ jobs:
             exit 0
           fi
           echo "Avisando o Coolify para atualizar o container..."
-          curl --fail --show-error -X GET "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}"
-          echo "Deploy disparado com sucesso no Coolify!"
+          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}" \
+            -X GET "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" \
+            -H "Accept: application/json" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
+          
+          echo "$RESPONSE"
+          
+          if echo "$RESPONSE" | grep -q "HTTP_STATUS:20"; then
+            echo "Deploy disparado com sucesso no Coolify!"
+          else
+            echo "::error::Falha ao disparar deploy no Coolify. Verifique o token e a URL."
+            exit 1
+          fi
