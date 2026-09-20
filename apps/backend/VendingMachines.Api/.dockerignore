@@ -7,3 +7,6 @@ out/
 Dockerfile
 .dockerignore
 appsettings.Development.json
+*.db
+*.db-shm
+*.db-wal
