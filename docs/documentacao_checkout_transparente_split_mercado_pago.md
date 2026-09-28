@@ -639,8 +639,8 @@ Identificador da máquina/pedido
 curl --location 'https://api.mercadopago.com/v1/payments' \
   --header 'accept: application/json' \
   --header 'content-type: application/json' \
-  --header 'Authorization: Bearer ACCESS_TOKEN_DO_CLIENTE_VENDEDOR' \
-  --header 'X-Idempotency-Key: UUID-UNICO-DA-OPERACAO' \
+  --header 'Authorization: Bearer ${MERCADO_PAGO_ACCESS_TOKEN}' \
+  --header 'X-Idempotency-Key: ${MERCADO_PAGO_IDEMPOTENCY_KEY}' \
   --data-raw '{
     "transaction_amount": 100.00,
     "description": "Compra na vending machine VM-001",
@@ -667,7 +667,7 @@ Authorization: deve usar o access_token do cliente/vendedor.
 application_fee: sua comissão na transação.
 external_reference: identificador interno da cobrança no seu sistema.
 notification_url: endpoint que receberá notificações do Mercado Pago.
-X-Idempotency-Key: evita duplicidade em caso de retentativa.
+X-Idempotency-Key: ${MERCADO_PAGO_IDEMPOTENCY_KEY} duplicidade em caso de retentativa.
 ```
 
 ---
@@ -735,8 +735,8 @@ Fluxo:
 curl --location 'https://api.mercadopago.com/v1/payments' \
   --header 'accept: application/json' \
   --header 'content-type: application/json' \
-  --header 'Authorization: Bearer ACCESS_TOKEN_DO_CLIENTE_VENDEDOR' \
-  --header 'X-Idempotency-Key: UUID-UNICO-DA-OPERACAO' \
+  --header 'Authorization: Bearer ${MERCADO_PAGO_ACCESS_TOKEN}' \
+  --header 'X-Idempotency-Key: ${MERCADO_PAGO_IDEMPOTENCY_KEY}' \
   --data-raw '{
     "transaction_amount": 100.00,
     "token": "CARD_TOKEN_GERADO_NO_FRONTEND",
@@ -778,7 +778,7 @@ charged_back: chargeback/contestação
 Sempre envie o header:
 
 ```http
-X-Idempotency-Key: UUID-UNICO-DA-OPERACAO
+X-Idempotency-Key: ${MERCADO_PAGO_IDEMPOTENCY_KEY}
 ```
 
 Exemplo:
@@ -936,7 +936,7 @@ Depois de receber o webhook, consulte o pagamento:
 ```bash
 curl -G -X GET \
   -H 'accept: application/json' \
-  -H 'Authorization: Bearer ACCESS_TOKEN_DO_CLIENTE_VENDEDOR' \
+  -H 'Authorization: Bearer ${MERCADO_PAGO_ACCESS_TOKEN}' \
   'https://api.mercadopago.com/v1/payments/PAYMENT_ID'
 ```
 
