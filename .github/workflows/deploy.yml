@@ -1,4 +1,4 @@
-name: Backend CI & Docker Build (GHCR)
+name: Backend CI & Immutable Image
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
     paths:
       - "apps/backend/**"
       - ".github/workflows/deploy.yml"
+      - "tools/Deployment/Test-Release-Workflow-Gates.sh"
   workflow_dispatch:
 
 permissions:
@@ -18,11 +19,22 @@ env:
 
 jobs:
   build-and-push:
-    name: Build Docker Image & Push to GHCR
+    name: Test and publish immutable candidate
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Verify release workflow safety gates
+        run: bash tools/Deployment/Test-Release-Workflow-Gates.sh
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Run backend tests
+        run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -34,16 +46,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract immutable image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'main' || github.ref_name == 'master' || github.ref_name == 'develop' }}
-            type=sha,format=short
+            type=sha,format=long
 
-      - name: Build and Push Docker Image
+      - name: Build and publish image candidate
         uses: docker/build-push-action@v5
         with:
           context: ./apps/backend/VendingMachines.Api
@@ -53,25 +64,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Trigger Coolify Deploy
-        if: success()
-        run: |
-          if [ -z "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" ]; then
-            echo "::warning::Secret COOLIFY_BACKEND_DEPLOY_WEBHOOK não configurada ainda. Pulando aviso à VPS."
-            exit 0
-          fi
-          echo "Avisando o Coolify para atualizar o container..."
-          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}" \
-            -X POST "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" \
-            -H "Accept: application/json" \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
-          
-          echo "$RESPONSE"
-          
-          if echo "$RESPONSE" | grep -q "HTTP_STATUS:20"; then
-            echo "Deploy disparado com sucesso no Coolify!"
-          else
-            echo "::error::Falha ao disparar deploy no Coolify. Verifique o token e a URL."
-            exit 1
-          fi
