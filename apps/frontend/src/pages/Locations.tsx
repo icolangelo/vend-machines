@@ -6,39 +6,48 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { createLocation, deleteLocation, getLocations, updateLocation } from "@/lib/api";
 import { type Location } from "@/data/mockData";
-import { ArrowLeft, ArrowRight, Box, DollarSign, Edit, ExternalLink, MapPin, Plus, ShoppingCart, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, ArrowRight, Box, DollarSign, Edit, ExternalLink, MapPin, Plus, ShoppingCart, Trash2, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getErrorMessage } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Locations() {
     const navigate = useNavigate();
+    const { user } = useAuth();
+    const canManageLocations = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [locations, setLocations] = useState<Location[]>([]);
     const [loading, setLoading] = useState(true);
+    const [hasLoaded, setHasLoaded] = useState(false);
+    const [loadError, setLoadError] = useState(false);
+    const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingLocation, setEditingLocation] = useState<Location | null>(null);
     const [locationName, setLocationName] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 20;
 
-    const loadLocations = () => {
+    const loadLocations = useCallback(async () => {
         setLoading(true);
-        getLocations()
-            .then(data => {
-                setLocations(data);
-                setLoading(false);
-            })
-            .catch(err => {
-                console.error("Erro ao buscar localizações:", err);
-                toast.error(err.message || "Erro ao buscar localizações.");
-                setLoading(false);
-            });
-    };
+        setLoadError(false);
+        try {
+            const data = await getLocations();
+            setLocations(data);
+            setHasLoaded(true);
+            setLastLoadedAt(new Date());
+        } catch (err) {
+            console.error("Erro ao buscar localizações:", err);
+            setLoadError(true);
+            toast.error("Não foi possível carregar as localizações. Confira sua conexão e tente novamente.");
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
     useEffect(() => {
-        loadLocations();
-    }, []);
+        void loadLocations();
+    }, [loadLocations]);
 
     const { totalLocations, linkedMachines, totalRevenue, totalSales } = useMemo(() => {
         return {
@@ -55,18 +64,21 @@ export default function Locations() {
     }, [locations, currentPage]);
 
     const openCreateDialog = () => {
+        if (!canManageLocations) return;
         setEditingLocation(null);
         setLocationName("");
         setIsDialogOpen(true);
     };
 
     const openEditDialog = (location: Location) => {
+        if (!canManageLocations) return;
         setEditingLocation(location);
         setLocationName(location.name);
         setIsDialogOpen(true);
     };
 
     const handleSave = async () => {
+        if (!canManageLocations) return;
         const name = locationName.trim();
         if (!name) {
             toast.error("Informe o nome da localização.");
@@ -89,6 +101,7 @@ export default function Locations() {
     };
 
     const handleDelete = async (location: Location) => {
+        if (!canManageLocations) return;
         if (location.machineCount > 0) {
             toast.error("Não é possível excluir uma localização com máquinas vinculadas.");
             return;
@@ -117,18 +130,30 @@ export default function Locations() {
                         <h1 className="text-sm font-semibold text-foreground">Localizações</h1>
                     </header>
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {loading ? (
+                        {loading && !hasLoaded ? (
                             <div className="flex items-center justify-center h-[50vh]">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando localizações...</p>
                             </div>
+                        ) : loadError && !hasLoaded ? (
+                            <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Não foi possível carregar as localizações.</p>
+                                <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
+                                <Button variant="outline" onClick={() => void loadLocations()} disabled={loading}>Tentar novamente</Button>
+                            </div>
                         ) : (
                             <>
+                                {loadError && (
+                                    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                        <span>Não foi possível atualizar as localizações. Os dados exibidos podem estar desatualizados.</span>
+                                        <Button variant="outline" size="sm" onClick={() => void loadLocations()} disabled={loading}>Tentar novamente</Button>
+                                    </div>
+                                )}
                                 <div className="flex items-center justify-between gap-4">
                                     <h2 className="text-lg font-semibold tracking-tight">Visão Geral</h2>
-                                    <Button onClick={openCreateDialog} size="sm" className="gap-2">
+                                    {canManageLocations && <Button onClick={openCreateDialog} size="sm" className="gap-2">
                                         <Plus className="w-4 h-4" />
                                         Nova Localização
-                                    </Button>
+                                    </Button>}
                                 </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -144,8 +169,11 @@ export default function Locations() {
                                             <MapPin className="h-4 w-4" /> Localizações da Empresa
                                         </h3>
                                         <span className="font-mono-data text-xs text-muted-foreground">
-                                            {locations.length} itens encontrados
+                                            {lastLoadedAt ? `Atualizado às ${lastLoadedAt.toLocaleTimeString("pt-BR")} · ` : ""}{locations.length} itens encontrados
                                         </span>
+                                        <Button variant="ghost" size="icon" onClick={() => void loadLocations()} disabled={loading} aria-label="Atualizar localizações">
+                                            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                                        </Button>
                                     </div>
 
                                     <div className="overflow-x-auto">
@@ -189,7 +217,7 @@ export default function Locations() {
                                                                 {location.totalSales30d.toLocaleString("pt-BR")}
                                                             </td>
                                                             <td className="px-5 py-4">
-                                                                <div className="flex items-center justify-end gap-1">
+                                                                {canManageLocations && <div className="flex items-center justify-end gap-1">
                                                                     <button
                                                                         onClick={() => openEditDialog(location)}
                                                                         className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
@@ -205,7 +233,7 @@ export default function Locations() {
                                                                     >
                                                                         <Trash2 className="w-4 h-4" />
                                                                     </button>
-                                                                </div>
+                                                                </div>}
                                                             </td>
                                                         </tr>
                                                     ))

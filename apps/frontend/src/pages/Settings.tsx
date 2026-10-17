@@ -28,6 +28,7 @@ import { getErrorMessage } from "@/lib/utils";
 
 export default function Settings() {
     const { logout, user } = useAuth();
+    const canManageProductTypes = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const { toast } = useToast();
     const [types, setTypes] = useState<ProductType[]>([]);
     const [loading, setLoading] = useState(true);
@@ -56,6 +57,7 @@ export default function Settings() {
     };
 
     const handleSaveType = async () => {
+        if (!canManageProductTypes) return;
         if (!newTypeName.trim()) {
             toast({
                 title: "Erro",
@@ -95,12 +97,14 @@ export default function Settings() {
     };
 
     const handleEdit = (type: ProductType) => {
+        if (!canManageProductTypes) return;
         setEditingType(type);
         setNewTypeName(type.name);
         setIsDialogOpen(true);
     };
 
     const handleDelete = async (id: string) => {
+        if (!canManageProductTypes) return;
         if (confirm("Tem certeza que deseja excluir este tipo de produto?")) {
             try {
                 await deleteProductType(id);
@@ -172,10 +176,10 @@ export default function Settings() {
                                             Cadastre e gerencie as categorias de produtos que serão usados nas máquinas.
                                         </CardDescription>
                                     </div>
-                                    <Button onClick={openNewDialog} size="sm" className="flex items-center gap-2">
+                                    {canManageProductTypes && <Button onClick={openNewDialog} size="sm" className="flex items-center gap-2">
                                         <Plus className="w-4 h-4" />
                                         Novo Tipo
-                                    </Button>
+                                    </Button>}
                                 </CardHeader>
                                 <CardContent className="p-0">
                                     <Table>
@@ -197,7 +201,7 @@ export default function Settings() {
                                                     <TableRow key={type.id}>
                                                         <TableCell className="font-medium px-6">{type.name}</TableCell>
                                                         <TableCell className="text-right px-6">
-                                                            <div className="flex justify-end gap-2">
+                                                            {canManageProductTypes && <div className="flex justify-end gap-2">
                                                                 <Button
                                                                     variant="ghost"
                                                                     size="icon"
@@ -213,7 +217,7 @@ export default function Settings() {
                                                                 >
                                                                     <Trash2 className="w-4 h-4" />
                                                                 </Button>
-                                                            </div>
+                                                            </div>}
                                                         </TableCell>
                                                     </TableRow>
                                                 ))

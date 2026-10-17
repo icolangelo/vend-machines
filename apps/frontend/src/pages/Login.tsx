@@ -28,6 +28,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [registrationNotice, setRegistrationNotice] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { login, register, token, sessionMessage, clearSessionMessage } = useAuth();
   const navigate = useNavigate();
@@ -83,8 +84,8 @@ export default function Login() {
       setError("Por favor, preencha o CPF completo.");
       return;
     }
-    if (regPassword.length < 8) {
-      setError("A senha deve ter no mínimo 8 caracteres.");
+    if (regPassword.length < 12 || regPassword.length > 256) {
+      setError("A senha deve ter entre 12 e 256 caracteres.");
       return;
     }
     if (regPassword !== regConfirmPassword) {
@@ -103,8 +104,10 @@ export default function Login() {
     setIsSubmitting(true);
 
     try {
-      await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
-      navigate("/dashboard");
+      const message = await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
+      setRegistrationNotice(message);
+      setIsRegistering(false);
+      setError("");
     } catch (err: unknown) {
       setError(getErrorMessage(err, "Ocorreu um erro ao tentar se cadastrar. Tente novamente."));
     } finally {
@@ -115,6 +118,7 @@ export default function Login() {
   const handleToggleMode = () => {
     setIsRegistering(!isRegistering);
     setError("");
+    setRegistrationNotice("");
   };
 
   return (
@@ -123,7 +127,7 @@ export default function Login() {
       <div className="hidden md:flex md:w-1/2 relative">
         <img
           src={`${import.meta.env.BASE_URL}vending-bg.png`}
-          alt="Vending Machine"
+          alt="Máquina de vendas automática"
           className="w-full h-full object-cover"
         />
         <div className="absolute inset-0 bg-blue-900/20 mix-blend-multiply" />
@@ -145,7 +149,7 @@ export default function Login() {
             </h1>
             <p className="text-sm text-gray-500">
               {isRegistering 
-                ? "Preencha as informações para registrar sua empresa e usuário administrador."
+                ? "Solicite o cadastro da empresa e do usuário administrador. O acesso será liberado após análise da plataforma."
                 : "Insira suas credenciais de acesso abaixo."}
             </p>
           </div>
@@ -162,7 +166,7 @@ export default function Login() {
                     id="regName"
                     type="text"
                     placeholder="Ex: João da Silva"
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
                     required
@@ -177,7 +181,7 @@ export default function Login() {
                     id="regEmail"
                     type="email"
                     placeholder="Ex: joao@suaempresa.com"
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={regEmail}
                     onChange={(e) => setRegEmail(e.target.value)}
                     required
@@ -194,7 +198,7 @@ export default function Login() {
                       type="text"
                       maxLength={14}
                       placeholder="000.000.000-00"
-                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
+                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
                       value={regCpf}
                       onChange={(e) => setRegCpf(formatCPF(e.target.value))}
                       required
@@ -209,8 +213,10 @@ export default function Login() {
                       <input
                         id="regPassword"
                         type="password"
-                        placeholder="Mínimo 8 caracteres"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        placeholder="Mínimo 12 caracteres"
+                        minLength={12}
+                        maxLength={256}
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regPassword}
                         onChange={(e) => setRegPassword(e.target.value)}
                         required
@@ -224,8 +230,10 @@ export default function Login() {
                       <input
                         id="regConfirmPassword"
                         type="password"
-                        placeholder="Mínimo 8 caracteres"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        placeholder="Mínimo 12 caracteres"
+                        minLength={12}
+                        maxLength={256}
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regConfirmPassword}
                         onChange={(e) => setRegConfirmPassword(e.target.value)}
                         required
@@ -246,7 +254,7 @@ export default function Login() {
                         id="regCompanyName"
                         type="text"
                         placeholder="Ex: Vending Brasil Ltda"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regCompanyName}
                         onChange={(e) => setRegCompanyName(e.target.value)}
                         required
@@ -262,7 +270,7 @@ export default function Login() {
                         type="text"
                         maxLength={18}
                         placeholder="00.000.000/0000-00"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
                         value={regCompanyCnpj}
                         onChange={(e) => setRegCompanyCnpj(formatCNPJ(e.target.value))}
                         required
@@ -309,7 +317,7 @@ export default function Login() {
                     Cadastrando...
                   </>
                 ) : (
-                  "Finalizar Cadastro"
+                  "Enviar cadastro para análise"
                 )}
               </button>
             </form>
@@ -319,13 +327,13 @@ export default function Login() {
               <div className="space-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-700" htmlFor="email">
-                    Email Address
+                    E-mail
                   </label>
                   <input
                     id="email"
                     type="email"
-                    placeholder="Enter Email Address"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    placeholder="Digite seu e-mail"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
@@ -335,28 +343,35 @@ export default function Login() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-gray-700" htmlFor="password">
-                      Password
+                      Senha
                     </label>
                   </div>
                   <input
                     id="password"
                     type="password"
-                    placeholder="Enter Password"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    placeholder="Digite sua senha"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                   />
                   <div className="flex justify-end pt-1">
-                    <a href="#" className="text-sm font-medium text-gray-600 hover:text-blue-600">
-                      Forgot Password?
-                    </a>
+                    <p className="text-right text-xs text-gray-500">Esqueceu a senha? Peça ao administrador da empresa um link de recuperação.</p>
                   </div>
                 </div>
               </div>
 
               {error && (
                 <div className="text-sm text-red-600 font-medium">{error}</div>
+              )}
+
+              {registrationNotice && (
+                <div role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                  {registrationNotice}
+                  <button type="button" onClick={() => navigate("/verify-email")} className="mt-2 block font-medium underline underline-offset-2">
+                    Solicitar novo link de confirmação
+                  </button>
+                </div>
               )}
 
               <button
@@ -372,28 +387,6 @@ export default function Login() {
                 ) : (
                   "Entrar"
                 )}
-              </button>
-
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-200"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500"></span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="w-full bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2 px-4 rounded-md flex items-center justify-center gap-2 transition-colors"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M22.56 12.25C22.56 11.47 22.49 10.72 22.36 10H12V14.26H17.92C17.66 15.63 16.88 16.79 15.72 17.57V20.34H19.28C21.36 18.42 22.56 15.6 22.56 12.25Z" fill="#4285F4"/>
-                  <path d="M12 23C14.97 23 17.46 22.02 19.28 20.34L15.72 17.57C14.74 18.23 13.48 18.63 12 18.63C9.13999 18.63 6.70999 16.7 5.83999 14.11H2.16998V16.96C3.97998 20.55 7.69999 23 12 23Z" fill="#34A853"/>
-                  <path d="M5.84 14.11C5.62 13.45 5.49 12.74 5.49 12C5.49 11.26 5.62 10.55 5.84 9.89V7.04H2.17C1.43 8.52 1 10.21 1 12C1 13.79 1.43 15.48 2.17 16.96L5.84 14.11Z" fill="#FBBC05"/>
-                  <path d="M12 5.38C13.62 5.38 15.06 5.94 16.21 7.03L19.36 3.88C17.45 2.09 14.97 1 12 1C7.7 1 3.98 3.45 2.17 7.04L5.84 9.89C6.71 7.3 9.14 5.38 12 5.38Z" fill="#EA4335"/>
-                </svg>
-                Log in with Google
               </button>
             </form>
           )}
@@ -411,19 +404,19 @@ export default function Login() {
               </>
             ) : (
               <>
-                Need an account?{" "}
+                Não tem uma conta?{" "}
                 <button 
                   onClick={handleToggleMode}
                   className="font-medium text-blue-600 hover:text-blue-500 bg-transparent border-0 p-0 cursor-pointer"
                 >
-                  Create an account
+                  Criar uma conta
                 </button>
               </>
             )}
           </p>
 
           <p className="text-xs text-gray-400 mt-6 text-center pt-4">
-            © 2026 VendMachine.com.br - All Rights Reserved.
+            © 2026 VendMachine.com.br - Todos os direitos reservados.
           </p>
         </div>
       </div>

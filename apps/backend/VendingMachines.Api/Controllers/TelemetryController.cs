@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
@@ -62,25 +63,29 @@ public sealed class TelemetryController : BaseApiController
         var total = await query.CountAsync(cancellationToken);
         var machines = await query.OrderBy(x => x.Name).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
         var ids = machines.Select(x => x.Id).ToArray();
-        var states = await _db.MachineConnectionStates.AsNoTracking().Where(x => ids.Contains(x.MachineId))
+        var states = await _db.MachineConnectionStates.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.MachineId))
             .ToDictionaryAsync(x => x.MachineId, cancellationToken);
         var sessions = await _db.MachineSessions.AsNoTracking()
-            .Where(x => ids.Contains(x.MachineId) && x.ClosedAt == null)
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.MachineId) && x.ClosedAt == null)
             .ToDictionaryAsync(x => x.MachineId, cancellationToken);
 
         var now = DateTime.UtcNow;
         var staleAfter = TimeSpan.FromSeconds(Math.Clamp(_mdbOptions.StaleAfterSeconds, 10, 3600));
+        var onlineSerials = await _connections.GetOnlineSerialsAsync(
+            machines.Select(machine => machine.SerialNumber), cancellationToken);
         var items = machines.Select(machine =>
         {
             states.TryGetValue(machine.Id, out var connection);
             sessions.TryGetValue(machine.Id, out var session);
+            var online = connection?.IsOnline == true && onlineSerials.Contains(machine.SerialNumber.Trim().ToUpperInvariant());
             return new
             {
                 machineId = machine.Id,
                 machineName = machine.Name,
                 serialNumber = machine.SerialNumber,
                 location = machine.Location,
-                online = connection?.IsOnline == true && _connections.IsOnline(machine.SerialNumber),
+                online,
                 monitoringEnabled = connection?.MonitoringEnabled == true,
                 autoOpenSessionEnabled = machine.AutoOpenSessionEnabled,
                 manualStartRequiresMdb = _mdbOptions.EnforceOnManualStart,
@@ -91,8 +96,7 @@ public sealed class TelemetryController : BaseApiController
                 mdbStatusUpdatedAt = connection?.MdbStatusUpdatedAt,
                 mdbStatusFresh = connection?.MdbStatus != null &&
                                  connection.MdbStatusUpdatedAt >= now - staleAfter &&
-                                 connection.IsOnline &&
-                                 _connections.IsOnline(machine.SerialNumber),
+                                 online,
                 autoOpenLastAttemptAt = connection?.AutoOpenLastAttemptAt,
                 autoOpenLastError = connection?.AutoOpenLastError,
                 signal = (int?)null,
@@ -117,6 +121,7 @@ public sealed class TelemetryController : BaseApiController
         return Ok(new { items, page, pageSize, totalItems = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPut("machines/{machineId}/monitoring")]
     public async Task<IActionResult> SetMonitoring(string machineId, [FromBody] MonitoringRequest request, CancellationToken cancellationToken)
     {
@@ -124,7 +129,11 @@ public sealed class TelemetryController : BaseApiController
         var machine = await _db.Machines.FirstOrDefaultAsync(x => x.Id == machineId && x.CompanyId == companyId, cancellationToken);
         if (machine == null) return NotFound();
 
-        var state = await _db.MachineConnectionStates.FirstOrDefaultAsync(x => x.MachineId == machineId, cancellationToken);
+        var state = await _db.MachineConnectionStates.FirstOrDefaultAsync(
+            x => x.MachineId == machineId,
+            cancellationToken);
+        if (state != null && state.CompanyId != companyId)
+            return Conflict(new { code = "machine_state_company_mismatch", message = "Não foi possível atualizar o acompanhamento desta máquina." });
         if (state == null)
         {
             state = new MachineConnectionState { MachineId = machineId, CompanyId = companyId };
@@ -153,6 +162,7 @@ public sealed class TelemetryController : BaseApiController
         return Ok(new { machineId, monitoringEnabled = request.Enabled });
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost("machines/{machineId}/sessions")]
     public async Task<IActionResult> StartSession(string machineId, [FromBody] StartSessionRequest? request, CancellationToken cancellationToken)
     {
@@ -169,6 +179,7 @@ public sealed class TelemetryController : BaseApiController
         catch (InvalidOperationException ex) { return Conflict(new { code = ex.Message, message = MapError(ex.Message) }); }
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost("machines/{machineId}/mdb-status")]
     public async Task<IActionResult> RequestMdbStatus(string machineId, CancellationToken cancellationToken)
     {
@@ -185,7 +196,10 @@ public sealed class TelemetryController : BaseApiController
                 cancellationToken);
             if (!result.Success)
             {
-                return StatusCode(StatusCodes.Status504GatewayTimeout, new
+                var statusCode = result.Error == "machine_owner_unknown"
+                    ? StatusCodes.Status503ServiceUnavailable
+                    : StatusCodes.Status504GatewayTimeout;
+                return StatusCode(statusCode, new
                 {
                     code = result.Error,
                     message = MapError(result.Error ?? "mdb_status_unavailable")
@@ -218,6 +232,7 @@ public sealed class TelemetryController : BaseApiController
         return session == null ? NotFound() : Ok(session);
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost("sessions/{sessionId:guid}/cancel")]
     public async Task<IActionResult> CancelSession(Guid sessionId, [FromBody] CancelSessionRequest request, CancellationToken cancellationToken)
     {
@@ -231,13 +246,16 @@ public sealed class TelemetryController : BaseApiController
         catch (InvalidOperationException ex) { return Conflict(new { code = ex.Message, message = MapError(ex.Message) }); }
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost("machines/{machineId}/commands")]
     public async Task<IActionResult> SendCommand(string machineId, [FromBody] SendCommandRequest request, CancellationToken cancellationToken)
     {
         if (!TryGetIdentity(out var userId, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
         var machine = await _db.Machines.FirstOrDefaultAsync(x => x.Id == machineId && x.CompanyId == companyId, cancellationToken);
         if (machine == null) return NotFound();
-        var monitoring = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(x => x.MachineId == machineId, cancellationToken);
+        var monitoring = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
+            x => x.MachineId == machineId && x.CompanyId == companyId,
+            cancellationToken);
         if (monitoring?.MonitoringEnabled != true) return Conflict(new { code = "monitoring_inactive", message = "Ative o acompanhamento da máquina." });
         if (string.IsNullOrWhiteSpace(request.Command)) return BadRequest(new { message = "Comando obrigatório." });
 
@@ -260,7 +278,15 @@ public sealed class TelemetryController : BaseApiController
         await _db.SaveChangesAsync(cancellationToken);
         if (!result.Success) return result.Error == "machine_offline"
             ? Conflict(new { code = result.Error, message = "Máquina offline." })
-            : StatusCode(504, new { code = result.Error, message = "A máquina não confirmou o comando." });
+            : result.Error == "machine_owner_unknown"
+                ? StatusCode(StatusCodes.Status503ServiceUnavailable, new { code = result.Error, message = MapError(result.Error) })
+            : StatusCode(504, new
+            {
+                code = result.Error,
+                message = result.Error == "command_outcome_unknown"
+                    ? "Não foi possível confirmar o resultado. Consulte a sessão antes de tentar novamente."
+                    : "A máquina não confirmou o comando."
+            });
         return Accepted(new { commandId = command.Id, messageId = result.MessageId, status = command.Status });
     }
 
@@ -273,11 +299,24 @@ public sealed class TelemetryController : BaseApiController
         var query = _db.TelemetryEvents.AsNoTracking().Where(x => x.CompanyId == companyId);
         if (!string.IsNullOrWhiteSpace(machineId)) query = query.Where(x => x.MachineId == machineId);
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderByDescending(x => x.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        var items = await query.OrderByDescending(x => x.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => new
+            {
+                x.Id,
+                x.MachineId,
+                x.SessionId,
+                x.TransactionId,
+                x.EventType,
+                x.CreatedAt
+            })
+            .ToListAsync(cancellationToken);
         return Ok(new { items, page, pageSize, totalItems = total, totalPages = (int)Math.Ceiling(total / (double)pageSize) });
     }
 
     [HttpPost("socket-ticket")]
+    [EnableRateLimiting("telemetry-ticket")]
     public IActionResult CreateSocketTicket()
     {
         if (!TryGetIdentity(out var userId, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
@@ -295,6 +334,7 @@ public sealed class TelemetryController : BaseApiController
     private static string MapError(string code) => code switch
     {
         "machine_offline" => "A máquina está offline.",
+        "machine_owner_unknown" => "A máquina continua conectada a uma instância sem roteamento entre nós; nenhum comando foi enviado. Tente novamente após a reconexão compatível.",
         "monitoring_inactive" => "Ative o acompanhamento da máquina.",
         "session_already_active" => "A máquina já possui uma sessão ativa.",
         "mdb_status_unavailable" => "O status MDB ainda não está disponível.",

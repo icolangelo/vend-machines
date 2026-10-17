@@ -93,6 +93,16 @@ public sealed class RefreshSessionService
             return new RefreshRotationResult(RefreshRotationStatus.Expired);
         }
 
+        var user = await _context.Users
+            .Include(x => x.Company)
+            .SingleOrDefaultAsync(x => x.Id == current.UserId, cancellationToken);
+        if (user == null || !user.IsActive ||
+            (user.Company != null && user.Company.ActivationStatus != CompanyActivationStatuses.Active))
+        {
+            await RevokeFamilyAsync(current.FamilyId, now, cancellationToken);
+            return new RefreshRotationResult(RefreshRotationStatus.Invalid);
+        }
+
         var replacementId = Guid.NewGuid();
         var replacementToken = GenerateToken();
         var replacement = new RefreshSession
@@ -127,16 +137,6 @@ public sealed class RefreshSessionService
         _context.RefreshSessions.Add(replacement);
         await _context.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-
-        var user = await _context.Users
-            .Include(x => x.Company)
-            .SingleOrDefaultAsync(x => x.Id == current.UserId, cancellationToken);
-
-        if (user == null)
-        {
-            await RevokeFamilyAsync(current.FamilyId, now, cancellationToken);
-            return new RefreshRotationResult(RefreshRotationStatus.Invalid);
-        }
 
         return new RefreshRotationResult(
             RefreshRotationStatus.Succeeded,

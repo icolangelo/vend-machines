@@ -14,11 +14,13 @@ public class LocationsController : BaseApiController
 {
     private readonly AppDbContext _context;
     private readonly IDataService _dataService;
+    private readonly IAuditLogService? _audit;
 
-    public LocationsController(AppDbContext context, IDataService dataService)
+    public LocationsController(AppDbContext context, IDataService dataService, IAuditLogService? audit = null)
     {
         _context = context;
         _dataService = dataService;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -49,7 +51,7 @@ public class LocationsController : BaseApiController
         }
 
         var machines = await _context.Machines
-            .Where(m => m.LocationId == location.Id)
+            .Where(m => m.CompanyId == companyId && m.LocationId == location.Id)
             .ToListAsync();
 
         return Ok(new LocationDto
@@ -65,6 +67,7 @@ public class LocationsController : BaseApiController
         });
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] LocationRequest request)
     {
@@ -97,6 +100,7 @@ public class LocationsController : BaseApiController
 
         _context.Locations.Add(location);
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.created", location.Id.ToString(), companyId);
 
         return CreatedAtAction(nameof(GetById), new { id = location.Id }, new LocationDto
         {
@@ -107,6 +111,7 @@ public class LocationsController : BaseApiController
         });
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] LocationRequest request)
     {
@@ -150,9 +155,11 @@ public class LocationsController : BaseApiController
         }
 
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.updated", location.Id.ToString(), companyId);
         return NoContent();
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
@@ -179,9 +186,14 @@ public class LocationsController : BaseApiController
 
         _context.Locations.Remove(location);
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.deleted", location.Id.ToString(), companyId);
 
         return NoContent();
     }
+
+    private Task RecordAuditAsync(string action, string resourceId, Guid companyId) =>
+        _audit?.RecordAsync(action, "Location", resourceId, companyId, cancellationToken: HttpContext.RequestAborted)
+        ?? Task.CompletedTask;
 
 
 }

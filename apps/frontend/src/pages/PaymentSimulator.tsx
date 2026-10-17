@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { useState, useEffect } from "react";
-import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type Machine, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import type { Machine } from "@/data/mockData";
 import { getErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -231,7 +232,7 @@ export default function PaymentSimulator() {
 
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                             {/* COLUNA 1: FORMULÁRIO DE GERAÇÃO */}
-                            <Card className="border border-slate-200 bg-white shadow-sm lg:col-span-1">
+                            <Card className="border border-slate-200 bg-white shadow-xs lg:col-span-1">
                                 <CardHeader className="pb-4 border-b border-slate-100">
                                     <CardTitle className="text-base font-bold flex items-center gap-2">
                                         <CreditCard className="w-4 h-4 text-indigo-600" />
@@ -252,7 +253,7 @@ export default function PaymentSimulator() {
                                     ) : (
                                         <form onSubmit={handleCreateCharge} className="space-y-4">
                                             <div className="space-y-1.5">
-                                                <label className="text-xs font-semibold text-slate-600">Selecione a Vending Machine</label>
+                                                <label className="text-xs font-semibold text-slate-600">Selecione a máquina</label>
                                                 <Select value={selectedMachineId} onValueChange={setSelectedMachineId}>
                                                     <SelectTrigger>
                                                         <SelectValue placeholder="Escolha a máquina..." />
@@ -324,7 +325,7 @@ export default function PaymentSimulator() {
                             </Card>
 
                             {/* COLUNA 2: QR CODE E CONTROLES DE WEBHOOK */}
-                            <Card className="border border-slate-200 bg-white shadow-sm lg:col-span-1">
+                            <Card className="border border-slate-200 bg-white shadow-xs lg:col-span-1">
                                 <CardHeader className="pb-4 border-b border-slate-100">
                                     <CardTitle className="text-base font-bold flex items-center gap-2">
                                         <QrCode className="w-4 h-4 text-indigo-600" />
@@ -341,10 +342,10 @@ export default function PaymentSimulator() {
                                     ) : (
                                         <div className="w-full space-y-6 flex flex-col items-center">
                                             {/* Render QR Code base64 */}
-                                            <div className="border p-4 bg-white rounded-lg shadow-sm">
+                                            <div className="border p-4 bg-white rounded-lg shadow-xs">
                                                 <img 
                                                     src={`data:image/png;base64,${transaction.qrCodeBase64}`} 
-                                                    alt="Pix QR Code" 
+                                                    alt="Código QR do Pix"
                                                     className="w-44 h-44 select-none"
                                                 />
                                             </div>
@@ -355,7 +356,7 @@ export default function PaymentSimulator() {
                                                     <Input 
                                                         readOnly 
                                                         value={transaction.qrCode} 
-                                                        className="font-mono text-[10px] h-8 bg-slate-50 overflow-ellipsis"
+                                                        className="font-mono text-[10px] h-8 bg-slate-50 text-ellipsis"
                                                     />
                                                     <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" onClick={copyToClipboard}>
                                                         {copied ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
@@ -392,7 +393,7 @@ export default function PaymentSimulator() {
                             </Card>
 
                             {/* COLUNA 3: LOG DE TELEMETRIA MDB REMOTA EM TEMPO REAL */}
-                            <Card className="border border-slate-200 bg-white shadow-sm lg:col-span-1">
+                            <Card className="border border-slate-200 bg-white shadow-xs lg:col-span-1">
                                 <CardHeader className="pb-4 border-b border-slate-100 flex flex-row items-center justify-between">
                                     <div>
                                         <CardTitle className="text-base font-bold flex items-center gap-2">
@@ -424,7 +425,7 @@ export default function PaymentSimulator() {
                                                         {log.logType}
                                                     </span>
                                                 </div>
-                                                <p className="text-slate-200 leading-relaxed break-words">{log.message}</p>
+                                                <p className="text-slate-200 leading-relaxed wrap-break-word">{log.message}</p>
                                             </div>
                                         ))
                                     )}

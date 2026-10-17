@@ -1,0 +1,281 @@
+name: Verify application
+
+on:
+  push:
+    branches: ["develop", "main", "master", "codex/**"]
+    paths:
+      - "apps/backend/**"
+      - "apps/frontend/**"
+      - "Directory.Build.props"
+      - "tools/VendingMachines.Simulator/**"
+      - "tools/VendingMachines.EncryptionRotation/**"
+      - "tools/Database/**"
+      - "tools/Deployment/**"
+      - "docs/roadmap-producao.md"
+      - "docs/operacao-suporte.md"
+      - "docs/backup-restore-rehearsal.md"
+      - "docs/deploy-preflight.sql"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "apps/backend/**"
+      - "apps/frontend/**"
+      - "Directory.Build.props"
+      - "tools/VendingMachines.Simulator/**"
+      - "tools/VendingMachines.EncryptionRotation/**"
+      - "tools/Database/**"
+      - "tools/Deployment/**"
+      - "docs/roadmap-producao.md"
+      - "docs/operacao-suporte.md"
+      - "docs/backup-restore-rehearsal.md"
+      - "docs/deploy-preflight.sql"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vending_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vending_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit changes for exposed secrets
+        env:
+          SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
+          SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Audit backend dependencies
+        run: |
+          for project in \
+            apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj \
+            apps/backend/TestApp/TestApp.csproj \
+            tools/VendingMachines.Simulator/VendingMachines.Simulator.csproj \
+            tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj; do
+            dotnet list "$project" package --vulnerable --include-transitive
+          done
+
+      - name: Run backend tests
+        env:
+          VENDMACHINES_TEST_POSTGRES: "Host=localhost;Port=5432;Database=vending_test;Username=postgres;Password=postgres"
+          VENDMACHINES_REQUIRE_TEST_POSTGRES: "true"
+        run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
+
+      - name: Build backend Docker image without publishing
+        run: docker build --tag vend-machines-backend:verify --file apps/backend/VendingMachines.Api/Dockerfile apps/backend/VendingMachines.Api
+
+      - name: Verify Production startup rejects unsafe database settings
+        shell: bash
+        run: |
+          assert_startup_rejects() {
+            local scenario="$1"
+            local expected_message="$2"
+            shift 2
+            local output_file
+            output_file="$(mktemp)"
+
+            local exit_code=0
+            if timeout 20s docker run --rm \
+              --env ASPNETCORE_ENVIRONMENT=Production \
+              --env 'Encryption__Key=UniqueRuntimeValidationEncryptionKey2026Current' \
+              --env 'Encryption__LegacyKey=UniqueRuntimeValidationEncryptionKey2026Legacy' \
+              --env Encryption__WriteLegacyFormat=false \
+              "$@" vend-machines-backend:verify >"$output_file" 2>&1; then
+              echo "::error::A API iniciou em Production com configuração insegura: $scenario."
+              cat "$output_file"
+              rm -f "$output_file"
+              exit 1
+            else
+              exit_code="$?"
+            fi
+
+            if [ "$exit_code" -eq 124 ] || ! grep -Fq "$expected_message" "$output_file"; then
+              cat "$output_file"
+              echo "::error::A API não rejeitou a configuração esperada: $scenario."
+              rm -f "$output_file"
+              exit 1
+            fi
+
+            rm -f "$output_file"
+            echo "Production rejeitou a configuração insegura: $scenario."
+          }
+
+          assert_startup_rejects \
+            "SQLite" \
+            'A produção exige uma conexão PostgreSQL válida' \
+            --env 'ConnectionStrings__DefaultConnection=Data Source=/tmp/production-must-not-use-sqlite.db'
+          assert_startup_rejects \
+            "PostgreSQL local" \
+            'A produção exige uma conexão PostgreSQL válida' \
+            --env 'ConnectionStrings__DefaultConnection=Host=127.0.0.1;Database=machines;Username=service;Password=synthetic;SSL Mode=Require'
+          assert_startup_rejects \
+            "PostgreSQL placeholder" \
+            'A produção exige uma conexão PostgreSQL válida' \
+            --env 'ConnectionStrings__DefaultConnection=Host=YOUR_NEON_HOST;Database=machines;Username=service;Password=synthetic;SSL Mode=Require'
+          assert_startup_rejects \
+            "PostgreSQL sem TLS explícito" \
+            'SSL Mode=Require, VerifyCA ou VerifyFull' \
+            --env 'ConnectionStrings__DefaultConnection=Host=db.production.internal;Database=machines;Username=service;Password=synthetic'
+          assert_startup_rejects \
+            "PostgreSQL válido sem chave JWT" \
+            'A configuração Jwt:Key é obrigatória fora do ambiente de desenvolvimento.' \
+            --env 'ConnectionStrings__DefaultConnection=Host=db.production.internal;Database=machines;Username=service;Password=synthetic;SSL Mode=Require'
+          assert_startup_rejects \
+            "PostgreSQL válido sem segredo Mercado Pago" \
+            'A configuração MercadoPago:ClientSecret é obrigatória fora do ambiente de desenvolvimento.' \
+            --env 'ConnectionStrings__DefaultConnection=Host=db.production.internal;Database=machines;Username=service;Password=synthetic;SSL Mode=Require' \
+            --env 'Jwt__Key=UniqueRuntimeValidationJwtKey2026Synthetic'
+
+      - name: Verify backend image runs as a non-root user
+        run: |
+          image_user="$(docker image inspect --format '{{.Config.User}}' vend-machines-backend:verify)"
+          runtime_uid="$(docker run --rm --entrypoint id vend-machines-backend:verify -u)"
+          if [ "$image_user" != "app" ] || [ "$runtime_uid" = "0" ]; then
+            echo "::error::A imagem do backend deve executar como o usuário não privilegiado app."
+            exit 1
+          fi
+
+      - name: Verify isolated PostgreSQL backup restore utility
+        shell: pwsh
+        run: ./tools/Database/Test-PostgresBackupRestore.ps1 -PostgresImage postgres:17-alpine
+
+      - name: Test Coolify deployment completion and readiness gates
+        run: bash tools/Deployment/Test-Coolify-Deployment.sh
+
+      - name: Verify production workflow release gates
+        run: bash tools/Deployment/Test-Release-Workflow-Gates.sh
+
+      - name: Build telemetry simulator
+        run: dotnet build tools/VendingMachines.Simulator/VendingMachines.Simulator.csproj --configuration Release
+
+      - name: Build encryption rotation tool
+        run: dotnet build tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj --configuration Release
+
+  frontend-checks:
+    name: Frontend types, lint, tests and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/frontend
+        run: npm ci
+
+      - name: Audit dependencies
+        working-directory: apps/frontend
+        run: npm audit --audit-level=moderate
+
+      - name: Check types
+        working-directory: apps/frontend
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      - name: Lint
+        working-directory: apps/frontend
+        run: npm run lint
+
+      - name: Run tests
+        working-directory: apps/frontend
+        run: npm test
+
+      - name: Install Playwright Chromium
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke tests with isolated demo data
+        working-directory: apps/frontend
+        run: npm run test:e2e
+
+      - name: Build for production
+        working-directory: apps/frontend
+        env:
+          VITE_API_URL: https://api.vendmachine.com.br/api
+          VITE_IS_TEST_ENVIRONMENT: "false"
+        run: npm run build
+
+      - name: Build frontend container without publishing
+        run: >-
+          docker build
+          --build-arg VITE_API_URL=https://api.vendmachine.com.br/api
+          --tag vend-machines-frontend:verify
+          --file apps/frontend/Dockerfile
+          apps/frontend
+
+      - name: Verify frontend container user and health check
+        run: |
+          image_user="$(docker image inspect --format '{{.Config.User}}' vend-machines-frontend:verify)"
+          runtime_uid="$(docker run --rm --entrypoint id vend-machines-frontend:verify -u)"
+          if [ -z "$image_user" ] || [ "$image_user" = "0" ] || [ "$image_user" = "root" ] || [ "$runtime_uid" = "0" ]; then
+            echo "::error::O container do frontend deve executar sem privilégios de root."
+            exit 1
+          fi
+
+          container_name="vend-machines-frontend-health-${GITHUB_RUN_ID:-local}"
+          docker run --detach --rm --name "$container_name" vend-machines-frontend:verify
+          cleanup() { docker stop "$container_name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 20); do
+            health="$(docker inspect --format '{{.State.Health.Status}}' "$container_name")"
+            if [ "$health" = "healthy" ]; then
+              break
+            fi
+            if [ "$health" = "unhealthy" ]; then
+              docker logs "$container_name"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$health" != "healthy" ]; then
+            docker logs "$container_name"
+            echo "::error::O health check do frontend não ficou healthy no prazo."
+            exit 1
+          fi
+
+          headers="$(docker exec "$container_name" wget -S -O /dev/null http://127.0.0.1:8080/ 2>&1)"
+          for expected_header in \
+            'Strict-Transport-Security:[[:space:]]*max-age=31536000' \
+            'X-Content-Type-Options:[[:space:]]*nosniff' \
+            'X-Frame-Options:[[:space:]]*DENY' \
+            'Content-Security-Policy:'; do
+            if ! printf '%s\n' "$headers" | grep -Eiq "$expected_header"; then
+              echo "$headers"
+              echo "::error::Cabeçalho de segurança ausente no container do frontend: $expected_header"
+              exit 1
+            fi
+          done
+
+          echo "Container do frontend saudável como $image_user (UID $runtime_uid), com cabeçalhos de segurança."

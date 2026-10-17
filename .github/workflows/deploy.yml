@@ -5,8 +5,67 @@ on:
     branches: ["develop", "main", "master"]
     paths:
       - "apps/backend/**"
+      - "tools/Deployment/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: "Confirmar publicação desta versão em produção"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      database_migrations_applied:
+        description: "As migrações compatíveis foram aplicadas e verificadas antes do deploy?"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      backup_verified:
+        description: "Há backup recente e restauração conhecida para esta release?"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      production_secrets_rotated:
+        description: "Os segredos expostos foram revogados/rotacionados e os novos valores foram confirmados no secret manager/runtime?"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      telemetry_reconnect_tested:
+        description: "A reconexão dos dispositivos foi validada em homologação?"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      active_vend_sessions_drained:
+        description: "O preflight somente leitura confirmou zero sessões físicas de venda abertas antes da release?"
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      bootstrap_deploy_readiness_endpoint:
+        description: "A API atualmente em produção ainda não possui /health/deploy-ready? Marque yes somente para a primeira release que instala esse gate."
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      machine_connections_preserved:
+        description: "Há evidência em homologação de que os sockets existentes e os comandos continuam no nó proprietário durante a sobreposição de versões? Reconexão posterior, sozinha, não atende."
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
+      continuity_test_evidence_url:
+        description: "Link HTTPS para o registro do teste de continuidade em homologação (PR, execução de CI ou relatório aprovado)."
+        type: string
+        required: true
+        default: "none"
+
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && 'production-release' || format('backend-build-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -20,9 +79,192 @@ jobs:
   build-and-push:
     name: Build Docker Image & Push to GHCR
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vending_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vending_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit changes for exposed secrets
+        env:
+          SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
+          SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Audit backend dependencies
+        run: |
+          for project in \
+            apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj \
+            apps/backend/TestApp/TestApp.csproj \
+            tools/VendingMachines.Simulator/VendingMachines.Simulator.csproj \
+            tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj; do
+            dotnet list "$project" package --vulnerable --include-transitive
+          done
+
+      - name: Run backend tests
+        env:
+          VENDMACHINES_TEST_POSTGRES: "Host=localhost;Port=5432;Database=vending_test;Username=postgres;Password=postgres"
+          VENDMACHINES_REQUIRE_TEST_POSTGRES: "true"
+        run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
+
+      - name: Install pinned EF Core CLI
+        run: dotnet tool install --tool-path "$RUNNER_TEMP/dotnet-tools" dotnet-ef --version 10.0.12
+
+      - name: Generate PostgreSQL migration scripts with online-index segments isolated
+        env:
+          VENDMACHINES_DESIGNTIME_POSTGRES: "Host=localhost;Port=5432;Database=vending_test;Username=postgres;Password=postgres"
+        run: |
+          mkdir -p artifacts
+          ef="$RUNNER_TEMP/dotnet-tools/dotnet-ef"
+          before_session_index=20260715023221_AddTelemetrySessionManagement
+          session_index=20260730120000_AddMdbStatusAndAutomaticSession
+          before_payment_index=20260926173525_AddWebhookInbox
+          payment_index=20260926174359_AddPaymentReconciliationTracking
+
+          "$ef" migrations script 0 "$before_session_index" --idempotent \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-before-session-index.sql
+
+          "$ef" migrations script "$before_session_index" "$session_index" \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-session-index.sql
+
+          "$ef" migrations script "$session_index" "$before_payment_index" --idempotent \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-between-online-indexes.sql
+
+          "$ef" migrations script "$before_payment_index" "$payment_index" \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-payment-reconciliation-index.sql
+
+          "$ef" migrations script "$payment_index" --idempotent \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-after-online-indexes.sql
+
+      - name: Verify online migration segments are outside EF idempotency wrappers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          artifacts = Path("artifacts")
+          files = {
+              "before": artifacts / "postgresql-migrations-before-session-index.sql",
+              "session": artifacts / "postgresql-migration-session-index.sql",
+              "between": artifacts / "postgresql-migrations-between-online-indexes.sql",
+              "payment": artifacts / "postgresql-migration-payment-reconciliation-index.sql",
+              "after": artifacts / "postgresql-migrations-after-online-indexes.sql",
+          }
+          scripts = {name: path.read_text(encoding="utf-8") for name, path in files.items()}
+          for name in ("before", "between", "after"):
+              if "INDEX CONCURRENTLY" in scripts[name]:
+                  raise SystemExit(f"DDL concorrente apareceu no segmento idempotente: {files[name].name}")
+
+          expected = {
+              "session": r'(?m)^COMMIT;\s*CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UX_MachineSessions_OneOpenPerMachine"',
+              "payment": r'(?m)^COMMIT;\s*CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_PaymentTransactions_Status_LastReconciliationAt_CreatedAt"',
+          }
+          for name, pattern in expected.items():
+              script = scripts[name]
+              if "DO $EF$" in script or not re.search(pattern, script):
+                  raise SystemExit(f"Índice concorrente não está fora de transação no segmento {files[name].name}")
+          print("Segmentos de migrations PostgreSQL prontos para revisão.")
+          PY
+
+      - name: Verify EF model has no uncommitted migration changes
+        env:
+          VENDMACHINES_DESIGNTIME_POSTGRES: "Host=localhost;Port=5432;Database=vending_test;Username=postgres;Password=postgres"
+        run: |
+          "$RUNNER_TEMP/dotnet-tools/dotnet-ef" migrations has-pending-model-changes \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj
+
+      - name: Upload migration script for pre-deploy review
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgresql-migrations-${{ github.sha }}
+          path: artifacts/postgresql-migration*.sql
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/frontend
+        run: npm ci
+
+      - name: Audit frontend dependencies
+        working-directory: apps/frontend
+        run: npm audit --audit-level=moderate
+
+      - name: Check frontend types
+        working-directory: apps/frontend
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      - name: Lint frontend
+        working-directory: apps/frontend
+        run: npm run lint
+
+      - name: Test frontend
+        working-directory: apps/frontend
+        run: npm test
+
+      - name: Install Playwright Chromium
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke tests with isolated demo data
+        working-directory: apps/frontend
+        run: npm run test:e2e
+
+      - name: Build frontend
+        working-directory: apps/frontend
+        env:
+          VITE_API_URL: https://api.vendmachine.com.br/api
+          VITE_IS_TEST_ENVIRONMENT: "false"
+        run: npm run build
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,8 +282,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_name == 'main' || github.ref_name == 'master' || github.ref_name == 'develop' }}
-            type=sha,format=short
+            type=raw,value=${{ github.sha }}
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
@@ -54,24 +295,86 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Trigger Coolify Deploy
-        if: success()
+  deploy-production:
+    name: Deploy confirmed release to Coolify
+    needs: build-and-push
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_production_deploy == 'yes' &&
+      inputs.database_migrations_applied == 'yes' &&
+      inputs.backup_verified == 'yes' &&
+      inputs.production_secrets_rotated == 'yes' &&
+      inputs.telemetry_reconnect_tested == 'yes' &&
+      inputs.active_vend_sessions_drained == 'yes' &&
+      inputs.machine_connections_preserved == 'yes' &&
+      inputs.continuity_test_evidence_url != 'none' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Verify GitHub production environment protection
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ADMIN_READ_TOKEN: ${{ secrets.GITHUB_ADMIN_READ_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python3 tools/Deployment/validate_github_production_environment.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate Coolify deployment credentials
+        env:
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          if [ -z "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" ]; then
-            echo "::warning::Secret COOLIFY_BACKEND_DEPLOY_WEBHOOK não configurada ainda. Pulando aviso à VPS."
-            exit 0
-          fi
-          echo "Avisando o Coolify para atualizar o container..."
-          RESPONSE=$(curl -s -L -w "\nHTTP_STATUS:%{http_code}" \
-            -X POST "${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}" \
-            -H "Accept: application/json" \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_API_TOKEN }}")
-          
-          echo "$RESPONSE"
-          
-          if echo "$RESPONSE" | grep -q "HTTP_STATUS:20"; then
-            echo "Deploy disparado com sucesso no Coolify!"
-          else
-            echo "::error::Falha ao disparar deploy no Coolify. Verifique o token e a URL."
+          if [ -z "$COOLIFY_DEPLOY_WEBHOOK" ] || [ -z "$COOLIFY_API_TOKEN" ]; then
+            echo "::error::Configure COOLIFY_BACKEND_DEPLOY_WEBHOOK e COOLIFY_API_TOKEN no ambiente production antes da release."
             exit 1
           fi
+
+      - name: Validate telemetry continuity evidence link
+        env:
+          CONTINUITY_TEST_EVIDENCE_URL: ${{ inputs.continuity_test_evidence_url }}
+        run: |
+          python3 tools/Deployment/Validate-ContinuityEvidence.py "$CONTINUITY_TEST_EVIDENCE_URL"
+
+      - name: Verify Coolify read access before promoting the image
+        env:
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready
+          PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready
+          ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT: ${{ inputs.bootstrap_deploy_readiness_endpoint == 'yes' && 'true' || 'false' }}
+        run: bash tools/Deployment/Coolify-Deployment.sh preflight
+
+      - name: Promote immutable image to production tag
+        env:
+          SOURCE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$REGISTRY/$IMAGE_NAME:latest" \
+            "$REGISTRY/$IMAGE_NAME:$SOURCE_TAG"
+
+      - name: Wait for Coolify deployment and public readiness
+        env:
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready
+          PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready
+          ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT: ${{ inputs.bootstrap_deploy_readiness_endpoint == 'yes' && 'true' || 'false' }}
+        run: |
+          bash tools/Deployment/Coolify-Deployment.sh deploy

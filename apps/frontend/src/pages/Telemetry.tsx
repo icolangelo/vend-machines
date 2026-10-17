@@ -22,6 +22,8 @@ import {
     type TelemetryEventItem,
 } from "@/lib/api";
 import { getMdbStatusDetail } from "@/lib/mdbStatus";
+import { getTelemetryEventLabel } from "@/lib/telemetryEvents";
+import { useAuth } from "@/contexts/AuthContext";
 
 const stateLabels: Record<string, string> = {
     Opening: "Abrindo sessão",
@@ -51,6 +53,8 @@ const formatDate = (value?: string | null) => value
 
 export default function Telemetry() {
     const { toast } = useToast();
+    const { user } = useAuth();
+    const canOperateTelemetry = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [connections, setConnections] = useState<TelemetryConnection[]>([]);
     const [events, setEvents] = useState<TelemetryEventItem[]>([]);
     const [selectedId, setSelectedId] = useState<string>("");
@@ -91,6 +95,12 @@ export default function Telemetry() {
     useEffect(() => { loadEvents(selectedId); }, [selectedId, loadEvents]);
 
     useEffect(() => {
+        if (!selectedId) return;
+        const timer = window.setInterval(() => loadEvents(selectedId), 15000);
+        return () => window.clearInterval(timer);
+    }, [selectedId, loadEvents]);
+
+    useEffect(() => {
         let disposed = false;
         let attempts = 0;
 
@@ -106,6 +116,8 @@ export default function Telemetry() {
                     setRealtimeConnected(true);
                     const machineId = selectedIdRef.current;
                     if (machineId) socket.send(JSON.stringify({ type: "subscribe", machineIds: [machineId] }));
+                    loadConnections();
+                    if (machineId) loadEvents(machineId);
                 };
                 socket.onmessage = event => {
                     try {
@@ -129,6 +141,10 @@ export default function Telemetry() {
                                     mdbStatusFresh: message.mdbStatusFresh,
                                 }
                                 : item));
+                        }
+                        if (message.type === "refresh.required") {
+                            loadConnections();
+                            if (message.machineId) loadEvents(message.machineId);
                         }
                         if (["sale.updated", "telemetry.received"].includes(message.type)) {
                             if (message.machineId === selectedIdRef.current) loadEvents(message.machineId);
@@ -180,6 +196,10 @@ export default function Telemetry() {
     }, [connections, search]);
 
     const run = async (operation: () => Promise<unknown>, success: string) => {
+        if (!canOperateTelemetry) {
+            toast({ title: "Acesso somente para administradores", description: "Seu perfil pode consultar a telemetria, mas não pode enviar comandos ou alterar sessões.", variant: "destructive" });
+            return;
+        }
         setBusy(true);
         try {
             await operation();
@@ -249,6 +269,7 @@ export default function Telemetry() {
 
                         {selected ? (
                             <div className="space-y-4 min-w-0">
+                                {!canOperateTelemetry && <p role="status" className="rounded-md border bg-card p-3 text-sm text-muted-foreground">Modo somente leitura: administradores podem alterar o acompanhamento, abrir/encerrar sessões e enviar comandos.</p>}
                                 <Card>
                                     <CardHeader className="pb-3">
                                         <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -257,7 +278,7 @@ export default function Telemetry() {
                                                 <p className="text-sm text-muted-foreground">{selected.serialNumber} · {selected.location}</p>
                                             </div>
                                             <div className="flex gap-2 flex-wrap">
-                                                <Button variant="outline" disabled={busy} onClick={() => run(
+                                                <Button variant="outline" disabled={busy || !canOperateTelemetry} onClick={() => run(
                                                     () => setTelemetryMonitoring(selected.machineId, !selected.monitoringEnabled),
                                                     selected.monitoringEnabled ? "Acompanhamento desativado" : "Acompanhamento ativado") }>
                                                     <Activity className="h-4 w-4 mr-2" />
@@ -265,7 +286,7 @@ export default function Telemetry() {
                                                 </Button>
                                                 <Button
                                                     variant="outline"
-                                                    disabled={busy || !selected.online || !selected.monitoringEnabled}
+                                                    disabled={busy || !canOperateTelemetry || !selected.online || !selected.monitoringEnabled}
                                                     onClick={() => run(
                                                         () => requestMdbStatus(selected.machineId),
                                                         "Status MDB atualizado")}
@@ -274,12 +295,12 @@ export default function Telemetry() {
                                                     Consultar MDB
                                                 </Button>
                                                 {!selected.activeSession ? (
-                                                    <Button disabled={busy || !canStartSession} onClick={() => run(
+                                                    <Button disabled={busy || !canOperateTelemetry || !canStartSession} onClick={() => run(
                                                         () => startTelemetrySession(selected.machineId), "Sessão solicitada") }>
                                                         <DoorOpen className="h-4 w-4 mr-2" /> Abrir sessão
                                                     </Button>
                                                 ) : canCancelSession ? (
-                                                    <Button variant="destructive" disabled={busy} onClick={() => run(
+                                                    <Button variant="destructive" disabled={busy || !canOperateTelemetry} onClick={() => run(
                                                         () => cancelTelemetrySession(selected.activeSession!.sessionId), "Encerramento solicitado") }>
                                                         <XCircle className="h-4 w-4 mr-2" />
                                                         {selected.activeSession.state === "Opening" || selected.activeSession.state === "AwaitingSelection"
@@ -340,18 +361,16 @@ export default function Telemetry() {
                                             {events.map(event => (
                                                 <div key={event.id} className="border-b border-slate-800 py-2 text-xs font-mono">
                                                     <div className="flex justify-between gap-3 text-slate-500">
-                                                        <span>{event.eventType}</span><span>{formatDate(event.createdAt)}</span>
+                                                        <span>{getTelemetryEventLabel(event.eventType)}</span><span>{formatDate(event.createdAt)}</span>
                                                     </div>
-                                                    {event.detail && <p className="mt-1 text-slate-200">{event.detail}</p>}
-                                                    {event.dataJson && <p className="mt-1 text-emerald-400 break-all">{event.dataJson}</p>}
                                                 </div>
                                             ))}
                                         </ScrollArea>
                                         <div className="mt-3 flex gap-2 flex-wrap">
                                             {["RELATORIO_AUDITORIA", "REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
-                                                <Button key={command} size="sm" variant="outline" disabled={busy || !selected.online || !selected.monitoringEnabled}
+                                                <Button key={command} size="sm" variant="outline" disabled={busy || !canOperateTelemetry || !selected.online || !selected.monitoringEnabled}
                                                     onClick={() => run(() => sendTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
-                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.replaceAll("_", " ")}
+                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.split("_").join(" ")}
                                                 </Button>
                                             ))}
                                         </div>

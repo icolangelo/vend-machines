@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen } from "lucide-react";
+import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen, KeyRound, Copy, ShieldAlert } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -36,6 +37,8 @@ import {
     getTelemetryConnections,
     requestMdbStatus,
     startTelemetrySession,
+    rotateTelemetryCredential,
+    revokeTelemetryCredential,
     type TelemetryConnection,
 } from "@/lib/api";
 import { type Location } from "@/data/mockData";
@@ -44,7 +47,7 @@ import { getMdbStatusDetail } from "@/lib/mdbStatus";
 const machineFormSchema = z.object({
     id: z.string().optional(),
     grupoId: z.number().min(0, "Grupo ID não pode ser negativo").optional(),
-    serialNumber: z.string().min(1, "Serial Number é obrigatório"),
+    serialNumber: z.string().min(1, "Número de série é obrigatório"),
     modelo: z.string().min(1, "Modelo é obrigatório"),
     locationId: z.string().min(1, "Selecione uma localização"),
     firmwareVersion: z.string().optional(),
@@ -89,6 +92,7 @@ const machineFormSchema = z.object({
     ftpDirectoryPath: z.string().default("/evadts/"),
     mercadoPagoEnabled: z.boolean().default(false),
     autoOpenSessionEnabled: z.boolean().default(false),
+    minimumSalesTarget30d: z.number().int().min(1, "Informe uma meta maior que zero").max(10000000, "A meta excede o limite permitido").nullable().optional(),
 });
 
 type MachineFormValues = z.infer<typeof machineFormSchema>;
@@ -97,10 +101,14 @@ export default function MachineFormPage() {
     const navigate = useNavigate();
     const { id } = useParams();
     const isEditMode = !!id;
+    const { user } = useAuth();
+    const canManageMachine = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
     const [locations, setLocations] = useState<Location[]>([]);
     const [mdbConnection, setMdbConnection] = useState<TelemetryConnection | null>(null);
     const [mdbBusy, setMdbBusy] = useState(false);
+    const [credentialBusy, setCredentialBusy] = useState(false);
+    const [deviceCredential, setDeviceCredential] = useState<string | null>(null);
 
     const form = useForm<MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
@@ -121,7 +129,7 @@ export default function MachineFormPage() {
         },
     });
 
-    const { watch } = form;
+    const { watch, setValue } = form;
     const useGsm = watch("useGsm");
     const useWifi = watch("useWifi");
     const useEthernet = watch("useEthernet");
@@ -137,13 +145,13 @@ export default function MachineFormPage() {
         getLocations().then(data => {
             setLocations(data);
             if (!isEditMode && data.length > 0) {
-                form.setValue("locationId", data[0].id);
+                setValue("locationId", data[0].id);
             }
         }).catch(err => {
             console.error("Erro ao buscar localizações para a máquina:", err);
             toast.error("Erro ao carregar localizações.");
         });
-    }, []);
+    }, [isEditMode, setValue]);
 
     useEffect(() => {
         if (isEditMode && id) {
@@ -155,7 +163,7 @@ export default function MachineFormPage() {
                         modelo: machine.name,
                         locationId: machine.locationId || locations.find(location => location.name === machine.clientName)?.id || "",
                         useWifi: true,
-                        ativo: machine.status === "online",
+                        ativo: machine.isActive !== false,
                         isDhcpEnabled: true,
                         useHttps: true,
                         ftpServerPort: 21,
@@ -163,6 +171,7 @@ export default function MachineFormPage() {
                         evaBaudRateOption: "0",
                         mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
                         autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
+                        minimumSalesTarget30d: machine.minimumSalesTarget30d ?? undefined,
                     });
                 }
             }).catch(err => {
@@ -179,18 +188,20 @@ export default function MachineFormPage() {
     }, [id, isEditMode]);
 
     function onSubmit(data: MachineFormValues) {
+        if (!canManageMachine) return;
         console.log("Form Submitted:", data);
         
         const selectedLocation = locations.find(location => location.id === data.locationId);
         const machineData = {
             name: data.modelo,
             serialNumber: data.serialNumber,
-            status: data.ativo ? "online" as const : "offline" as const,
+            isActive: data.ativo,
             locationId: data.locationId,
             location: selectedLocation?.name || "Localização principal",
             clientName: selectedLocation?.name || "",
             mercadoPagoEnabled: data.mercadoPagoEnabled,
             autoOpenSessionEnabled: data.autoOpenSessionEnabled,
+            minimumSalesTarget30d: data.minimumSalesTarget30d ?? null,
         };
 
         const savePromise = isEditMode && id
@@ -215,7 +226,7 @@ export default function MachineFormPage() {
     }
 
     async function handleMdbStatusRequest() {
-        if (!id) return;
+        if (!id || !canManageMachine) return;
         setMdbBusy(true);
         try {
             const result = await requestMdbStatus(id);
@@ -235,7 +246,7 @@ export default function MachineFormPage() {
     }
 
     async function handleOpenSession() {
-        if (!id) return;
+        if (!id || !canManageMachine) return;
         setMdbBusy(true);
         try {
             await startTelemetrySession(id);
@@ -246,6 +257,42 @@ export default function MachineFormPage() {
         } finally {
             setMdbBusy(false);
         }
+    }
+
+    async function handleRotateDeviceCredential() {
+        if (!id || !canManageMachine) return;
+        setCredentialBusy(true);
+        try {
+            const result = await rotateTelemetryCredential(id);
+            setDeviceCredential(result.credential);
+            toast.success("Credencial gerada. Copie e provisione no dispositivo agora.");
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setCredentialBusy(false);
+        }
+    }
+
+    async function handleRevokeDeviceCredential() {
+        if (!id || !canManageMachine) return;
+        if (!window.confirm("Revogar a credencial desconectará a máquina atual. Continuar?")) return;
+        setCredentialBusy(true);
+        try {
+            await revokeTelemetryCredential(id);
+            setDeviceCredential(null);
+            toast.success("Credencial revogada.");
+            await refreshMdbConnection();
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setCredentialBusy(false);
+        }
+    }
+
+    async function handleCopyDeviceCredential() {
+        if (!deviceCredential) return;
+        await navigator.clipboard.writeText(deviceCredential);
+        toast.success("Credencial copiada.");
     }
 
     return (
@@ -275,21 +322,26 @@ export default function MachineFormPage() {
                                     </p>
                                 </div>
                             </div>
-                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2">
+                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2" disabled={!canManageMachine}>
                                 <Save className="w-4 h-4" />
                                 Salvar Equipamento
                             </Button>
                         </div>
 
-                        <div className="bg-card border rounded-lg shadow-sm">
+                        <div className="bg-card border rounded-lg shadow-xs">
                             <Form {...form}>
                                 <form onSubmit={form.handleSubmit(onSubmit)} className="p-6">
+                                    {!canManageMachine && (
+                                        <p role="status" className="mb-6 rounded-md border bg-muted p-3 text-sm text-muted-foreground">
+                                            Modo somente leitura: apenas administradores podem alterar a máquina ou operar sessões MDB.
+                                        </p>
+                                    )}
                                     <Tabs defaultValue="hardware" className="w-full">
                                         <TabsList className="mb-6 bg-muted/50 p-1 rounded-md inline-flex w-full overflow-x-auto justify-start border">
-                                            <TabsTrigger value="hardware" className="gap-2"><Microchip className="w-4 h-4" /> Hardware</TabsTrigger>
+                                            <TabsTrigger value="hardware" className="gap-2"><Microchip className="w-4 h-4" /> Equipamento</TabsTrigger>
                                             <TabsTrigger value="rede" className="gap-2"><Network className="w-4 h-4" /> Rede</TabsTrigger>
                                             <TabsTrigger value="servidor" className="gap-2"><Server className="w-4 h-4" /> Servidor</TabsTrigger>
-                                            <TabsTrigger value="vending" className="gap-2"><ArrowLeftRight className="w-4 h-4" /> Vending</TabsTrigger>
+                                            <TabsTrigger value="vending" className="gap-2"><ArrowLeftRight className="w-4 h-4" /> Telemetria</TabsTrigger>
                                             <TabsTrigger value="ftp" className="gap-2"><HardDriveDownload className="w-4 h-4" /> FTP</TabsTrigger>
                                         </TabsList>
 
@@ -298,7 +350,7 @@ export default function MachineFormPage() {
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                 <FormField control={form.control} name="serialNumber" render={({ field }) => (
                                                     <FormItem>
-                                                        <FormLabel>Serial Number *</FormLabel>
+                                                        <FormLabel>Número de série *</FormLabel>
                                                         <FormControl><Input placeholder="Ex: SN-123456" {...field} /></FormControl>
                                                         <FormMessage />
                                                     </FormItem>
@@ -333,6 +385,28 @@ export default function MachineFormPage() {
                                                     <FormItem>
                                                         <FormLabel>Versão Firmware</FormLabel>
                                                         <FormControl><Input placeholder="Ex: v1.2.3" {...field} /></FormControl>
+                                                        <FormMessage />
+                                                    </FormItem>
+                                                )} />
+                                            </div>
+
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 rounded-md border p-4 bg-muted/10">
+                                                <FormField control={form.control} name="minimumSalesTarget30d" render={({ field }) => (
+                                                    <FormItem>
+                                                        <FormLabel>Meta mínima de vendas em 30 dias</FormLabel>
+                                                        <FormControl>
+                                                            <Input
+                                                                type="number"
+                                                                min={1}
+                                                                max={10000000}
+                                                                step={1}
+                                                                inputMode="numeric"
+                                                                placeholder="Deixe vazio para não monitorar"
+                                                                value={field.value ?? ""}
+                                                                onChange={event => field.onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+                                                            />
+                                                        </FormControl>
+                                                        <p className="text-xs text-muted-foreground">Máquinas abaixo desta meta aparecem na triagem. O cálculo usa unidades entregues nos últimos 30 dias; sem meta configurada, a máquina não é classificada.</p>
                                                         <FormMessage />
                                                     </FormItem>
                                                 )} />
@@ -509,13 +583,13 @@ export default function MachineFormPage() {
                                             
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
                                                 <FormField control={form.control} name="clientId" render={({ field }) => (
-                                                    <FormItem><FormLabel>Client ID</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>ID do cliente</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="machineId" render={({ field }) => (
-                                                    <FormItem><FormLabel>Machine ID</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>ID da máquina</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="webQueryIntervalMs" render={({ field }) => (
-                                                    <FormItem><FormLabel>Intervalo Poll (ms)</FormLabel><FormControl><Input type="number" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>Intervalo de consulta (ms)</FormLabel><FormControl><Input type="number" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl></FormItem>
                                                 )} />
                                             </div>
 
@@ -529,6 +603,43 @@ export default function MachineFormPage() {
 
                                         {/* ABA VENDING */}
                                         <TabsContent value="vending" className="space-y-6 animate-in fade-in-50 duration-300">
+                                            {isEditMode && (
+                                                <div className="p-4 border rounded-md bg-background space-y-3">
+                                                    <div className="flex items-start gap-3">
+                                                        <KeyRound className="w-5 h-5 mt-0.5 text-muted-foreground" />
+                                                        <div>
+                                                            <h3 className="text-sm font-semibold text-foreground">Credencial de telemetria</h3>
+                                                            <p className="text-xs text-muted-foreground mt-1">
+                                                                Gere uma credencial individual para esta máquina. Ela aparece somente após a rotação e deve ser provisionada no dispositivo.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    {deviceCredential && (
+                                                        <div className="flex flex-col sm:flex-row gap-2">
+                                                            <Input value={deviceCredential} readOnly className="font-mono text-xs" aria-label="Credencial gerada" />
+                                                            <Button type="button" variant="outline" onClick={handleCopyDeviceCredential}>
+                                                                <Copy className="w-4 h-4 mr-2" /> Copiar
+                                                            </Button>
+                                                        </div>
+                                                    )}
+                                                    {!canManageMachine && (
+                                                        <p className="text-xs text-amber-700 flex items-center gap-2">
+                                                            <ShieldAlert className="w-4 h-4" /> Apenas administradores podem alterar a credencial.
+                                                        </p>
+                                                    )}
+                                                    {canManageMachine && (
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <Button type="button" size="sm" onClick={handleRotateDeviceCredential} disabled={credentialBusy}>
+                                                                <KeyRound className="w-4 h-4 mr-2" />
+                                                                {credentialBusy ? "Processando..." : "Gerar/rotacionar"}
+                                                            </Button>
+                                                            <Button type="button" size="sm" variant="outline" onClick={handleRevokeDeviceCredential} disabled={credentialBusy}>
+                                                                Revogar credencial
+                                                            </Button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                             <div className="p-4 border rounded-md bg-muted/10 space-y-4">
                                                 <div>
                                                     <h3 className="text-sm font-semibold text-foreground">Sessão MDB</h3>
@@ -581,7 +692,7 @@ export default function MachineFormPage() {
                                                                     type="button"
                                                                     variant="outline"
                                                                     size="sm"
-                                                                    disabled={mdbBusy || !mdbConnection?.online || !mdbConnection?.monitoringEnabled}
+                                                                    disabled={!canManageMachine || mdbBusy || !mdbConnection?.online || !mdbConnection?.monitoringEnabled}
                                                                     onClick={handleMdbStatusRequest}
                                                                 >
                                                                     <RefreshCw className={`w-4 h-4 mr-2 ${mdbBusy ? "animate-spin" : ""}`} />
@@ -592,6 +703,7 @@ export default function MachineFormPage() {
                                                                         type="button"
                                                                         size="sm"
                                                                         disabled={
+                                                                            !canManageMachine ||
                                                                             mdbBusy ||
                                                                             !mdbConnection?.online ||
                                                                             !mdbConnection?.monitoringEnabled ||
@@ -612,14 +724,14 @@ export default function MachineFormPage() {
 
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                                 <FormField control={form.control} name="evaSecurityPassword" render={({ field }) => (
-                                                    <FormItem><FormLabel>EVA Security</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>Segurança EVA</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="evaPasscode" render={({ field }) => (
-                                                    <FormItem><FormLabel>EVA Passcode</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
+                                                <FormItem><FormLabel>Senha EVA</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="evaBaudRateOption" render={({ field }) => (
                                                     <FormItem>
-                                                        <FormLabel>Baud Rate</FormLabel>
+                                                        <FormLabel>Taxa de transmissão</FormLabel>
                                                         <Select onValueChange={field.onChange} defaultValue={field.value}>
                                                             <FormControl><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger></FormControl>
                                                             <SelectContent>
@@ -633,7 +745,7 @@ export default function MachineFormPage() {
                                             <FormField control={form.control} name="evaLowSpeedStartup" render={({ field }) => (
                                                 <FormItem className="flex flex-row items-center space-x-3 space-y-0 p-4 border rounded-md">
                                                     <FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                                                    <FormLabel className="font-semibold cursor-pointer">Low Speed Startup (2400-init)</FormLabel>
+                                                    <FormLabel className="font-semibold cursor-pointer">Inicialização em baixa velocidade (2400 bps)</FormLabel>
                                                 </FormItem>
                                             )} />
                                         </TabsContent>

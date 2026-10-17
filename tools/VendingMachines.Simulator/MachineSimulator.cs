@@ -196,7 +196,8 @@ public sealed class MachineSimulator
             {
                 id = startId,
                 type = "start",
-                target = Serial
+                target = Serial,
+                credential = _options.DeviceCredential
             }, JsonOptions), connectionCts.Token);
             _log.Sent(Serial, $"start id={startId} target={Serial}");
 
@@ -246,7 +247,14 @@ public sealed class MachineSimulator
         while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
         {
             var text = await ReadTextAsync(socket, cancellationToken);
-            if (text == null) return;
+            if (text == null)
+            {
+                if (socket.CloseStatus.HasValue)
+                {
+                    _log.Warning(Serial, $"Servidor encerrou a conexão ({socket.CloseStatus}): {socket.CloseStatusDescription}");
+                }
+                return;
+            }
             Interlocked.Increment(ref _receivedMessages);
             await HandleIncomingAsync(text, cancellationToken);
         }

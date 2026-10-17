@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   clearAuthSession,
   clearLegacyAuthStorage,
+  acceptInvitationSession,
   loginSession,
   logoutSession,
   registerSession,
@@ -30,11 +31,22 @@ interface AuthContextType {
     password: string,
     companyName: string,
     companyCnpj: string,
-  ) => Promise<void>;
+  ) => Promise<string>;
+  acceptInvitation: (payload: {
+    invitationToken: string;
+    name: string;
+    cpf: string;
+    password: string;
+    acceptedPrivacyPolicy: boolean;
+  }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+const TEST_COMPANY_IDS = {
+  acme: "11111111-1111-1111-1111-111111111111",
+  sabor: "55555555-5555-5555-5555-555555555555",
+} as const;
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const queryClient = useQueryClient();
@@ -80,14 +92,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error("Senha incorreta. Por favor, tente novamente.");
       }
 
-      const isOperator = email.toLowerCase().includes("operador") || email.toLowerCase().includes("operator");
+      const normalizedEmail = email.trim().toLowerCase();
+      const isOperator = normalizedEmail.includes("operador") || normalizedEmail.includes("operator");
+      const isSaborCompany = normalizedEmail.endsWith("@sabor.example");
+      const isAcmeCompany = normalizedEmail.endsWith("@acme.example");
+      const isTenantAdmin = isSaborCompany || isAcmeCompany;
       setAuthSession(createMockSession({
-        id: isOperator ? "usr-joao" : "usr-admin",
-        name: isOperator ? "João da Silva" : "Admin Ivan",
+        id: isSaborCompany
+          ? (isOperator ? "usr-sabor-operator" : "usr-sabor-admin")
+          : isAcmeCompany
+            ? (isOperator ? "usr-acme-operator" : "usr-acme-admin")
+            : (isOperator ? "usr-joao" : "usr-admin"),
+        name: isSaborCompany
+          ? (isOperator ? "Ana Operadora" : "Admin Sabor")
+          : isAcmeCompany
+            ? (isOperator ? "Carlos Operador" : "Admin ACME")
+            : (isOperator ? "João da Silva" : "Admin Ivan"),
         email,
-        role: isOperator ? "Operator" : "Admin",
-        companyId: "11111111-1111-1111-1111-111111111111",
-        companyName: "ACME Machines LTDA",
+        role: isOperator ? "Operator" : isTenantAdmin ? "Admin" : "PlatformAdmin",
+        companyId: isSaborCompany ? TEST_COMPANY_IDS.sabor : TEST_COMPANY_IDS.acme,
+        companyName: isSaborCompany ? "Sabor & Cia Vending" : "ACME Machines LTDA",
       }));
       return;
     }
@@ -104,18 +128,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     companyCnpj: string,
   ) => {
     if (isTestEnv()) {
-      setAuthSession(createMockSession({
-        id: "usr-admin-registered",
-        name,
-        email,
-        role: "Admin",
-        companyId: "11111111-1111-1111-1111-111111111111",
-        companyName,
-      }));
-      return;
+      return "Cadastro recebido. A empresa aguarda análise da equipe da plataforma.";
     }
 
-    await registerSession({
+    const result = await registerSession({
       name,
       email,
       cpf,
@@ -124,6 +140,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       companyCnpj,
       acceptedPrivacyPolicy: true,
     });
+    return result.message;
+  };
+
+  const acceptInvitation = async (payload: {
+    invitationToken: string;
+    name: string;
+    cpf: string;
+    password: string;
+    acceptedPrivacyPolicy: boolean;
+  }) => {
+    if (isTestEnv()) {
+      setAuthSession(createMockSession({
+        id: "usr-invited",
+        name: payload.name,
+        email: "novo.usuario@vendmachine.com.br",
+        role: "Operator",
+        companyId: "11111111-1111-1111-1111-111111111111",
+        companyName: "ACME Machines LTDA",
+      }));
+      return;
+    }
+
+    await acceptInvitationSession(payload);
   };
 
   const logout = async () => {
@@ -148,6 +187,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         logout,
         register,
+        acceptInvitation,
       }}
     >
       {children}

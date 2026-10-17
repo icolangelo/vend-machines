@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using System.Data;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,16 +15,18 @@ using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Controllers;
 
-[Authorize(Roles = "Admin")]
+[Authorize(Roles = AppRoles.PlatformAdmin)]
 [ApiController]
 [Route("api/[controller]")]
 public class CompaniesController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IAuditLogService? _audit;
 
-    public CompaniesController(AppDbContext context)
+    public CompaniesController(AppDbContext context, IAuditLogService? audit = null)
     {
         _context = context;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -32,12 +35,6 @@ public class CompaniesController : ControllerBase
         [FromQuery] int pageSize = 10,
         [FromQuery] string? searchTerm = null)
     {
-        var email = User.FindFirst(ClaimTypes.Email)?.Value;
-        if (email != "dev.ivan@gmail.com")
-        {
-            return StatusCode(403, new { message = "Apenas o administrador do sistema pode listar as empresas." });
-        }
-
         if (pageNumber < 1) pageNumber = 1;
         if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
@@ -54,7 +51,8 @@ public class CompaniesController : ControllerBase
         var totalPages = (int)Math.Ceiling((double)totalItems / pageSize);
 
         var items = await query
-            .OrderBy(c => c.Name)
+            .OrderBy(c => c.ActivationStatus == CompanyActivationStatuses.Pending ? 0 : 1)
+            .ThenBy(c => c.Name)
             .Skip((pageNumber - 1) * pageSize)
             .Take(pageSize)
             .Select(c => new CompanyDto
@@ -63,11 +61,16 @@ public class CompaniesController : ControllerBase
                 Name = c.Name,
                 Cnpj = c.Cnpj,
                 CreatedAt = c.CreatedAt,
+                ActivationStatus = c.ActivationStatus,
                 // Nome do criador/dono original
                 CreatedBy = _context.Users
                     .Where(u => u.Id == c.CreatedByUserId)
                     .Select(u => u.Name)
                     .FirstOrDefault() ?? "Desconhecido",
+                CreatedByEmail = _context.Users
+                    .Where(u => u.Id == c.CreatedByUserId)
+                    .Select(u => u.Email)
+                    .FirstOrDefault() ?? string.Empty,
                 // Lista de sócios associados a esta mesma empresa (exclui o criador)
                 Partners = _context.Users
                     .Where(u => u.CompanyId == c.Id && u.Id != c.CreatedByUserId)
@@ -91,15 +94,81 @@ public class CompaniesController : ControllerBase
         });
     }
 
+    [HttpPut("{companyId:guid}/activation")]
+    public async Task<IActionResult> UpdateActivationStatus(
+        Guid companyId,
+        [FromBody] UpdateCompanyActivationRequest request,
+        CancellationToken cancellationToken)
+    {
+        var status = request?.Status?.Trim();
+        if (status is not (CompanyActivationStatuses.Active or CompanyActivationStatuses.Rejected))
+            return BadRequest(new { message = "Escolha um status de ativação válido." });
+
+        var company = await _context.Companies.SingleOrDefaultAsync(item => item.Id == companyId, cancellationToken);
+        if (company == null)
+            return NotFound(new { message = "Empresa não encontrada." });
+
+        if (company.ActivationStatus == status)
+            return Ok(new { companyId, activationStatus = status, affectedUsers = 0 });
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var previousStatus = company.ActivationStatus;
+        company.ActivationStatus = status;
+        var affectedUsers = 0;
+
+        if (status == CompanyActivationStatuses.Active && previousStatus == CompanyActivationStatuses.Pending)
+        {
+            var owner = await _context.Users.SingleOrDefaultAsync(user => user.Id == company.CreatedByUserId, cancellationToken);
+            if (owner != null && !owner.IsActive &&
+                (!owner.RequiresEmailVerification || owner.EmailVerifiedAt.HasValue))
+            {
+                owner.IsActive = true;
+                owner.CredentialVersion++;
+                affectedUsers++;
+            }
+        }
+
+        if (status == CompanyActivationStatuses.Rejected)
+        {
+            var companyUsers = await _context.Users
+                .Where(user => user.CompanyId == companyId)
+                .ToListAsync(cancellationToken);
+            foreach (var user in companyUsers.Where(user => user.IsActive))
+            {
+                user.IsActive = false;
+                user.CredentialVersion++;
+                affectedUsers++;
+            }
+
+            var sessions = await _context.RefreshSessions
+                .Where(session => _context.Users.Any(user => user.Id == session.UserId && user.CompanyId == companyId))
+                .ToListAsync(cancellationToken);
+            _context.RefreshSessions.RemoveRange(sessions);
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        var action = status == CompanyActivationStatuses.Active
+            ? "company.activation_approved"
+            : "company.activation_rejected";
+        if (_audit != null)
+        {
+            await _audit.RecordAsync(
+                action,
+                "Company",
+                company.Id.ToString(),
+                company.Id,
+                new { activationStatus = status, affectedUsers },
+                cancellationToken);
+        }
+
+        return Ok(new { companyId, activationStatus = status, affectedUsers });
+    }
+
     [HttpGet("{companyId}/integration")]
     public async Task<IActionResult> GetCompanyIntegration(Guid companyId)
     {
-        var email = User.FindFirst(ClaimTypes.Email)?.Value;
-        if (email != "dev.ivan@gmail.com")
-        {
-            return StatusCode(403, new { message = "Apenas o administrador do sistema pode visualizar os detalhes da integração." });
-        }
-
         var integration = await _context.MercadoPagoIntegrations
             .FirstOrDefaultAsync(i => i.CompanyId == companyId);
 
@@ -133,7 +202,7 @@ public class CompaniesController : ControllerBase
             MercadoPagoNickname = integration.MercadoPagoNickname,
             MercadoPagoSiteId = integration.MercadoPagoSiteId,
             LastTokenValidationAt = integration.LastTokenValidationAt,
-            LastTokenValidationStatus = integration.LastTokenValidationStatus,
+            LastTokenValidationStatus = SanitizeTokenValidationStatus(integration.LastTokenValidationStatus),
             TokenFingerprint = GetTokenFingerprint(decryptedAccessToken),
             IsActive = integration.IsActive,
             CreatedAt = integration.CreatedAt,
@@ -143,6 +212,21 @@ public class CompaniesController : ControllerBase
         };
 
         return Ok(dto);
+    }
+
+    private static string SanitizeTokenValidationStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return string.Empty;
+
+        string[] sensitivePrefixes =
+        [
+            "Falha ao renovar token OAuth:",
+            "Falha ao validar token OAuth antes do Pix:"
+        ];
+
+        return sensitivePrefixes.Any(prefix => status.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            ? "Falha na validação do token OAuth. Detalhes sensíveis foram omitidos."
+            : status;
     }
 
     private static string MaskValue(string value, int visibleStart = 8, int visibleEnd = 4)
@@ -172,8 +256,15 @@ public class CompanyDto
     public Guid Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Cnpj { get; set; } = string.Empty;
+    public string ActivationStatus { get; set; } = CompanyActivationStatuses.Active;
     public string CreatedBy { get; set; } = string.Empty;
+    public string CreatedByEmail { get; set; } = string.Empty;
     public List<string> Partners { get; set; } = new();
     public List<string> EnabledIntegrations { get; set; } = new();
     public DateTime CreatedAt { get; set; }
+}
+
+public sealed class UpdateCompanyActivationRequest
+{
+    public string Status { get; set; } = string.Empty;
 }

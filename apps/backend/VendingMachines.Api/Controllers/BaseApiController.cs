@@ -1,24 +1,27 @@
 using Microsoft.AspNetCore.Mvc;
 using VendingMachines.Api.Middlewares;
+using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Controllers;
 
 /// <summary>
 /// Base controller that provides common helpers for all API controllers,
-/// including SuperAdmin company impersonation support.
+/// including PlatformAdmin company impersonation support.
 /// </summary>
 public abstract class BaseApiController : ControllerBase
 {
     /// <summary>
     /// Returns the effective CompanyId for the current request.
-    /// If a SuperAdmin is impersonating another company, returns that company's Id.
+    /// If a PlatformAdmin is impersonating another company, returns that company's Id.
     /// Otherwise, returns the authenticated user's own CompanyId.
     /// </summary>
     protected bool TryGetEffectiveCompanyId(out Guid companyId)
     {
-        // Check for active impersonation (SuperAdmin only, validated by middleware)
+        // Honor impersonation only when a PlatformAdmin has a middleware-validated claim.
         var impersonated = User.FindFirst(ImpersonationMiddleware.ImpersonatedCompanyIdClaim)?.Value;
-        if (!string.IsNullOrEmpty(impersonated) && Guid.TryParse(impersonated, out companyId))
+        if (User.IsInRole(AppRoles.PlatformAdmin) &&
+            !string.IsNullOrEmpty(impersonated) &&
+            Guid.TryParse(impersonated, out companyId))
         {
             return true;
         }
@@ -32,5 +35,6 @@ public abstract class BaseApiController : ControllerBase
     /// Returns whether the current request is running in impersonation mode.
     /// </summary>
     protected bool IsImpersonating =>
-        !string.IsNullOrEmpty(User.FindFirst(ImpersonationMiddleware.ImpersonatedCompanyIdClaim)?.Value);
+        User.IsInRole(AppRoles.PlatformAdmin) &&
+        Guid.TryParse(User.FindFirst(ImpersonationMiddleware.ImpersonatedCompanyIdClaim)?.Value, out _);
 }

@@ -37,6 +37,7 @@ public class PaymentTransaction
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
+    public DateTime? LastReconciliationAt { get; set; }
 
     public ICollection<TransactionTelemetryLog> TelemetryLogs { get; set; } = new List<TransactionTelemetryLog>();
 }

@@ -6,7 +6,7 @@ import { getCompanies } from "@/lib/api";
 interface Company {
   id: string;
   name: string;
-  cnpj: string;
+  cnpj?: string;
 }
 
 interface CompanySwitcherModalProps {
@@ -72,7 +72,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Overlay */}
       <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/50 backdrop-blur-xs"
         onClick={onClose}
       />
 
@@ -124,7 +124,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Buscar empresa..."
-              className="w-full pl-9 pr-4 py-2 text-sm bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/40 placeholder:text-zinc-400"
+              className="w-full pl-9 pr-4 py-2 text-sm bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 placeholder:text-zinc-400"
             />
           </div>
         </div>
@@ -164,7 +164,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
                   <p className={`text-sm font-medium truncate ${isActive ? "text-blue-700 dark:text-blue-300" : "text-zinc-800 dark:text-zinc-200"}`}>
                     {company.name}
                   </p>
-                  <p className="text-[11px] text-zinc-400 truncate">{company.cnpj}</p>
+                  <p className="text-[11px] text-zinc-400 truncate">{company.cnpj || "CNPJ não informado"}</p>
                 </div>
                 {isActive && (
                   <Eye className="h-3.5 w-3.5 text-blue-500 ml-auto shrink-0" />

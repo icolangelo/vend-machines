@@ -4,3 +4,7 @@ apps/backend/VendingMachines.Api/vending_machines.db-wal
 .tmp/
 **/bin/
 **/obj/
+apps/frontend/.codex-*-build/
+apps/frontend/.codex-verify-dist/
+apps/frontend/test-results/
+apps/frontend/playwright-report/

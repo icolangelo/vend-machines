@@ -4,9 +4,9 @@ import { KpiCard } from "@/components/dashboard/KpiCard";
 import { StatusIndicator } from "@/components/dashboard/StatusIndicator";
 import { type Machine, type Location } from "@/data/mockData";
 import { getMachines, getLocations } from "@/lib/api";
-import { Box, Zap, AlertTriangle, ListFilter, ArrowLeft, ArrowRight, Info, Plus, Edit } from "lucide-react";
+import { Box, Zap, AlertTriangle, ListFilter, ArrowLeft, ArrowRight, Info, Plus, Edit, PackagePlus, RefreshCw, TrendingDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
     Select,
@@ -17,33 +17,43 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { getErrorMessage } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Machines() {
     const navigate = useNavigate();
     const location = useLocation();
+    const { user } = useAuth();
+    const canManageMachines = user?.role === "Admin" || user?.role === "PlatformAdmin";
     
     const [machines, setMachines] = useState<Machine[]>([]);
     const [locations, setLocations] = useState<Location[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
-    useEffect(() => {
+    const loadMachines = useCallback(async () => {
         setLoading(true);
-        Promise.all([getMachines(), getLocations()])
-            .then(([mList, locationList]) => {
-                setMachines(mList);
-                setLocations(locationList);
-                setLoading(false);
-            })
-            .catch(err => {
-                console.error("Erro ao carregar máquinas:", err);
-                setLoading(false);
-            });
+        setLoadError(null);
+        try {
+            const [mList, locationList] = await Promise.all([getMachines(), getLocations()]);
+            setMachines(mList);
+            setLocations(locationList);
+            setLastUpdatedAt(new Date().toLocaleTimeString("pt-BR"));
+        } catch (err: unknown) {
+            console.error("Erro ao carregar máquinas:", err);
+            setLoadError(getErrorMessage(err, "Não foi possível carregar as máquinas."));
+        } finally {
+            setLoading(false);
+        }
     }, []);
+
+    useEffect(() => { void loadMachines(); }, [loadMachines]);
 
     const [selectedLocationId, setSelectedLocationId] = useState<string>(
         location.state?.selectedLocationId || "all"
     );
-    const [filterType, setFilterType] = useState<"attention" | "all">("all");
+    const [filterType, setFilterType] = useState<"unavailable" | "lowStock" | "belowTarget" | "all">("all");
     const [currentPage, setCurrentPage] = useState(1);
     const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
     
@@ -60,13 +70,14 @@ export default function Machines() {
         const total = filteredMachinesByLocation.length;
         if (total === 0) return { avgStock: 0, uptime: 0, totalCount: 0, attentionCount: 0 };
         
-        const stockSum = filteredMachinesByLocation.reduce((acc, m) => acc + m.stockLevel, 0);
+        const configuredInventory = filteredMachinesByLocation.filter(m => m.inventoryConfigured);
+        const stockSum = configuredInventory.reduce((acc, m) => acc + m.stockLevel, 0);
         const onlineCount = filteredMachinesByLocation.filter(m => m.status === "online").length;
-        const alertCount = filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25).length;
+        const alertCount = filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.status === "unmonitored" || m.status === "inactive" || m.lowStock === true).length;
         
         return {
-            avgStock: Math.round(stockSum / total),
-            uptime: Math.round((onlineCount / total) * 100),
+            avgStock: configuredInventory.length > 0 ? Math.round(stockSum / configuredInventory.length) : 0,
+            uptime: Math.round((onlineCount / Math.max(1, filteredMachinesByLocation.filter(m => m.status !== "unmonitored" && m.status !== "inactive").length)) * 100),
             totalCount: total,
             attentionCount: alertCount
         };
@@ -74,20 +85,19 @@ export default function Machines() {
 
     // Table view logic
     const tableData = useMemo(() => {
-        if (filterType === "attention") {
-            return filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.stockLevel < 25);
+        if (filterType === "unavailable") {
+            return filteredMachinesByLocation.filter(m => m.status === "offline" || m.status === "warning" || m.status === "unmonitored" || m.status === "inactive");
         }
+        if (filterType === "lowStock") return filteredMachinesByLocation.filter(m => m.lowStock === true);
+        if (filterType === "belowTarget") return filteredMachinesByLocation.filter(m => m.belowSalesTarget === true);
         return filteredMachinesByLocation;
     }, [filteredMachinesByLocation, filterType]);
 
     // Pagination
     const totalPages = Math.ceil(tableData.length / itemsPerPage);
     const paginatedData = useMemo(() => {
-        if (filterType === "attention") {
-            return tableData; // Usually attention table is just a summary list without pagination in dashboard, but following the prompt: pagination mainly for all.
-        }
         return tableData.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-    }, [tableData, filterType, currentPage, itemsPerPage]);
+    }, [tableData, currentPage, itemsPerPage]);
 
     // Reset page when switching filters or client
     useEffect(() => {
@@ -104,34 +114,51 @@ export default function Machines() {
                         <h1 className="text-sm font-semibold text-foreground">Máquinas</h1>
                     </header>
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {loading ? (
-                            <div className="flex items-center justify-center h-[50vh]">
-                                <p className="text-muted-foreground animate-pulse font-medium">Carregando máquinas...</p>
-                            </div>
-                        ) : (
+                            {loading && !lastUpdatedAt ? (
+                                <div className="flex items-center justify-center h-[50vh]">
+                                    <p className="text-muted-foreground animate-pulse font-medium">Carregando máquinas...</p>
+                                </div>
+                            ) : loadError && !lastUpdatedAt ? (
+                                <div className="flex flex-col items-center justify-center gap-3 min-h-[40vh] rounded-lg border border-dashed bg-card p-6 text-center">
+                                    <AlertTriangle className="h-9 w-9 text-destructive" />
+                                    <div><h2 className="font-semibold">Não foi possível carregar as máquinas</h2><p className="mt-1 text-sm text-muted-foreground">{loadError}</p></div>
+                                    <Button variant="outline" onClick={() => void loadMachines()}><RefreshCw className="mr-2 h-4 w-4" />Tentar novamente</Button>
+                                </div>
+                            ) : (
                             <>
+                                {(loadError || loading) && lastUpdatedAt && (
+                                    <div role={loadError ? "alert" : "status"} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                                        <span>{loadError ? `Não foi possível atualizar as máquinas e localizações. Os dados exibidos podem estar desatualizados. ${loadError}` : "Atualizando máquinas e localizações... Os dados da última leitura continuam visíveis."}</span>
+                                        {loadError && <Button variant="outline" size="sm" onClick={() => void loadMachines()} disabled={loading}><RefreshCw className="mr-2 h-4 w-4" />Tentar novamente</Button>}
+                                    </div>
+                                )}
                                 <div className="flex items-center justify-between">
                             <div className="flex items-center gap-4">
                                 <h2 className="text-lg font-semibold tracking-tight">Visão Geral</h2>
-                                <Button onClick={() => navigate("/machines/new")} size="sm" className="gap-2">
+                                {canManageMachines && <Button onClick={() => navigate("/machines/new")} size="sm" className="gap-2">
                                     <Plus className="w-4 h-4" />
                                     Nova Máquina
-                                </Button>
+                                </Button>}
                             </div>
-                            <div className="w-[280px]">
-                                <Select value={selectedLocationId} onValueChange={setSelectedLocationId}>
-                                    <SelectTrigger>
-                                        <SelectValue placeholder="Selecione uma localização" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="all">Todas as Localizações</SelectItem>
-                                        {locations.filter(l => l.id && l.id.trim() !== "").map(location => (
-                                            <SelectItem key={location.id} value={location.id}>
-                                                {location.name}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                            <div className="flex flex-col sm:flex-row gap-2">
+                                <Button variant="outline" size="sm" onClick={() => void loadMachines()} disabled={loading}>
+                                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />Atualizar
+                                </Button>
+                                <div className="w-full sm:w-[280px]">
+                                    <Select value={selectedLocationId} onValueChange={setSelectedLocationId}>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Selecione uma localização" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="all">Todas as Localizações</SelectItem>
+                                            {locations.filter(l => l.id && l.id.trim() !== "").map(location => (
+                                                <SelectItem key={location.id} value={location.id}>
+                                                    {location.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
                             </div>
                         </div>
 
@@ -167,11 +194,19 @@ export default function Machines() {
 
                         <div className="bg-card border rounded-lg flex flex-col animate-slide-up" style={{ animationDelay: "100ms" }}>
                             <div className="px-5 py-4 border-b flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
-                                <Tabs value={filterType} onValueChange={(v) => setFilterType(v as "attention" | "all")}>
-                                    <TabsList>
-                                        <TabsTrigger value="attention" className="gap-2">
+                                <Tabs value={filterType} onValueChange={(v) => setFilterType(v as "unavailable" | "lowStock" | "belowTarget" | "all")}>
+                                    <TabsList className="h-auto flex-wrap">
+                                        <TabsTrigger value="unavailable" className="gap-2">
                                             <AlertTriangle className="h-4 w-4" />
-                                            Requerem Atenção
+                                            Indisponíveis ou atenção
+                                        </TabsTrigger>
+                                        <TabsTrigger value="lowStock" className="gap-2">
+                                            <PackagePlus className="h-4 w-4" />
+                                            Reposição
+                                        </TabsTrigger>
+                                        <TabsTrigger value="belowTarget" className="gap-2">
+                                            <TrendingDown className="h-4 w-4" />
+                                            Abaixo da meta
                                         </TabsTrigger>
                                         <TabsTrigger value="all" className="gap-2">
                                             <ListFilter className="h-4 w-4" />
@@ -180,7 +215,7 @@ export default function Machines() {
                                     </TabsList>
                                 </Tabs>
                                 <span className="font-mono-data text-xs text-muted-foreground self-start sm:self-auto">
-                                    {tableData.length} itens encontrados
+                                    {tableData.length} itens · consulta às {lastUpdatedAt ?? "—"}
                                 </span>
                             </div>
 
@@ -193,6 +228,7 @@ export default function Machines() {
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Localização</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Status</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Estoque</th>
+                                            <th className="text-left px-5 py-2.5 text-label font-medium">Vendas / meta 30 dias</th>
                                             <th className="text-left px-5 py-2.5 text-label font-medium">Última Sinc.</th>
                                             <th className="px-5 py-2.5 w-12"></th>
                                         </tr>
@@ -200,7 +236,7 @@ export default function Machines() {
                                     <tbody>
                                         {paginatedData.length === 0 ? (
                                             <tr>
-                                                <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
+                                                <td colSpan={8} className="px-5 py-8 text-center text-muted-foreground">
                                                     Nenhuma máquina encontrada para os filtros selecionados.
                                                 </td>
                                             </tr>
@@ -223,7 +259,7 @@ export default function Machines() {
                                                         <StatusIndicator status={machine.status} />
                                                     </td>
                                                     <td className="px-5 py-3">
-                                                        <div className="flex items-center gap-2">
+                                                        {machine.inventoryConfigured ? <div className="flex items-center gap-2">
                                                             <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
                                                                 <div
                                                                     className={`h-full rounded-full ${machine.stockLevel > 50
@@ -236,14 +272,22 @@ export default function Machines() {
                                                                 />
                                                             </div>
                                                             <span className="font-mono-data text-xs">{machine.stockLevel}%</span>
-                                                        </div>
+                                                        </div> : <span className="text-xs text-muted-foreground">Não cadastrado</span>}
+                                                    </td>
+                                                    <td className="px-5 py-3 text-xs">
+                                                        {machine.minimumSalesTarget30d != null ? (
+                                                            <div>
+                                                                <span className="font-mono-data">{machine.totalSales30d} / {machine.minimumSalesTarget30d}</span>
+                                                                {machine.belowSalesTarget && <span className="block text-destructive">Abaixo da meta</span>}
+                                                            </div>
+                                                        ) : <span className="text-muted-foreground">Sem meta</span>}
                                                     </td>
                                                     <td className="px-5 py-3 text-xs text-muted-foreground">
                                                         {machine.lastSync}
                                                     </td>
                                                     <td className="px-5 py-3 text-right">
                                                         <div className="flex items-center justify-end gap-1">
-                                                            <button 
+                                                            {canManageMachines && <button
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (machine.id) {
@@ -254,7 +298,18 @@ export default function Machines() {
                                                                 title="Editar Equipamento"
                                                             >
                                                                 <Edit className="w-4 h-4" />
-                                                            </button>
+                                                            </button>}
+                                                            {machine.lowStock && <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    navigate(`/inventory?machineId=${encodeURIComponent(machine.id)}`);
+                                                                }}
+                                                                className="p-1.5 text-amber-700 hover:bg-amber-100 rounded transition-colors"
+                                                                title="Abrir estoque desta máquina"
+                                                                aria-label={`Abrir estoque de ${machine.name}`}
+                                                            >
+                                                                <PackagePlus className="w-4 h-4" />
+                                                            </button>}
                                                             <button 
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
@@ -274,7 +329,7 @@ export default function Machines() {
                                 </table>
                             </div>
 
-                            {filterType === "all" && totalPages > 1 && (
+                            {totalPages > 1 && (
                                 <div className="px-5 py-3 border-t flex items-center justify-between">
                                     <span className="text-xs text-muted-foreground">
                                         Página {currentPage} de {totalPages}
@@ -338,7 +393,7 @@ export default function Machines() {
                                     <p className="font-mono-data font-medium text-lg">{selectedMachine.id}</p>
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Serial Number</p>
+                                    <p className="text-xs text-muted-foreground mb-1 uppercase tracking-wider font-semibold">Número de série</p>
                                     <p className="font-mono-data font-medium text-lg">{selectedMachine.serialNumber || "-"}</p>
                                 </div>
                                 <div>
