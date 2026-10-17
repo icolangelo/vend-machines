@@ -66,6 +66,7 @@ describe("Reports", () => {
         });
         getInventoryMovements
             .mockResolvedValueOnce({ items: [movement("movement-1")], page: 1, pageSize: 50, totalItems: 51, totalPages: 2 })
+            .mockRejectedValueOnce(new Error("API indisponível"))
             .mockResolvedValueOnce({ items: [movement("movement-51")], page: 2, pageSize: 50, totalItems: 51, totalPages: 2 });
 
         render(<Reports />);
@@ -79,8 +80,11 @@ describe("Reports", () => {
         expect(screen.getByRole("button", { name: "Exportar página CSV" })).toBeInTheDocument();
         fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
 
+        expect(await screen.findByRole("alert")).toHaveTextContent("Não foi possível carregar esta página do histórico.");
+        fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
         await waitFor(() => expect(getInventoryMovements).toHaveBeenLastCalledWith(2, 50, { machineId: undefined, itemNumber: undefined }));
         expect(await screen.findByText("Página 2 de 2")).toBeInTheDocument();
         expect(screen.getByText("Exibindo 51–51 de 51 movimentações · atualizado em", { exact: false })).toBeInTheDocument();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 });

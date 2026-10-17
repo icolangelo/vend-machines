@@ -48,6 +48,8 @@ export default function Reports() {
     const [locationsReport, setLocationsReport] = useState<Location[] | null>(null);
     const [inventoryReport, setInventoryReport] = useState<InventoryMovementPage | null>(null);
     const [inventoryPage, setInventoryPage] = useState(1);
+    const [inventoryPageToRetry, setInventoryPageToRetry] = useState(1);
+    const [inventoryPageRequestFailed, setInventoryPageRequestFailed] = useState(false);
     const [executedAt, setExecutedAt] = useState<string>("");
     const today = new Date().toISOString().slice(0, 10);
     const defaultFrom = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -83,6 +85,7 @@ export default function Reports() {
     const handleExecute = async () => {
         setIsExecuting(true);
         setExecutionError(null);
+        setInventoryPageRequestFailed(false);
         try {
             if (selectedReport === "machines") {
                 const data = await getMachines();
@@ -159,6 +162,8 @@ export default function Reports() {
     const handleInventoryPageChange = async (page: number) => {
         setIsExecuting(true);
         setExecutionError(null);
+        setInventoryPageRequestFailed(false);
+        setInventoryPageToRetry(page);
         try {
             const itemNumber = itemNumberFilter.trim() ? Number(itemNumberFilter) : undefined;
             const data = await getInventoryMovements(page, INVENTORY_PAGE_SIZE, {
@@ -170,6 +175,7 @@ export default function Reports() {
             setExecutedAt(new Date().toLocaleString("pt-BR"));
         } catch (error) {
             console.error("Erro ao paginar histórico de estoque:", error);
+            setInventoryPageRequestFailed(true);
             setExecutionError("Não foi possível carregar esta página do histórico. Confira a conexão e tente novamente.");
             toast.error("Falha ao buscar as movimentações de estoque.");
         } finally {
@@ -348,7 +354,7 @@ export default function Reports() {
                         {executionError && (
                             <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
                                 <span>{executionError}</span>
-                                <Button variant="outline" size="sm" onClick={() => void handleExecute()} disabled={isExecuting}>
+                                <Button variant="outline" size="sm" onClick={() => void (inventoryPageRequestFailed ? handleInventoryPageChange(inventoryPageToRetry) : handleExecute())} disabled={isExecuting}>
                                     Tentar novamente
                                 </Button>
                             </div>
