@@ -2,7 +2,7 @@ name: Verify application
 
 on:
   push:
-    branches: ["develop", "main", "master"]
+    branches: ["develop", "main", "master", "codex/**"]
     paths:
       - "apps/backend/**"
       - "apps/frontend/**"
