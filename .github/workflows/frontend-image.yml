@@ -101,7 +101,7 @@ jobs:
 
       - name: Wait for static image health
         run: |
-          for attempt in {1..20}; do
+          for _ in {1..20}; do
             if curl --fail --silent http://127.0.0.1:8088/health >/dev/null; then
               exit 0
             fi

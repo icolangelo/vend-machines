@@ -103,14 +103,20 @@ def github_api_error_message(status: int, url: str) -> str:
         return "Configure a política de branches do ambiente production para permitir somente main."
     if status == 404 and "/environments/production" in url:
         return "O ambiente GitHub production não existe."
-    if status == 403:
-        return "O GITHUB_TOKEN não tem leitura de Administration/Actions para verificar as proteções."
+    if status == 403 and "/branches/main/protection" in url:
+        return "GITHUB_ADMIN_READ_TOKEN precisa ter a permissão Administration: read para consultar a proteção de main."
+    if status == 403 and "/environments/" in url:
+        return "GITHUB_TOKEN precisa ter a permissão Actions: read para consultar o ambiente production."
     return "A consulta autenticada da proteção do ambiente falhou."
 
 
 def main() -> int:
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
+    admin_read_token = os.environ.get("GITHUB_ADMIN_READ_TOKEN", "")
+    if not admin_read_token:
+        print("::error::Configure GITHUB_ADMIN_READ_TOKEN no ambiente production com permissão Administration: read.", file=sys.stderr)
+        return 1
     if repository.count("/") != 1 or not token:
         print("::error::Não foi possível consultar a proteção do ambiente production.", file=sys.stderr)
         return 1
@@ -119,7 +125,7 @@ def main() -> int:
     repository_url = f"https://api.github.com/repos/{repository}"
     base_url = f"{repository_url}/environments/{encoded_environment}"
     try:
-        branch_protection = get_github_json(repository_url + "/branches/main/protection", token)
+        branch_protection = get_github_json(repository_url + "/branches/main/protection", admin_read_token)
         validate_main_branch_protection(branch_protection)
         environment = get_github_json(base_url, token)
         policies = get_github_json(base_url + "/deployment-branch-policies", token)

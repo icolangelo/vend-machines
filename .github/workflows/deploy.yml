@@ -312,7 +312,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     permissions:
-      administration: read
       actions: read
       contents: read
       packages: write
@@ -323,6 +322,7 @@ jobs:
       - name: Verify GitHub production environment protection
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ADMIN_READ_TOKEN: ${{ secrets.GITHUB_ADMIN_READ_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 tools/Deployment/validate_github_production_environment.py
 

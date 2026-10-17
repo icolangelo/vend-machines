@@ -61,7 +61,11 @@ class ProductionEnvironmentProtectionTests(unittest.TestCase):
 
     def test_reports_missing_api_permissions(self) -> None:
         message = github_api_error_message(403, "https://api.github.com/repos/org/repo/branches/main/protection")
-        self.assertIn("Administration/Actions", message)
+        self.assertIn("GITHUB_ADMIN_READ_TOKEN", message)
+
+    def test_reports_missing_environment_api_permissions(self) -> None:
+        message = github_api_error_message(403, "https://api.github.com/repos/org/repo/environments/production")
+        self.assertIn("Actions: read", message)
 
     def test_accepts_main_protection_with_reviewers_and_all_required_checks(self) -> None:
         validate_main_branch_protection(branch_protection_fixture())

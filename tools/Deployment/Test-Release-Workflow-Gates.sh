@@ -216,7 +216,12 @@ require_contains "$temporary_dir/release-job" 'environment: production'
 require_contains "$temporary_dir/release-job" 'Verify GitHub production environment protection'
 require_contains "$temporary_dir/release-job" 'validate_github_production_environment.py'
 require_contains "$temporary_dir/release-job" 'actions: read'
-require_contains "$temporary_dir/release-job" 'administration: read'
+require_contains "$temporary_dir/release-job" 'GITHUB_ADMIN_READ_TOKEN: ${{ secrets.GITHUB_ADMIN_READ_TOKEN }}'
+require_contains "$github_environment_validator" 'Configure GITHUB_ADMIN_READ_TOKEN no ambiente production'
+if grep -Eq '^[[:space:]]+administration:' "$temporary_dir/release-job"; then
+  echo "O workflow não pode declarar um escopo GITHUB_TOKEN inexistente para Administration." >&2
+  exit 1
+fi
 require_contains "$github_environment_validator" '/branches/main/protection'
 require_contains "$github_environment_validator" 'Verify application / Backend tests'
 require_contains "$github_environment_validator" 'Verify application / Frontend types, lint, tests and build'
