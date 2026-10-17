@@ -6,12 +6,14 @@ on:
     paths:
       - "apps/backend/**"
       - ".github/workflows/deploy.yml"
+      - "tools/Deployment/Scan-GitChangesForSecrets.sh"
       - "tools/Deployment/Test-Release-Workflow-Gates.sh"
   push:
     branches: ["develop", "main", "master"]
     paths:
       - "apps/backend/**"
       - ".github/workflows/deploy.yml"
+      - "tools/Deployment/Scan-GitChangesForSecrets.sh"
       - "tools/Deployment/Test-Release-Workflow-Gates.sh"
   workflow_dispatch:
 
@@ -29,6 +31,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan changed commits for secrets
+        env:
+          SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
+          SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
 
       - name: Verify release workflow safety gates
         run: bash tools/Deployment/Test-Release-Workflow-Gates.sh

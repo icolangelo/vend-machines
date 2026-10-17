@@ -2,9 +2,15 @@
 set -euo pipefail
 
 workflow=".github/workflows/deploy.yml"
+secret_scanner="tools/Deployment/Scan-GitChangesForSecrets.sh"
 
 if [[ ! -f "$workflow" ]]; then
   echo "Workflow not found: $workflow" >&2
+  exit 1
+fi
+
+if [[ ! -f "$secret_scanner" ]]; then
+  echo "Changed-commit secret scanner not found: $secret_scanner" >&2
   exit 1
 fi
 
@@ -33,6 +39,16 @@ grep -Eq '^  pull_request:' "$workflow" || {
   exit 1
 }
 
+grep -Fq 'fetch-depth: 0' "$workflow" || {
+  echo "The secret scanner requires the full commit history." >&2
+  exit 1
+}
+
+grep -Fq 'run: bash tools/Deployment/Scan-GitChangesForSecrets.sh' "$workflow" || {
+  echo "Workflow must scan changed commits for secrets." >&2
+  exit 1
+}
+
 validate_job="$(sed -n '/^  validate:/,/^  build-and-push:/p' "$workflow")"
 publish_job="$(sed -n '/^  build-and-push:/,$p' "$workflow")"
 for expected in 'push: false' 'Run backend tests'; do
@@ -51,6 +67,24 @@ done
 
 if grep -Eq 'push:[[:space:]]+true|packages:[[:space:]]+write' <<< "$validate_job"; then
   echo "The pull request validation job must not publish images or write to GHCR." >&2
+  exit 1
+fi
+
+grep -Fq 'git rev-list --count' "$secret_scanner" || {
+  echo "The secret scanner must reject an empty commit range." >&2
+  exit 1
+}
+
+grep -Fq 'commits scanned\.' "$secret_scanner" || {
+  echo "The secret scanner must confirm that Gitleaks scanned commits." >&2
+  exit 1
+}
+
+scan_line="$(grep -nF 'run: bash tools/Deployment/Scan-GitChangesForSecrets.sh' "$workflow" | head -n 1 | cut -d: -f1)"
+test_line="$(grep -nF 'run: dotnet test' "$workflow" | head -n 1 | cut -d: -f1)"
+publish_dependency_line="$(grep -nF 'needs: validate' "$workflow" | head -n 1 | cut -d: -f1)"
+if (( scan_line >= test_line || publish_dependency_line <= test_line )); then
+  echo "Secret scanning and backend tests must pass before image publication." >&2
   exit 1
 fi
 
