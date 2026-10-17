@@ -11,6 +11,9 @@ on:
       - "tools/VendingMachines.EncryptionRotation/**"
       - "tools/Database/**"
       - "tools/Deployment/**"
+      - "docs/roadmap-producao.md"
+      - "docs/operacao-suporte.md"
+      - "docs/backup-restore-rehearsal.md"
       - "docs/deploy-preflight.sql"
       - ".github/workflows/**"
   pull_request:
@@ -22,6 +25,9 @@ on:
       - "tools/VendingMachines.EncryptionRotation/**"
       - "tools/Database/**"
       - "tools/Deployment/**"
+      - "docs/roadmap-producao.md"
+      - "docs/operacao-suporte.md"
+      - "docs/backup-restore-rehearsal.md"
       - "docs/deploy-preflight.sql"
       - ".github/workflows/**"
   workflow_dispatch:
