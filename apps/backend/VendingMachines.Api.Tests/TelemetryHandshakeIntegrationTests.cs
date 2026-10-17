@@ -189,6 +189,50 @@ public sealed class TelemetryHandshakeIntegrationTests
     }
 
     [Fact]
+    public async Task ShutdownWaitsForInFlightMachineCommandAcknowledgementBeforeClosingSocket()
+    {
+        await using var scenario = await CreateScenarioAsync(requireCredentials: false, revokedAt: null);
+        using var socket = new ScriptedWebSocket();
+        socket.SendText(StartupFrame(credential: null));
+        var handshake = scenario.Manager.HandleDeviceAsync(socket, CancellationToken.None);
+        await socket.FirstTextSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var command = scenario.Manager.SendCommandAsync("SERIAL-1", "MDB_STATUS");
+        string? commandFrame = null;
+        var commandDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < commandDeadline)
+        {
+            commandFrame = socket.SentMessages.FirstOrDefault(message =>
+                message.Contains("\"data\":\"MDB_STATUS\"", StringComparison.Ordinal));
+            if (commandFrame != null) break;
+            await Task.Delay(25);
+        }
+
+        Assert.NotNull(commandFrame);
+        var shutdown = scenario.Manager.StopAsync(CancellationToken.None);
+        await Task.Delay(100);
+
+        Assert.False(shutdown.IsCompleted);
+        Assert.Equal(WebSocketState.Open, socket.State);
+
+        using (var sentCommand = JsonDocument.Parse(commandFrame!))
+        {
+            var commandId = sentCommand.RootElement.GetProperty("id").GetInt32();
+            socket.SendText($"{{\"type\":\"ack\",\"id\":{commandId}}}");
+        }
+
+        var commandResult = await command.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(commandResult.Success);
+        await shutdown.WaitAsync(TimeSpan.FromSeconds(5));
+        await handshake.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, socket.SentMessages.Count(message =>
+            message.Contains("\"data\":\"MDB_STATUS\"", StringComparison.Ordinal)));
+        Assert.Equal(WebSocketCloseStatus.EndpointUnavailable, socket.CloseStatus);
+        Assert.False(scenario.Manager.IsOnline("SERIAL-1"));
+    }
+
+    [Fact]
     public async Task ApplicationStoppingDrainsMachineSocketBeforeHostStopsRequests()
     {
         var lifetime = new TestHostApplicationLifetime();
