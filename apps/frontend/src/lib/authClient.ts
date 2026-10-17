@@ -1,4 +1,10 @@
-const rawApiUrl = import.meta.env.VITE_API_URL || "http://localhost:5118/api";
+const developmentApiUrl = import.meta.env.DEV ? "http://localhost:5118/api" : "";
+const rawApiUrl = import.meta.env.VITE_API_URL?.trim() || developmentApiUrl;
+
+if (!rawApiUrl) {
+  throw new Error("VITE_API_URL precisa estar configurada neste build.");
+}
+
 export const API_BASE_URL = rawApiUrl.endsWith("/") ? rawApiUrl.slice(0, -1) : rawApiUrl;
 
 const REFRESH_EARLY_MS = 60_000;

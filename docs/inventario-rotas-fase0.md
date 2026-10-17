@@ -48,4 +48,7 @@ As rotas `POST /api/machines/{id}/telemetry-credential` e `DELETE /api/machines/
 - [ ] Testar uma conta da empresa A tentando consultar e alterar IDs da empresa B.
 - [ ] Testar duplicação de webhook e assinatura inválida no ambiente de homologação.
 - [ ] Confirmar que o frontend publicado não contém o modo de teste nem URL localhost.
+- [x] Validar localmente a imagem de produção: o smoke test verifica API configurada e intercepta `/api/auth/refresh` para que o CI não contate a API real.
 - [ ] Confirmar que a telemetria continua conectada após a implantação e que o health check responde.
+
+O item marcado foi validado apenas na imagem Docker e no navegador automatizado local. A verificação do bundle confirma URL publicada e ausência de localhost no cliente de autenticação; não representa validação do site publicado nem autoriza alteração da API ou da telemetria em produção.
