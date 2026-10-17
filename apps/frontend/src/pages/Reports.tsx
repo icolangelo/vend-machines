@@ -7,11 +7,18 @@ import { Input } from "@/components/ui/input";
 import { BarChart3, Play, Printer, FileSpreadsheet } from "lucide-react";
 import { type Machine, type Location, type Product } from "@/data/mockData";
 import { financialStatusLabel } from "@/lib/financialStatusLabel";
-import { exportSalesReport, getBottomProducts, getInventoryMovements, getLocations, getMachines, getProducts, getSalesReport, getTopProducts, type InventoryMovementItem, type SalesReportResult } from "@/lib/api";
+import { exportSalesReport, getBottomProducts, getInventoryMovements, getLocations, getMachines, getProducts, getSalesReport, getTopProducts, type InventoryMovementPage, type SalesReportResult } from "@/lib/api";
 import type { FullProduct } from "@/data/mockData";
 import { toast } from "sonner";
 
 const formatCurrency = (amount: number) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(amount);
+const INVENTORY_PAGE_SIZE = 50;
+const inventoryMovementLabel = (movementType: string) => ({
+    Sale: "Venda",
+    Restock: "Reposição",
+    OpeningBalance: "Saldo inicial",
+    Adjustment: "Ajuste",
+}[movementType] ?? "Outro");
 
 const exportCsv = (filename: string, headers: string[], rows: Array<Array<string | number>>) => {
     const escapeCell = (value: string | number) => {
@@ -39,7 +46,8 @@ export default function Reports() {
     const [salesReport, setSalesReport] = useState<SalesReportResult | null>(null);
     const [productReport, setProductReport] = useState<{ top: Product[]; bottom: Product[] } | null>(null);
     const [locationsReport, setLocationsReport] = useState<Location[] | null>(null);
-    const [inventoryReport, setInventoryReport] = useState<InventoryMovementItem[] | null>(null);
+    const [inventoryReport, setInventoryReport] = useState<InventoryMovementPage | null>(null);
+    const [inventoryPage, setInventoryPage] = useState(1);
     const [executedAt, setExecutedAt] = useState<string>("");
     const today = new Date().toISOString().slice(0, 10);
     const defaultFrom = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -76,13 +84,12 @@ export default function Reports() {
         setIsExecuting(true);
         setExecutionError(null);
         try {
-            setReportData(null);
-            setSalesReport(null);
-            setProductReport(null);
-            setLocationsReport(null);
-            setInventoryReport(null);
             if (selectedReport === "machines") {
                 const data = await getMachines();
+                setSalesReport(null);
+                setProductReport(null);
+                setLocationsReport(null);
+                setInventoryReport(null);
                 setReportData(data);
                 const now = new Date();
                 setExecutedAt(now.toLocaleString("pt-BR"));
@@ -93,16 +100,29 @@ export default function Reports() {
                     locationId: locationFilter === "all" ? undefined : locationFilter,
                     productId: productFilter === "all" ? undefined : productFilter
                 });
+                setReportData(null);
+                setProductReport(null);
+                setLocationsReport(null);
+                setInventoryReport(null);
                 setSalesReport(data);
                 setExecutedAt(new Date().toLocaleString("pt-BR"));
                 toast.success("Relatório de vendas gerado.");
             } else if (selectedReport === "products") {
                 const [top, bottom] = await Promise.all([getTopProducts(), getBottomProducts()]);
+                setReportData(null);
+                setSalesReport(null);
+                setLocationsReport(null);
+                setInventoryReport(null);
                 setProductReport({ top, bottom });
                 setExecutedAt(new Date().toLocaleString("pt-BR"));
                 toast.success("Ranking de produtos gerado.");
             } else if (selectedReport === "locations") {
-                setLocationsReport(await getLocations());
+                const data = await getLocations();
+                setReportData(null);
+                setSalesReport(null);
+                setProductReport(null);
+                setInventoryReport(null);
+                setLocationsReport(data);
                 setExecutedAt(new Date().toLocaleString("pt-BR"));
                 toast.success("Relatório de clientes e localizações gerado.");
             } else if (selectedReport === "inventory") {
@@ -113,10 +133,16 @@ export default function Reports() {
                     toast.error(message);
                     return;
                 }
-                setInventoryReport(await getInventoryMovements(1, 200, {
+                const data = await getInventoryMovements(1, INVENTORY_PAGE_SIZE, {
                     machineId: machineFilter === "all" ? undefined : machineFilter,
                     itemNumber
-                }));
+                });
+                setReportData(null);
+                setSalesReport(null);
+                setProductReport(null);
+                setLocationsReport(null);
+                setInventoryPage(1);
+                setInventoryReport(data);
                 setExecutedAt(new Date().toLocaleString("pt-BR"));
                 toast.success("Histórico de estoque gerado.");
             }
@@ -125,6 +151,27 @@ export default function Reports() {
             const message = "Não foi possível gerar o relatório. Confira a conexão e tente novamente.";
             setExecutionError(message);
             toast.error("Falha ao buscar os dados do relatório.");
+        } finally {
+            setIsExecuting(false);
+        }
+    };
+
+    const handleInventoryPageChange = async (page: number) => {
+        setIsExecuting(true);
+        setExecutionError(null);
+        try {
+            const itemNumber = itemNumberFilter.trim() ? Number(itemNumberFilter) : undefined;
+            const data = await getInventoryMovements(page, INVENTORY_PAGE_SIZE, {
+                machineId: machineFilter === "all" ? undefined : machineFilter,
+                itemNumber
+            });
+            setInventoryReport(data);
+            setInventoryPage(data.page);
+            setExecutedAt(new Date().toLocaleString("pt-BR"));
+        } catch (error) {
+            console.error("Erro ao paginar histórico de estoque:", error);
+            setExecutionError("Não foi possível carregar esta página do histórico. Confira a conexão e tente novamente.");
+            toast.error("Falha ao buscar as movimentações de estoque.");
         } finally {
             setIsExecuting(false);
         }
@@ -167,7 +214,7 @@ export default function Reports() {
         } else if (locationsReport) {
             exportCsv("clientes-localizacoes.csv", ["Cliente / localização", "Máquinas", "Unidades vendidas 30 dias", "Receita após estornos antes da taxa 30 dias"], locationsReport.map(location => [location.name, location.machineCount, location.totalSales30d, location.revenue30d]));
         } else if (inventoryReport) {
-            exportCsv("movimentacoes-estoque.csv", ["Data", "Máquina", "Compartimento", "Produto", "Tipo", "Variação", "Saldo", "Motivo"], inventoryReport.map(item => [new Date(item.createdAt).toLocaleString("pt-BR"), item.machineId, item.itemNumber, item.productName || item.productId, item.movementType, item.quantityDelta, item.quantityAfter, item.reason]));
+            exportCsv(`movimentacoes-estoque-pagina-${inventoryReport.page}.csv`, ["Data", "Máquina", "Compartimento", "Produto", "Tipo", "Variação", "Saldo", "Motivo"], inventoryReport.items.map(item => [new Date(item.createdAt).toLocaleString("pt-BR"), item.machineId, item.itemNumber, item.productName || item.productId, inventoryMovementLabel(item.movementType), item.quantityDelta, item.quantityAfter, item.reason]));
         }
     };
 
@@ -284,7 +331,7 @@ export default function Reports() {
                                         <FileSpreadsheet className="w-4 h-4" /> Exportar CSV
                                     </Button>}
                                     {!salesReport && <Button variant="outline" onClick={handleExportReport} className="flex-1 md:flex-initial gap-2">
-                                        <FileSpreadsheet className="w-4 h-4" /> Exportar CSV
+                                        <FileSpreadsheet className="w-4 h-4" /> {inventoryReport ? "Exportar página CSV" : "Exportar CSV"}
                                     </Button>}
                                     <Button 
                                         variant="outline" 
@@ -355,10 +402,17 @@ export default function Reports() {
                         </div>}
 
                         {inventoryReport && <div className="bg-card border rounded-lg shadow-xs p-6 print:break-inside-avoid">
-                            <h2 className="text-xl font-bold">Movimentações de estoque</h2><p className="text-xs text-muted-foreground mt-1 mb-4">Últimas {inventoryReport.length} movimentações · atualizado em {executedAt}</p>
+                            <h2 className="text-xl font-bold">Movimentações de estoque</h2><p className="text-xs text-muted-foreground mt-1 mb-4">Exibindo {inventoryReport.totalItems === 0 ? 0 : (inventoryPage - 1) * inventoryReport.pageSize + 1}–{(inventoryPage - 1) * inventoryReport.pageSize + inventoryReport.items.length} de {inventoryReport.totalItems} movimentações · atualizado em {executedAt}</p>
                             <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs uppercase text-muted-foreground"><th className="py-3">Data</th><th className="py-3">Máquina</th><th className="py-3">Produto</th><th className="py-3">Tipo</th><th className="py-3 text-right">Variação</th><th className="py-3 text-right">Saldo</th><th className="py-3">Motivo</th></tr></thead>
-                                <tbody>{inventoryReport.length === 0 ? <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">Nenhuma movimentação cadastrada.</td></tr> : inventoryReport.map(movement => <tr key={movement.id} className="border-b last:border-0"><td className="py-3 whitespace-nowrap">{new Date(movement.createdAt).toLocaleString("pt-BR")}</td><td className="py-3">{movement.machineId} · comp. {movement.itemNumber}</td><td className="py-3">{movement.productName || movement.productId}</td><td className="py-3">{movement.movementType}</td><td className="py-3 text-right">{movement.quantityDelta > 0 ? "+" : ""}{movement.quantityDelta}</td><td className="py-3 text-right">{movement.quantityAfter}</td><td className="py-3">{movement.reason}</td></tr>)}</tbody>
+                                <tbody>{inventoryReport.items.length === 0 ? <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">Nenhuma movimentação cadastrada.</td></tr> : inventoryReport.items.map(movement => <tr key={movement.id} className="border-b last:border-0"><td className="py-3 whitespace-nowrap">{new Date(movement.createdAt).toLocaleString("pt-BR")}</td><td className="py-3">{movement.machineId} · comp. {movement.itemNumber}</td><td className="py-3">{movement.productName || movement.productId}</td><td className="py-3">{inventoryMovementLabel(movement.movementType)}</td><td className="py-3 text-right">{movement.quantityDelta > 0 ? "+" : ""}{movement.quantityDelta}</td><td className="py-3 text-right">{movement.quantityAfter}</td><td className="py-3">{movement.reason}</td></tr>)}</tbody>
                             </table></div>
+                            {inventoryReport.totalPages > 1 && <div className="flex items-center justify-between gap-3 pt-3">
+                                <span className="text-sm text-muted-foreground">Página {inventoryPage} de {inventoryReport.totalPages}</span>
+                                <div className="flex gap-2">
+                                    <Button variant="outline" size="sm" onClick={() => void handleInventoryPageChange(inventoryPage - 1)} disabled={isExecuting || inventoryPage <= 1}>Anterior</Button>
+                                    <Button variant="outline" size="sm" onClick={() => void handleInventoryPageChange(inventoryPage + 1)} disabled={isExecuting || inventoryPage >= inventoryReport.totalPages}>Próxima</Button>
+                                </div>
+                            </div>}
                         </div>}
 
                         {/* Report Output */}

@@ -536,6 +536,14 @@ export interface InventoryMovementItem {
     createdAt: string;
 }
 
+export interface InventoryMovementPage {
+    items: InventoryMovementItem[];
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
 export interface OperationalAlertItem {
     id: string;
     machineId?: string | null;
@@ -679,15 +687,14 @@ export async function getInventoryMovements(
     page = 1,
     pageSize = 50,
     filters: { machineId?: string; itemNumber?: number } = {}
-): Promise<InventoryMovementItem[]> {
-    if (isTestEnv()) return [];
+): Promise<InventoryMovementPage> {
+    if (isTestEnv()) return { items: [], page, pageSize, totalItems: 0, totalPages: 0 };
     const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (filters.machineId) query.set("machineId", filters.machineId);
     if (filters.itemNumber !== undefined) query.set("itemNumber", String(filters.itemNumber));
     const response = await authFetch(`${API_BASE_URL}/inventory/movements?${query}`);
     if (!response.ok) throw new Error("Erro ao buscar histórico de estoque.");
-    const result = await response.json();
-    return result.items;
+    return response.json();
 }
 
 async function readApiError(response: Response, fallback: string): Promise<string> {

@@ -35,7 +35,7 @@ describe("Inventory", () => {
         getMachines.mockResolvedValue([]);
         getProducts.mockResolvedValue([]);
         getInventorySlots.mockResolvedValue([]);
-        getInventoryMovements.mockResolvedValue([]);
+        getInventoryMovements.mockResolvedValue({ items: [], page: 1, pageSize: 50, totalItems: 0, totalPages: 0 });
     });
 
     it("shows an unavailable state instead of an empty inventory after load failure, then retries", async () => {

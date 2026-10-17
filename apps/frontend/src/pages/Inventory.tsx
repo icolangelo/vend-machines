@@ -76,7 +76,7 @@ export default function Inventory() {
             setMachines(machineList);
             setProducts(productList);
             setSlots(slotList);
-            setMovements(movementList);
+            setMovements(movementList.items);
             setHasLoaded(true);
         } catch (error: unknown) {
             setLoadError(true);
