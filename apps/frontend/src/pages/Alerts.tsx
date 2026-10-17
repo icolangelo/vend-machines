@@ -75,7 +75,7 @@ export default function Alerts() {
                         
                         {/* Summary Cards */}
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
                                 <div className="h-10 w-10 rounded-full bg-red-100 dark:bg-red-950/30 flex items-center justify-center text-red-600">
                                     <AlertCircle className="w-5 h-5" />
                                 </div>
@@ -86,7 +86,7 @@ export default function Alerts() {
                                     </p>
                                 </div>
                             </div>
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
                                 <div className="h-10 w-10 rounded-full bg-amber-100 dark:bg-amber-950/30 flex items-center justify-center text-amber-600">
                                     <AlertTriangle className="w-5 h-5" />
                                 </div>
@@ -97,7 +97,7 @@ export default function Alerts() {
                                     </p>
                                 </div>
                             </div>
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
                                 <div className="h-10 w-10 rounded-full bg-blue-100 dark:bg-blue-950/30 flex items-center justify-center text-blue-600">
                                     <Package className="w-5 h-5" />
                                 </div>
@@ -111,7 +111,7 @@ export default function Alerts() {
                         </div>
 
                         {/* Filters & Control bar */}
-                        <div className="bg-card border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+                        <div className="bg-card border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
                             <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center flex-1 max-w-3xl">
                                 <div className="relative flex-1">
                                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -188,7 +188,7 @@ export default function Alerts() {
                                 {filteredAlerts.map((alert) => (
                                     <div 
                                         key={alert.id}
-                                        className="p-5 bg-card border rounded-lg flex flex-col sm:flex-row gap-4 justify-between items-start shadow-sm"
+                                        className="p-5 bg-card border rounded-lg flex flex-col sm:flex-row gap-4 justify-between items-start shadow-xs"
                                     >
                                         <div className="flex gap-4 items-start flex-1">
                                             <div className="mt-1">

@@ -417,29 +417,29 @@ export default function Admin() {
 
                         <Tabs defaultValue="users" className="w-full">
                             <TabsList className="bg-slate-100 p-1 rounded-lg border border-slate-200 inline-flex mb-4">
-                                <TabsTrigger value="users" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="users" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Usuários
                                 </TabsTrigger>
-                                <TabsTrigger value="companies" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="companies" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Empresas
                                 </TabsTrigger>
-                                <TabsTrigger value="payments" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="payments" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Pagamentos
                                 </TabsTrigger>
-                                <TabsTrigger value="logs" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="logs" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Logs de Transações
                                 </TabsTrigger>
-                                <TabsTrigger value="telemetry-inbox" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="telemetry-inbox" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Fila de Telemetria
                                 </TabsTrigger>
-                                <TabsTrigger value="operational-health" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                <TabsTrigger value="operational-health" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-xs">
                                     Saúde operacional
                                 </TabsTrigger>
                             </TabsList>
 
                             {/* ABA DE USUÁRIOS */}
-                            <TabsContent value="users" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                            <TabsContent value="users" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">
@@ -595,8 +595,8 @@ export default function Admin() {
                             </TabsContent>
 
                             {/* ABA DE EMPRESAS */}
-                            <TabsContent value="companies" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                            <TabsContent value="companies" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">
@@ -792,8 +792,8 @@ export default function Admin() {
                             </TabsContent>
                             
                             {/* ABA DE CONFIGURAÇÃO DE PAGAMENTO (Taxa Global) */}
-                            <TabsContent value="payments" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm max-w-2xl">
+                            <TabsContent value="payments" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs max-w-2xl">
                                     <CardHeader className="pb-4 border-b border-slate-100">
                                         <CardTitle className="text-lg font-bold flex items-center gap-2">
                                             <CreditCard className="w-5 h-5 text-indigo-600" />
@@ -866,7 +866,7 @@ export default function Admin() {
                                         )}
                                     </CardContent>
                                 </Card>
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">
@@ -946,8 +946,8 @@ export default function Admin() {
                             </TabsContent>
 
                             {/* ABA DE LOGS DE TRANSAÇÕES */}
-                            <TabsContent value="logs" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                            <TabsContent value="logs" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">
@@ -1095,8 +1095,8 @@ export default function Admin() {
                                 </Card>
                             </TabsContent>
 
-                            <TabsContent value="telemetry-inbox" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                            <TabsContent value="telemetry-inbox" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">
@@ -1183,8 +1183,8 @@ export default function Admin() {
                                 </Card>
                             </TabsContent>
 
-                            <TabsContent value="operational-health" className="space-y-4 outline-none">
-                                <Card className="border border-slate-200 bg-white shadow-sm">
+                            <TabsContent value="operational-health" className="space-y-4 outline-hidden">
+                                <Card className="border border-slate-200 bg-white shadow-xs">
                                     <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                                         <div>
                                             <CardTitle className="text-lg font-bold flex items-center gap-2">

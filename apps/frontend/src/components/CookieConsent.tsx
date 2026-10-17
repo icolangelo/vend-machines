@@ -53,7 +53,7 @@ export function CookieConsent() {
   if (!isVisible) return null;
 
   return (
-    <div className="fixed bottom-6 left-6 right-6 md:left-auto md:right-6 md:max-w-md bg-white/95 backdrop-blur-md border border-slate-200/80 shadow-2xl rounded-2xl p-5 z-[9999] animate-in fade-in slide-in-from-bottom-5 duration-300 flex flex-col gap-4 font-sans text-slate-800">
+    <div className="fixed bottom-6 left-6 right-6 md:left-auto md:right-6 md:max-w-md bg-white/95 backdrop-blur-md border border-slate-200/80 shadow-2xl rounded-2xl p-5 z-9999 animate-in fade-in slide-in-from-bottom-5 duration-300 flex flex-col gap-4 font-sans text-slate-800">
       
       {/* Cabeçalho */}
       <div className="flex items-start justify-between gap-2">
@@ -108,7 +108,7 @@ export function CookieConsent() {
                   onChange={(e) => setAnalyticsConsent(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                <div className="w-7 h-4 bg-slate-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
             </div>
 
@@ -125,7 +125,7 @@ export function CookieConsent() {
                   onChange={(e) => setMarketingConsent(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-7 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                <div className="w-7 h-4 bg-slate-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
             </div>
           </div>
@@ -152,7 +152,7 @@ export function CookieConsent() {
             </button>
             <button
               onClick={handleAcceptAll}
-              className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg shadow-sm hover:shadow transition-all"
+              className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg shadow-xs hover:shadow-sm transition-all"
             >
               Aceitar Todos
             </button>
@@ -167,7 +167,7 @@ export function CookieConsent() {
             </button>
             <button
               onClick={handleSaveCustom}
-              className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg shadow-sm hover:shadow transition-all"
+              className="text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-4 py-1.5 rounded-lg shadow-xs hover:shadow-sm transition-all"
             >
               Salvar Preferências
             </button>

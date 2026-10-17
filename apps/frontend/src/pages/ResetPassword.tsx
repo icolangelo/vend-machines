@@ -42,7 +42,7 @@ export default function ResetPassword() {
 
     return (
         <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-            <Card className="w-full max-w-md shadow-sm">
+            <Card className="w-full max-w-md shadow-xs">
                 <CardHeader>
                     <CardTitle>Recuperar acesso</CardTitle>
                     <CardDescription>Escolha uma senha nova. O link é válido por uma hora e pode ser usado uma vez.</CardDescription>

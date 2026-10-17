@@ -183,13 +183,13 @@ export default function Integrations() {
                                         {loadError && <Button variant="outline" size="sm" onClick={() => void loadIntegration()} disabled={loading}>Tentar novamente</Button>}
                                     </div>
                                 )}
-                                <Card className="border border-slate-200 bg-white shadow-sm relative overflow-hidden group">
-                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-sky-400 to-blue-600" />
+                                <Card className="border border-slate-200 bg-white shadow-xs relative overflow-hidden group">
+                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-linear-to-r from-sky-400 to-blue-600" />
 
                                     <CardHeader className="pb-4">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-3">
-                                                <div className="h-12 w-12 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shadow-sm">
+                                                <div className="h-12 w-12 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shadow-xs">
                                                     <svg className="w-8 h-8" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                         <circle cx="20" cy="20" r="18" fill="#009EE3" />
                                                         <path d="M12 20C12 18.5 13.5 16.5 15.5 16.5C17.5 16.5 18 18 19 19.5C20 21 20.5 22.5 22.5 22.5C24.5 22.5 26 20.5 26 19M19 19.5C18.5 20.5 17 21.5 15.5 21.5C14 21.5 12.5 20 12.5 19.5M26 19C26.5 18 25.5 17.5 24.5 17.5C23.5 17.5 22.5 18.5 22 19.5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -331,7 +331,7 @@ export default function Integrations() {
                                                 </>
                                             ) : (
                                                 <Button
-                                                    className="bg-sky-600 hover:bg-sky-700 text-white flex items-center justify-center gap-1.5 h-10 font-bold px-5 shadow-sm hover:shadow transition-all"
+                                                    className="bg-sky-600 hover:bg-sky-700 text-white flex items-center justify-center gap-1.5 h-10 font-bold px-5 shadow-xs hover:shadow-sm transition-all"
                                                     onClick={handleConnectOauth}
                                                 >
                                                     Conectar com Mercado Pago

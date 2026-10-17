@@ -89,7 +89,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
 
     if (processing) {
         return (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex flex-col items-center justify-center gap-3 z-50 text-white">
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex flex-col items-center justify-center gap-3 z-50 text-white">
                 <RefreshCw className="w-10 h-10 text-sky-400 animate-spin" />
                 <p className="font-semibold text-lg">Conectando sua conta Mercado Pago...</p>
                 <p className="text-xs text-slate-300">Por favor, aguarde a sincronização.</p>

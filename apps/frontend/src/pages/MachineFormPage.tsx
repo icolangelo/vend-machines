@@ -328,7 +328,7 @@ export default function MachineFormPage() {
                             </Button>
                         </div>
 
-                        <div className="bg-card border rounded-lg shadow-sm">
+                        <div className="bg-card border rounded-lg shadow-xs">
                             <Form {...form}>
                                 <form onSubmit={form.handleSubmit(onSubmit)} className="p-6">
                                     {!canManageMachine && (

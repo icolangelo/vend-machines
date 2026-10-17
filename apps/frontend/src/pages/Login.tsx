@@ -166,7 +166,7 @@ export default function Login() {
                     id="regName"
                     type="text"
                     placeholder="Ex: João da Silva"
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
                     required
@@ -181,7 +181,7 @@ export default function Login() {
                     id="regEmail"
                     type="email"
                     placeholder="Ex: joao@suaempresa.com"
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={regEmail}
                     onChange={(e) => setRegEmail(e.target.value)}
                     required
@@ -198,7 +198,7 @@ export default function Login() {
                       type="text"
                       maxLength={14}
                       placeholder="000.000.000-00"
-                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
+                      className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
                       value={regCpf}
                       onChange={(e) => setRegCpf(formatCPF(e.target.value))}
                       required
@@ -216,7 +216,7 @@ export default function Login() {
                         placeholder="Mínimo 12 caracteres"
                         minLength={12}
                         maxLength={256}
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regPassword}
                         onChange={(e) => setRegPassword(e.target.value)}
                         required
@@ -233,7 +233,7 @@ export default function Login() {
                         placeholder="Mínimo 12 caracteres"
                         minLength={12}
                         maxLength={256}
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regConfirmPassword}
                         onChange={(e) => setRegConfirmPassword(e.target.value)}
                         required
@@ -254,7 +254,7 @@ export default function Login() {
                         id="regCompanyName"
                         type="text"
                         placeholder="Ex: Vending Brasil Ltda"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                         value={regCompanyName}
                         onChange={(e) => setRegCompanyName(e.target.value)}
                         required
@@ -270,7 +270,7 @@ export default function Login() {
                         type="text"
                         maxLength={18}
                         placeholder="00.000.000/0000-00"
-                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
+                        className="w-full px-3 py-1.5 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors font-mono"
                         value={regCompanyCnpj}
                         onChange={(e) => setRegCompanyCnpj(formatCNPJ(e.target.value))}
                         required
@@ -333,7 +333,7 @@ export default function Login() {
                     id="email"
                     type="email"
                     placeholder="Digite seu e-mail"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
@@ -350,7 +350,7 @@ export default function Login() {
                     id="password"
                     type="password"
                     placeholder="Digite sua senha"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required

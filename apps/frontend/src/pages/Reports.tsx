@@ -190,7 +190,7 @@ export default function Reports() {
                     <main className="flex-1 p-6 flex flex-col gap-6 overflow-auto print:p-0">
                         
                         {/* Interactive Controls Header */}
-                        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 bg-card p-5 rounded-lg border print:hidden shadow-sm">
+                        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 bg-card p-5 rounded-lg border print:hidden shadow-xs">
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-4 items-end flex-1">
                                 <div className="w-full">
                                     <label className="text-xs font-semibold mb-1.5 block text-muted-foreground uppercase tracking-wider">
@@ -307,7 +307,7 @@ export default function Reports() {
                             </div>
                         )}
 
-                        {salesReport && <div className="bg-card border rounded-lg shadow-sm p-6 flex flex-col gap-5 print:border-0 print:p-0 print:shadow-none">
+                        {salesReport && <div className="bg-card border rounded-lg shadow-xs p-6 flex flex-col gap-5 print:border-0 print:p-0 print:shadow-none">
                             <div className="flex flex-col sm:flex-row justify-between gap-3 border-b pb-4">
                                 <div>
                                     <h2 className="text-xl font-bold">Relatório de vendas e receita</h2>
@@ -347,14 +347,14 @@ export default function Reports() {
                                 </table></div>
                             </section>)}</div>}
 
-                        {locationsReport && <div className="bg-card border rounded-lg shadow-sm p-6 print:break-inside-avoid">
+                        {locationsReport && <div className="bg-card border rounded-lg shadow-xs p-6 print:break-inside-avoid">
                             <h2 className="text-xl font-bold">Clientes e localizações</h2><p className="text-xs text-muted-foreground mt-1 mb-4">Indicadores de vendas entregues nos últimos 30 dias · receita após estornos, antes da taxa da plataforma · atualizado em {executedAt}</p>
                             <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs uppercase text-muted-foreground"><th className="py-3">Cliente / localização</th><th className="py-3 text-right">Máquinas</th><th className="py-3 text-right">Unidades vendidas</th><th className="py-3 text-right">Receita após estornos (pré-taxa)</th></tr></thead>
                                 <tbody>{locationsReport.length === 0 ? <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">Nenhuma localização cadastrada.</td></tr> : locationsReport.map(location => <tr key={location.id} className="border-b last:border-0"><td className="py-3">{location.name}</td><td className="py-3 text-right">{location.machineCount}</td><td className="py-3 text-right">{location.totalSales30d}</td><td className="py-3 text-right">{formatCurrency(location.revenue30d)}</td></tr>)}</tbody>
                             </table></div>
                         </div>}
 
-                        {inventoryReport && <div className="bg-card border rounded-lg shadow-sm p-6 print:break-inside-avoid">
+                        {inventoryReport && <div className="bg-card border rounded-lg shadow-xs p-6 print:break-inside-avoid">
                             <h2 className="text-xl font-bold">Movimentações de estoque</h2><p className="text-xs text-muted-foreground mt-1 mb-4">Últimas {inventoryReport.length} movimentações · atualizado em {executedAt}</p>
                             <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b text-left text-xs uppercase text-muted-foreground"><th className="py-3">Data</th><th className="py-3">Máquina</th><th className="py-3">Produto</th><th className="py-3">Tipo</th><th className="py-3 text-right">Variação</th><th className="py-3 text-right">Saldo</th><th className="py-3">Motivo</th></tr></thead>
                                 <tbody>{inventoryReport.length === 0 ? <tr><td colSpan={7} className="py-8 text-center text-muted-foreground">Nenhuma movimentação cadastrada.</td></tr> : inventoryReport.map(movement => <tr key={movement.id} className="border-b last:border-0"><td className="py-3 whitespace-nowrap">{new Date(movement.createdAt).toLocaleString("pt-BR")}</td><td className="py-3">{movement.machineId} · comp. {movement.itemNumber}</td><td className="py-3">{movement.productName || movement.productId}</td><td className="py-3">{movement.movementType}</td><td className="py-3 text-right">{movement.quantityDelta > 0 ? "+" : ""}{movement.quantityDelta}</td><td className="py-3 text-right">{movement.quantityAfter}</td><td className="py-3">{movement.reason}</td></tr>)}</tbody>
@@ -363,7 +363,7 @@ export default function Reports() {
 
                         {/* Report Output */}
                         {reportData ? (
-                            <div className="bg-card border rounded-lg shadow-sm p-6 flex flex-col gap-6 print:border-0 print:p-0 print:shadow-none animate-slide-up">
+                            <div className="bg-card border rounded-lg shadow-xs p-6 flex flex-col gap-6 print:border-0 print:p-0 print:shadow-none animate-slide-up">
                                 
                                 {/* Report Information Header */}
                                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b pb-4 gap-4">
@@ -459,7 +459,7 @@ export default function Reports() {
                                 </div>
                             </div>
                         ) : salesReport || productReport || locationsReport || inventoryReport || executionError || isExecuting ? null : (
-                            <div className="flex flex-col items-center justify-center py-20 bg-card border rounded-lg shadow-sm border-dashed">
+                            <div className="flex flex-col items-center justify-center py-20 bg-card border rounded-lg shadow-xs border-dashed">
                                 <BarChart3 className="w-12 h-12 text-muted-foreground/45 mb-4" />
                                 <h3 className="text-base font-semibold text-foreground">
                                     Nenhum relatório executado

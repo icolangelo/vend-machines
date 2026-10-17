@@ -45,7 +45,7 @@ export default function VerifyEmail() {
 
     return (
         <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-            <Card className="w-full max-w-md shadow-sm">
+            <Card className="w-full max-w-md shadow-xs">
                 <CardHeader>
                     <CardTitle>Confirme seu e-mail</CardTitle>
                     <CardDescription>Confirme o endereço usado no cadastro para concluir essa etapa. A liberação da empresa ainda depende da análise da plataforma.</CardDescription>

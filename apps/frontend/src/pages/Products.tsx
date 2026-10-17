@@ -237,7 +237,7 @@ export default function Products() {
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-3">
-                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Total de Produtos</CardTitle>
                                     <Package className="h-4 w-4 text-primary" />
@@ -247,7 +247,7 @@ export default function Products() {
                                     <p className="text-xs text-muted-foreground">Cadastrados no sistema</p>
                                 </CardContent>
                             </Card>
-                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Produtos Alcoólicos</CardTitle>
                                     <Wine className="h-4 w-4 text-orange-500" />
@@ -257,7 +257,7 @@ export default function Products() {
                                     <p className="text-xs text-muted-foreground">Requerem verificação de idade</p>
                                 </CardContent>
                             </Card>
-                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Custo Médio</CardTitle>
                                     <DollarSign className="h-4 w-4 text-green-500" />

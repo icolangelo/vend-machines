@@ -51,7 +51,7 @@ export default function InviteAcceptance() {
 
     return (
         <main className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-            <Card className="w-full max-w-lg shadow-sm">
+            <Card className="w-full max-w-lg shadow-xs">
                 <CardHeader>
                     <CardTitle>Aceitar convite</CardTitle>
                     <CardDescription>Crie seu acesso à empresa usando os dados solicitados abaixo.</CardDescription>
