@@ -6,11 +6,12 @@ import { MachineAlertTable } from "@/components/dashboard/MachineAlertTable";
 import { RevenueChart } from "@/components/dashboard/RevenueChart";
 import { ClientRanking } from "@/components/dashboard/ClientRanking";
 import { ProductRanking } from "@/components/dashboard/ProductRanking";
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getMachines, getLocations, getTopProducts, getBottomProducts, getDashboardStats, type DashboardStats } from "@/lib/api";
 import type { Location, Machine, Product } from "@/data/mockData";
-import { DollarSign, ShoppingCart, Box, Zap, LogOut } from "lucide-react";
+import { DollarSign, ShoppingCart, Box, Zap, LogOut, RefreshCw } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { Button } from "@/components/ui/button";
 
 export default function Index() {
     const { logout } = useAuth();
@@ -20,36 +21,49 @@ export default function Index() {
     const [bottomProductsList, setBottomProductsList] = useState<Product[]>([]);
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState(false);
+    const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+    const [refreshVersion, setRefreshVersion] = useState(0);
 
-    useEffect(() => {
+    const loadDashboard = useCallback(async () => {
         setLoading(true);
-        Promise.all([
-            getMachines(),
-            getLocations(),
-            getTopProducts(),
-            getBottomProducts(),
-            getDashboardStats()
-        ]).then(([mList, cList, topList, bottomList, dashboardStats]) => {
+        setLoadError(false);
+        try {
+            const [mList, cList, topList, bottomList, dashboardStats] = await Promise.all([
+                getMachines(),
+                getLocations(),
+                getTopProducts(),
+                getBottomProducts(),
+                getDashboardStats()
+            ]);
             setMachinesList(mList);
             setClientsList(cList);
             setTopProductsList(topList);
             setBottomProductsList(bottomList);
             setStats(dashboardStats);
-            setLoading(false);
-        }).catch(err => {
+            setLastUpdatedAt(new Date());
+        } catch (err) {
             console.error("Erro ao carregar dados do dashboard:", err);
+            setLoadError(true);
+        } finally {
             setLoading(false);
-        });
+        }
     }, []);
+
+    useEffect(() => {
+        void loadDashboard();
+    }, [loadDashboard, refreshVersion]);
 
     const kpis = useMemo(() => {
         if (loading || !stats) {
             return { totalRevenue: 0, totalSales: 0, avgStock: 0, uptime: 0 };
         }
-        const hasMachines = machinesList.length > 0;
-        const mLength = hasMachines ? machinesList.length : 1;
-        const avgSt = hasMachines ? Math.round(machinesList.reduce((s, m) => s + m.stockLevel, 0) / mLength) : 0;
-        const onlineCount = machinesList.filter((m) => m.status === "online").length;
+        const monitoredMachines = machinesList.filter((machine) => machine.status !== "unmonitored" && machine.status !== "inactive");
+        const hasMachines = monitoredMachines.length > 0;
+        const mLength = hasMachines ? monitoredMachines.length : 1;
+        const stockMachines = machinesList.filter((machine) => machine.inventoryConfigured);
+        const avgSt = stockMachines.length > 0 ? Math.round(stockMachines.reduce((sum, machine) => sum + machine.stockLevel, 0) / stockMachines.length) : 0;
+        const onlineCount = monitoredMachines.filter((m) => m.status === "online").length;
         const upt = hasMachines ? Math.round((onlineCount / mLength) * 100) : 0;
 
         return {
@@ -71,10 +85,10 @@ export default function Index() {
                 <div className="flex-1 flex flex-col min-w-0">
                     <header className="h-12 flex items-center border-b bg-card px-4 gap-3">
                         <SidebarTrigger />
-                        <h1 className="text-sm font-semibold text-foreground">Dashboard</h1>
+                        <h1 className="text-sm font-semibold text-foreground">Painel</h1>
                         <div className="ml-auto flex items-center gap-4">
                             <span className="text-xs text-muted-foreground">
-                                Última atualização: agora
+                                Última atualização: {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString("pt-BR") : "—"}
                             </span>
                             <button
                                 onClick={handleLogout}
@@ -87,25 +101,44 @@ export default function Index() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {loading ? (
+                        {loading && !lastUpdatedAt ? (
                             <div className="flex items-center justify-center h-[50vh]">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando painel...</p>
                             </div>
+                        ) : loadError && !lastUpdatedAt ? (
+                            <div role="alert" className="flex min-h-[50vh] flex-col items-center justify-center gap-3 text-center">
+                                <p className="font-medium">Não foi possível carregar os dados do painel.</p>
+                                <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
+                                <Button onClick={() => setRefreshVersion(version => version + 1)}>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Tentar novamente
+                                </Button>
+                            </div>
                         ) : (
                             <>
+                                {loadError && (
+                                    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                        <span>Não foi possível atualizar o painel. Os dados exibidos são da última carga concluída.</span>
+                                        <Button variant="outline" size="sm" onClick={() => setRefreshVersion(version => version + 1)}>
+                                            <RefreshCw className="mr-2 h-4 w-4" />
+                                            Tentar novamente
+                                        </Button>
+                                    </div>
+                                )}
+                                {loading && lastUpdatedAt && <p className="text-xs text-muted-foreground">Atualizando painel...</p>}
                                 {/* KPI Row */}
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                                     <KpiCard
-                                        title="Faturamento 30d"
+                                        title="Receita após estornos 30d"
                                         value={`R$ ${kpis.totalRevenue.toLocaleString("pt-BR")}`}
                                         icon={DollarSign}
-                                        subtitle="transações aprovadas"
+                                        subtitle="antes da taxa da plataforma"
                                     />
                                     <KpiCard
-                                        title="Vendas 30d"
+                                        title="Unidades entregues 30d"
                                         value={kpis.totalSales.toLocaleString("pt-BR")}
                                         icon={ShoppingCart}
-                                        subtitle="pagamentos aprovados"
+                                        subtitle="entregas confirmadas pela máquina"
                                     />
                                     <KpiCard
                                         title="Estoque Médio"

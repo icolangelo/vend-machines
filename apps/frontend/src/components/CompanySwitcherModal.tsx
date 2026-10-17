@@ -6,7 +6,7 @@ import { getCompanies } from "@/lib/api";
 interface Company {
   id: string;
   name: string;
-  cnpj: string;
+  cnpj?: string;
 }
 
 interface CompanySwitcherModalProps {
@@ -164,7 +164,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
                   <p className={`text-sm font-medium truncate ${isActive ? "text-blue-700 dark:text-blue-300" : "text-zinc-800 dark:text-zinc-200"}`}>
                     {company.name}
                   </p>
-                  <p className="text-[11px] text-zinc-400 truncate">{company.cnpj}</p>
+                  <p className="text-[11px] text-zinc-400 truncate">{company.cnpj || "CNPJ não informado"}</p>
                 </div>
                 {isActive && (
                   <Eye className="h-3.5 w-3.5 text-blue-500 ml-auto shrink-0" />

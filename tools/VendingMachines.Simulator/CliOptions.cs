@@ -8,6 +8,8 @@ public sealed record CliOptions(
     TimeSpan HeartbeatInterval,
     bool Headless)
 {
+    public string? DeviceCredential { get; init; }
+
     public static bool TryParse(string[] args, out CliOptions? options, out string? error)
     {
         options = null;
@@ -64,6 +66,19 @@ public sealed record CliOptions(
             return false;
         }
 
+        var deviceCredential = Environment.GetEnvironmentVariable("VENDMACHINES_SIMULATOR_CREDENTIAL");
+        if (string.IsNullOrWhiteSpace(deviceCredential))
+            deviceCredential = null;
+        else
+        {
+            deviceCredential = deviceCredential.Trim();
+            if (uri.Scheme != "wss" && !uri.IsLoopback)
+            {
+                error = "Uma credencial de dispositivo exige wss:// fora de loopback.";
+                return false;
+            }
+        }
+
         if (signal is < 0 or > 100)
         {
             error = "O sinal deve estar entre 0 e 100.";
@@ -76,7 +91,10 @@ public sealed record CliOptions(
             return false;
         }
 
-        options = new CliOptions(serial, uri, signal, reconnect, TimeSpan.FromSeconds(heartbeatSeconds), headless);
+        options = new CliOptions(serial, uri, signal, reconnect, TimeSpan.FromSeconds(heartbeatSeconds), headless)
+        {
+            DeviceCredential = deviceCredential
+        };
         return true;
     }
 
@@ -93,6 +111,7 @@ public sealed record CliOptions(
               -u, --url <url>            WebSocket (padrão: ws://localhost:5118/telemetria)
                   --signal <0-100>       Intensidade inicial do sinal (padrão: 20)
                   --heartbeat <segundos> Intervalo do ping (padrão: 30)
+              Credencial de dispositivo: defina VENDMACHINES_SIMULATOR_CREDENTIAL no ambiente
                   --no-reconnect         Não reconectar depois de uma queda
                   --headless             Executar sem o console interativo
               -h, --help                 Exibir esta ajuda

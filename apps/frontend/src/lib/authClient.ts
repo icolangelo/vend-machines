@@ -41,6 +41,10 @@ export function subscribeToAuthState(listener: AuthStateListener): () => void {
   };
 }
 
+export function getCurrentAuthUser(): AuthUser | null {
+  return currentSession?.user ?? null;
+}
+
 export function setAuthSession(session: AuthSession): void {
   applySession(session, "updated");
 }
@@ -75,8 +79,30 @@ export async function registerSession(payload: {
   companyName: string;
   companyCnpj: string;
   acceptedPrivacyPolicy: boolean;
+}): Promise<{ status: string; message: string }> {
+  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const error = await readError(response, "Não foi possível enviar o cadastro.");
+    throw new Error(error);
+  }
+
+  return response.json();
+}
+
+export async function acceptInvitationSession(payload: {
+  invitationToken: string;
+  name: string;
+  cpf: string;
+  password: string;
+  acceptedPrivacyPolicy: boolean;
 }): Promise<AuthSession> {
-  return postAuthSession("register", payload);
+  return postAuthSession("accept-invitation", payload);
 }
 
 export async function logoutSession(): Promise<void> {

@@ -1,0 +1,131 @@
+name: Build and publish frontend image
+
+on:
+  push:
+    branches: ["develop", "main", "master"]
+    paths:
+      - "apps/frontend/**"
+      - "tools/Deployment/**"
+      - ".github/workflows/frontend-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build and publish immutable frontend image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan commit changes for exposed secrets
+        env:
+          SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
+          SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/frontend
+        run: npm ci
+
+      - name: Audit frontend dependencies
+        working-directory: apps/frontend
+        run: npm audit --audit-level=moderate
+
+      - name: Check frontend types
+        working-directory: apps/frontend
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      - name: Lint frontend
+        working-directory: apps/frontend
+        run: npm run lint
+
+      - name: Run frontend tests
+        working-directory: apps/frontend
+        run: npm test
+
+      - name: Install Playwright Chromium
+        working-directory: apps/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser smoke tests with isolated demo data
+        working-directory: apps/frontend
+        run: npm run test:e2e
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/vend-machines-frontend
+          tags: |
+            type=sha,format=long
+
+      - name: Build immutable candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/frontend
+          file: ./apps/frontend/Dockerfile
+          push: false
+          load: true
+          build-args: |
+            VITE_API_URL=https://api.vendmachine.com.br/api
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Start static image
+        run: docker run -d --name frontend-image-smoke --publish 127.0.0.1:8088:8080 ${{ steps.meta.outputs.tags }}
+
+      - name: Wait for static image health
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8088/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs frontend-image-smoke
+          exit 1
+
+      - name: Test production image routes, headers and CSP
+        working-directory: apps/frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:8088
+        run: npm run test:e2e:production
+
+      - name: Stop static image
+        if: always()
+        run: docker rm --force frontend-image-smoke || true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish tested candidate image
+        run: docker push ${{ steps.meta.outputs.tags }}

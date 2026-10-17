@@ -40,9 +40,9 @@ export function PrivacyPolicyModal({ isOpen, onClose }: PrivacyPolicyModalProps)
               Coletamos dados necessários para identificar você e sua empresa e viabilizar o uso da plataforma:
             </p>
             <ul className="list-disc pl-5 space-y-1">
-              <li><strong>Dados do Usuário:</strong> Nome Completo, E-mail Comercial, CPF, Senha Hachada e Perfil de acesso.</li>
+              <li><strong>Dados do Usuário:</strong> nome completo, e-mail comercial, CPF, senha protegida por hash e perfil de acesso.</li>
               <li><strong>Dados da Empresa:</strong> Razão Social/Nome de Fantasia e CNPJ.</li>
-              <li><strong>Dados Técnicos e de Navegação:</strong> Endereço IP, cookies de sessão, registros de telemetria de vendas de vending machines associadas e logs de sistema.</li>
+              <li><strong>Dados Técnicos e de Navegação:</strong> endereço IP, cookies de sessão, registros de telemetria de vendas das máquinas associadas e registros do sistema.</li>
             </ul>
           </div>
 
@@ -51,7 +51,7 @@ export function PrivacyPolicyModal({ isOpen, onClose }: PrivacyPolicyModalProps)
             <p className="mb-1">Os dados coletados são utilizados para:</p>
             <ul className="list-disc pl-5 space-y-1">
               <li>Criação de conta de usuário administrador e configuração do perfil da empresa.</li>
-              <li>Gerenciamento de vending machines, monitoramento de telemetria e controle de estoque de produtos.</li>
+              <li>Gerenciamento das máquinas de venda automática, monitoramento de telemetria e controle de estoque de produtos.</li>
               <li>Geração de relatórios financeiros e monitoramento de desempenho de vendas.</li>
               <li>Garantir a segurança e integridade do acesso à plataforma.</li>
             </ul>

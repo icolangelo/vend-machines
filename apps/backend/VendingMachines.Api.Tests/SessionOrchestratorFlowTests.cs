@@ -109,6 +109,53 @@ public sealed class SessionOrchestratorFlowTests
         Assert.Equal(0, await scenario.EventCountAsync("refund.requested"));
     }
 
+    [Fact]
+    public async Task DuplicatePaymentApproval_RecordsDuplicateWithoutSendingSecondCommandOrCreatingSale()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId, approved: true, "mercado_pago_webhook", CancellationToken.None);
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId, approved: true, "mercado_pago_webhook", CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("payment.approved"));
+        Assert.Equal(1, await scenario.EventCountAsync("payment.duplicate_result"));
+        Assert.Equal(1, await scenario.Db.TelemetryCommands.AsNoTracking()
+            .CountAsync(command => command.SessionId == scenario.SessionId && command.Command == "VENDA_APROVADA"));
+        Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+        Assert.Equal(1, await scenario.OutboxCountAsync("refund_payment"));
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == scenario.TransactionId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ProductionSessionRejectsMockProviderCredentialsInsteadOfCreatingMockPix()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.AwaitingSelection,
+            environmentName: Environments.Production,
+            addMockIntegration: true);
+
+        await scenario.SendRawAsync(new
+        {
+            command = "vend",
+            type = "request",
+            itemPrice = 200,
+            itemNumber = 1
+        });
+
+        var transaction = await scenario.Db.PaymentTransactions.SingleAsync();
+        Assert.Equal("Failed", transaction.Status);
+        Assert.Null(transaction.MercadoPagoPaymentId);
+        Assert.Empty(transaction.QrCode);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -446,6 +493,206 @@ public sealed class SessionOrchestratorFlowTests
     }
 
     [Fact]
+    public async Task SuccessfulDelivery_RecordsOneSaleAndDecrementsMappedStockOnce()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        scenario.Db.ProductTypes.Add(new ProductType
+        {
+            Id = "drinks",
+            Name = "Bebidas",
+            CompanyId = scenario.CompanyId
+        });
+        scenario.Db.Products.Add(new FullProduct
+        {
+            Id = "water-500ml",
+            Code = "W500",
+            Name = "Água 500 ml",
+            TypeId = "drinks",
+            CompanyId = scenario.CompanyId,
+            Cost = 1.25m
+        });
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            ItemNumber = 2,
+            ProductId = "water-500ml",
+            Capacity = 10,
+            CurrentStock = 3,
+            LowStockThreshold = 2
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+
+        var sale = await scenario.Db.SaleRecords.AsNoTracking().SingleAsync();
+        var slot = await scenario.Db.MachineProductSlots.AsNoTracking().SingleAsync();
+        var movement = await scenario.Db.InventoryMovements.AsNoTracking().SingleAsync();
+        Assert.Equal(scenario.TransactionId, sale.TransactionId);
+        Assert.Equal("water-500ml", sale.ProductId);
+        Assert.Equal("Água 500 ml", sale.ProductNameSnapshot);
+        Assert.Equal(2m, sale.GrossAmount);
+        Assert.Equal(1, sale.Quantity);
+        Assert.Equal(2, slot.CurrentStock);
+        Assert.Equal(-1, movement.QuantityDelta);
+        Assert.Equal(2, movement.QuantityAfter);
+    }
+
+    [Fact]
+    public async Task SuccessfulDeliveryDoesNotSnapshotProductNameFromAnotherCompany()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        var foreignCompanyId = Guid.NewGuid();
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = foreignCompanyId,
+            Name = "Empresa estrangeira",
+            Cnpj = "22222222000122"
+        });
+        scenario.Db.ProductTypes.Add(new ProductType
+        {
+            Id = "foreign-drinks",
+            Name = "Bebidas estrangeiras",
+            CompanyId = foreignCompanyId
+        });
+        scenario.Db.Products.Add(new FullProduct
+        {
+            Id = "foreign-water",
+            Code = "FW500",
+            Name = "Produto confidencial de outra empresa",
+            TypeId = "foreign-drinks",
+            CompanyId = foreignCompanyId
+        });
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            ItemNumber = 2,
+            ProductId = "foreign-water",
+            Capacity = 10,
+            CurrentStock = 3,
+            LowStockThreshold = 2
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+
+        var sale = await scenario.Db.SaleRecords.AsNoTracking().SingleAsync();
+        Assert.Null(sale.ProductNameSnapshot);
+        Assert.Equal("foreign-water", sale.ProductId);
+    }
+
+    [Fact]
+    public async Task DeviceMessageFromNewMachineOwnerDoesNotAdvancePreviousOwnersSession()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        var newCompanyId = Guid.NewGuid();
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = newCompanyId,
+            Name = "Nova empresa proprietária",
+            Cnpj = "33333333000133"
+        });
+        var machine = await scenario.Db.Machines.SingleAsync(item => item.Id == scenario.MachineId);
+        machine.CompanyId = newCompanyId;
+        await scenario.Db.SaveChangesAsync();
+
+        var data = JsonSerializer.Serialize(new
+        {
+            command = "vend",
+            type = "success",
+            transactionId = scenario.TransactionId
+        });
+        await scenario.Orchestrator.HandleDeviceMessageAsync(
+            new InboundDeviceMessage(
+                scenario.MachineId,
+                newCompanyId,
+                machine.SerialNumber,
+                "new-owner-connection",
+                991,
+                data,
+                DateTime.UtcNow),
+            CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.AwaitingDeliveryResult, session.State);
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking().ToListAsync());
+        Assert.Contains(await scenario.Db.TelemetryEvents.AsNoTracking().ToListAsync(), item =>
+            item.CompanyId == newCompanyId && item.MachineId == scenario.MachineId && item.SessionId == null);
+    }
+
+    [Fact]
+    public async Task OutboxWithSessionFromAnotherCompanyDoesNotCallProviderOrChangeEitherSession()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        await scenario.SetProviderPaymentIdAsync("external-payment-for-outbox-test");
+        scenario.Db.MercadoPagoIntegrations.Add(new MercadoPagoIntegration
+        {
+            CompanyId = scenario.CompanyId,
+            IsActive = true,
+            AccessToken = EncryptionService.Encrypt("test-access-token"),
+            RefreshToken = string.Empty,
+            ClientSecret = string.Empty
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var foreignCompanyId = Guid.NewGuid();
+        var foreignMachine = new Machine
+        {
+            Id = "foreign-outbox-machine",
+            Name = "Máquina de outra empresa",
+            SerialNumber = "FOREIGN-OUTBOX-SERIAL",
+            CompanyId = foreignCompanyId
+        };
+        var foreignSession = new MachineSession
+        {
+            Id = Guid.NewGuid(),
+            MachineId = foreignMachine.Id,
+            CompanyId = foreignCompanyId,
+            State = MachineSessionStates.Completed,
+            ClosedAt = DateTime.UtcNow
+        };
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = foreignCompanyId,
+            Name = "Empresa estrangeira",
+            Cnpj = "44444444000144"
+        });
+        scenario.Db.Machines.Add(foreignMachine);
+        scenario.Db.MachineSessions.Add(foreignSession);
+        var outbox = new OutboxMessage
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            SessionId = foreignSession.Id,
+            TransactionId = scenario.TransactionId,
+            MessageType = "refund_payment",
+            Status = "pending",
+            NextAttemptAt = DateTime.UtcNow.AddMinutes(-1)
+        };
+        scenario.Db.OutboxMessages.Add(outbox);
+        await scenario.Db.SaveChangesAsync();
+        var outboxId = outbox.Id;
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        outbox = await scenario.Db.OutboxMessages.AsNoTracking().SingleAsync(message => message.Id == outboxId);
+        var originalSession = await scenario.ReloadSessionAsync();
+        var unchangedForeignSession = await scenario.Db.MachineSessions.AsNoTracking()
+            .SingleAsync(session => session.Id == foreignSession.Id);
+        Assert.Equal("failed", outbox.Status);
+        Assert.Equal("association_mismatch", outbox.LastError);
+        Assert.Equal(0, outbox.Attempts);
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        Assert.Equal(MachineSessionStates.AwaitingDeliveryResult, originalSession.State);
+        Assert.Equal("Approved", originalSession.Transaction!.Status);
+        Assert.Equal(MachineSessionStates.Completed, unchangedForeignSession.State);
+        Assert.DoesNotContain(await scenario.Db.TelemetryEvents.AsNoTracking().ToListAsync(),
+            item => item.SessionId == foreignSession.Id && item.EventType == "refund.completed");
+    }
+
+    [Fact]
     public async Task Database_AllowsOnlyOneOpenSessionPerMachine()
     {
         await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
@@ -462,6 +709,7 @@ public sealed class SessionOrchestratorFlowTests
     private sealed class TestScenario : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
+        private readonly TestHttpClientFactory _httpClientFactory;
         private int _messageId;
 
         private TestScenario(
@@ -471,7 +719,8 @@ public sealed class SessionOrchestratorFlowTests
             Guid companyId,
             string machineId,
             Guid sessionId,
-            Guid? transactionId)
+            Guid? transactionId,
+            TestHttpClientFactory httpClientFactory)
         {
             _connection = connection;
             Db = db;
@@ -480,6 +729,7 @@ public sealed class SessionOrchestratorFlowTests
             MachineId = machineId;
             SessionId = sessionId;
             TransactionId = transactionId ?? Guid.Empty;
+            _httpClientFactory = httpClientFactory;
         }
 
         public AppDbContext Db { get; }
@@ -488,17 +738,28 @@ public sealed class SessionOrchestratorFlowTests
         public string MachineId { get; }
         public Guid SessionId { get; }
         public Guid TransactionId { get; }
+        public int ProviderRequestCount => _httpClientFactory.RequestCount;
 
         public static Task<TestScenario> CreatePaidAsync(string state, string transactionStatus = "Approved") =>
             CreateAsync(state, includeTransaction: true, transactionStatus);
 
-        public static Task<TestScenario> CreateWithoutTransactionAsync(string state) =>
-            CreateAsync(state, includeTransaction: false, transactionStatus: "Pending");
+        public static Task<TestScenario> CreateWithoutTransactionAsync(
+            string state,
+            string? environmentName = null,
+            bool addMockIntegration = false) =>
+            CreateAsync(
+                state,
+                includeTransaction: false,
+                transactionStatus: "Pending",
+                environmentName: environmentName ?? Environments.Development,
+                addMockIntegration: addMockIntegration);
 
         private static async Task<TestScenario> CreateAsync(
             string state,
             bool includeTransaction,
-            string transactionStatus)
+            string transactionStatus,
+            string? environmentName = null,
+            bool addMockIntegration = false)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -561,6 +822,17 @@ public sealed class SessionOrchestratorFlowTests
 
             db.Companies.Add(company);
             db.Machines.Add(machine);
+            if (addMockIntegration)
+            {
+                db.MercadoPagoIntegrations.Add(new MercadoPagoIntegration
+                {
+                    CompanyId = company.Id,
+                    IsActive = true,
+                    AccessToken = "mock_access_token",
+                    RefreshToken = string.Empty,
+                    ClientSecret = string.Empty
+                });
+            }
             if (transaction != null) db.PaymentTransactions.Add(transaction);
             db.MachineSessions.Add(session);
             await db.SaveChangesAsync();
@@ -570,13 +842,14 @@ public sealed class SessionOrchestratorFlowTests
                 new UnusedScopeFactory(),
                 panelHub,
                 NullLogger<TelemetryConnectionManager>.Instance);
+            var httpClientFactory = new TestHttpClientFactory();
             var orchestrator = new SessionOrchestrator(
                 db,
                 connectionManager,
                 panelHub,
-                new TestHttpClientFactory(),
+                httpClientFactory,
                 new ConfigurationBuilder().Build(),
-                new TestWebHostEnvironment(),
+                new TestWebHostEnvironment(environmentName ?? Environments.Development),
                 NullLogger<SessionOrchestrator>.Instance);
 
             return new TestScenario(
@@ -586,7 +859,8 @@ public sealed class SessionOrchestratorFlowTests
                 company.Id,
                 machine.Id,
                 session.Id,
-                transaction?.Id);
+                transaction?.Id,
+                httpClientFactory);
         }
 
         public async Task SendAsync(
@@ -690,21 +964,29 @@ public sealed class SessionOrchestratorFlowTests
 
     private sealed class TestHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new(new RejectExternalRequestsHandler());
+        private int _requestCount;
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        public HttpClient CreateClient(string name) => new(new RejectExternalRequestsHandler(
+            () => Interlocked.Increment(ref _requestCount)));
     }
 
-    private sealed class RejectExternalRequestsHandler : HttpMessageHandler
+    private sealed class RejectExternalRequestsHandler(Action onRequest) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            onRequest();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }
     }
 
-    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    private sealed class TestWebHostEnvironment(string environmentName) : IWebHostEnvironment
     {
         public string ApplicationName { get; set; } = "VendingMachines.Api.Tests";
         public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
         public string WebRootPath { get; set; } = string.Empty;
-        public string EnvironmentName { get; set; } = Environments.Development;
+        public string EnvironmentName { get; set; } = environmentName;
         public string ContentRootPath { get; set; } = string.Empty;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }

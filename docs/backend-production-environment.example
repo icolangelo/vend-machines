@@ -1,0 +1,24 @@
+# Configure como variáveis/segredos do runtime. Não copie valores para o repositório.
+Jwt__Key=REPLACE_WITH_RANDOM_SECRET_OF_AT_LEAST_32_BYTES
+Encryption__Key=REPLACE_WITH_CURRENT_LEGACY_AES_SECRET
+Encryption__LegacyKey=REPLACE_WITH_CURRENT_LEGACY_AES_SECRET
+Encryption__WriteLegacyFormat=true
+Encryption__RequireLegacyData=true
+MercadoPago__ClientSecret=REPLACE_WITH_ROTATED_MERCADO_PAGO_CLIENT_SECRET
+MercadoPago__WebhookSecret=REPLACE_WITH_ROTATED_MERCADO_PAGO_WEBHOOK_SECRET
+ConnectionStrings__DefaultConnection=REPLACE_WITH_POSTGRESQL_CONNECTION_STRING
+Telemetry__MaxPendingInboundMessages=5000
+AccountEmail__Enabled=true
+AccountEmail__PublicBaseUrl=https://app.example.com
+AccountEmail__Host=REPLACE_WITH_APPROVED_SMTP_HOST
+AccountEmail__Port=587
+AccountEmail__Username=REPLACE_WITH_SMTP_USERNAME
+AccountEmail__Password=REPLACE_WITH_SMTP_PASSWORD
+AccountEmail__FromAddress=REPLACE_WITH_VERIFIED_SENDER_ADDRESS
+AccountEmail__FromName=Vend Machines
+AccountEmail__TimeoutSeconds=15
+ForwardedHeaders__Enabled=false
+# Ative somente depois de confirmar os IPs vistos pela API como origem das conexões do proxy.
+# Exemplo: ForwardedHeaders__KnownProxies__0=10.0.0.10
+# Para mais de um proxy, configure índices adicionais e ajuste ForwardLimit ao número de saltos confiáveis.
+ForwardedHeaders__ForwardLimit=1

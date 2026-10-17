@@ -7,8 +7,15 @@ public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbConte
 {
     public AppDbContext CreateDbContext(string[] args)
     {
+        var connectionString = Environment.GetEnvironmentVariable("VENDMACHINES_DESIGNTIME_POSTGRES");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "Defina VENDMACHINES_DESIGNTIME_POSTGRES explicitamente para comandos do Entity Framework. Nenhum banco local padrão será usado.");
+        }
+
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql("Host=localhost;Database=vending_migrations;Username=postgres;Password=postgres")
+            .UseNpgsql(connectionString)
             .Options;
 
         return new AppDbContext(options);

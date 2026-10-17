@@ -61,7 +61,7 @@ public sealed class MdbStatusRequestService
         {
             throw new InvalidOperationException("monitoring_inactive");
         }
-        if (!_connections.IsOnline(machine.SerialNumber))
+        if (!await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
         {
             throw new InvalidOperationException("machine_offline");
         }
@@ -117,39 +117,50 @@ public sealed class MdbStatusPollingWorker : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly MdbStatusOptions _options;
     private readonly ILogger<MdbStatusPollingWorker> _logger;
+    private readonly BackgroundWorkerHealthRegistry? _health;
 
     public MdbStatusPollingWorker(
         IServiceScopeFactory scopeFactory,
         IOptions<MdbStatusOptions> options,
-        ILogger<MdbStatusPollingWorker> logger)
+        ILogger<MdbStatusPollingWorker> logger,
+        BackgroundWorkerHealthRegistry? health = null)
     {
         _scopeFactory = scopeFactory;
         _options = options.Value;
         _logger = logger;
+        _health = health;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        _health?.ReportStarted(BackgroundWorkerNames.MdbStatusPolling);
+        try
         {
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
-                var machines = await GetDueMachinesAsync(stoppingToken);
-                await Task.WhenAll(machines.Select(machine => RequestOneAsync(machine, stoppingToken)));
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Falha no ciclo de consulta do status MDB.");
-            }
+                try
+                {
+                    var machines = await GetDueMachinesAsync(stoppingToken);
+                    var results = await Task.WhenAll(machines.Select(machine => RequestOneAsync(machine, stoppingToken)));
+                    if (results.All(success => success))
+                        _health?.ReportSuccess(BackgroundWorkerNames.MdbStatusPolling);
+                    else
+                        _health?.ReportFailure(BackgroundWorkerNames.MdbStatusPolling, new InvalidOperationException("mdb_machine_request_failed"));
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    _health?.ReportFailure(BackgroundWorkerNames.MdbStatusPolling, ex);
+                    _logger.LogError(ex, "Falha no ciclo de consulta do status MDB.");
+                }
 
-            var jitter = Math.Max(0, _options.PollJitterSeconds);
-            var delaySeconds = 1 + (jitter == 0 ? 0 : Random.Shared.Next(0, jitter + 1));
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken);
+                var jitter = Math.Max(0, _options.PollJitterSeconds);
+                var delaySeconds = 1 + (jitter == 0 ? 0 : Random.Shared.Next(0, jitter + 1));
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken);
+            }
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally { _health?.ReportStopped(BackgroundWorkerNames.MdbStatusPolling); }
     }
 
     private async Task<List<DueMachine>> GetDueMachinesAsync(CancellationToken cancellationToken)
@@ -166,7 +177,13 @@ public sealed class MdbStatusPollingWorker : BackgroundService
                 db.Machines.AsNoTracking(),
                 state => state.MachineId,
                 machine => machine.Id,
-                (state, machine) => new { MachineId = machine.Id, state.CompanyId })
+                (state, machine) => new
+                {
+                    MachineId = machine.Id,
+                    state.CompanyId,
+                    MachineCompanyId = machine.CompanyId
+                })
+            .Where(item => item.CompanyId == item.MachineCompanyId)
             .OrderBy(x => x.MachineId)
             .Take(batchSize)
             .ToListAsync(cancellationToken);
@@ -176,7 +193,7 @@ public sealed class MdbStatusPollingWorker : BackgroundService
             .ToList();
     }
 
-    private async Task RequestOneAsync(DueMachine machine, CancellationToken cancellationToken)
+    private async Task<bool> RequestOneAsync(DueMachine machine, CancellationToken cancellationToken)
     {
         try
         {
@@ -188,18 +205,22 @@ public sealed class MdbStatusPollingWorker : BackgroundService
                 null,
                 "poll",
                 cancellationToken);
+            return true;
         }
         catch (InvalidOperationException ex) when (ex.Message is "machine_offline" or "monitoring_inactive")
         {
             // O estado persistido pode mudar entre a seleção do lote e o envio.
+            return true;
         }
         catch (KeyNotFoundException)
         {
             // A máquina pode ter sido excluída entre a seleção do lote e o envio.
+            return true;
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Falha ao consultar MDB da máquina {MachineId}.", machine.MachineId);
+            return false;
         }
     }
 

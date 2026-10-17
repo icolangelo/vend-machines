@@ -3,7 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { getUsers, getCompanies, getGlobalSettings, updateGlobalSettings, getCompanyIntegration, getAdminLogs, type PaginatedUsers, type PaginatedCompanies, type SystemSettings, type MercadoPagoIntegration, type PaginatedAdminLogs, type AdminLog } from "@/lib/api";
+import { getUsers, updateUserRole, getCompanies, updateCompanyActivation, getGlobalSettings, updateGlobalSettings, getCompanyIntegration, getAdminLogs, getDeviceMessageInbox, getReconciliationQueue, getWorkerHealth, retryDeviceMessageInbox, type PaginatedUsers, type PaginatedCompanies, type SystemSettings, type MercadoPagoIntegration, type PaginatedAdminLogs, type AdminLog, type DeviceMessageInboxSummary, type ReconciliationQueueSummary, type WorkerHealthSummary } from "@/lib/api";
 import { 
     Users as UsersIcon, 
     ShieldAlert, 
@@ -15,7 +15,9 @@ import {
     Activity,
     CreditCard,
     Terminal,
-    Save
+    Save,
+    RefreshCw,
+    RotateCw
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -25,6 +27,41 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+
+const getRoleLabel = (role?: string) => {
+    if (role === "PlatformAdmin") return "Administrador da plataforma";
+    if (role === "Admin") return "Administrador";
+    if (role === "Operator") return "Operador";
+    return role ?? "";
+};
+
+const workerLabels: Record<string, string> = {
+    "telemetry-inbox": "Processamento da inbox MDB",
+    "telemetry-inbox-consumer-1": "Consumidor MDB 1",
+    "telemetry-inbox-consumer-2": "Consumidor MDB 2",
+    "telemetry-inbox-consumer-3": "Consumidor MDB 3",
+    "telemetry-inbox-consumer-4": "Consumidor MDB 4",
+    "mercado-pago-webhook": "Webhooks Mercado Pago",
+    "mercado-pago-reconciliation": "Conciliação Mercado Pago",
+    "operational-alerts": "Sincronização de alertas",
+    "telemetry-deadlines": "Prazos de telemetria",
+    "mdb-status-polling": "Consulta de status MDB",
+};
+
+const workerStatusLabels: Record<string, string> = {
+    Healthy: "Saudável",
+    Degraded: "Com falhas",
+    Stale: "Sem atualização",
+    Stopped: "Parado",
+    NotStarted: "Não iniciado",
+};
+
+const formatAge = (seconds?: number | null) => {
+    if (seconds == null) return "—";
+    if (seconds < 60) return `${seconds} s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+    return `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
+};
 
 export default function Admin() {
     const { user, logout } = useAuth();
@@ -36,6 +73,9 @@ export default function Admin() {
     const [userSearch, setUserSearch] = useState("");
     const [userSearchInput, setUserSearchInput] = useState("");
     const [usersLoading, setUsersLoading] = useState(true);
+    const [usersError, setUsersError] = useState(false);
+    const [usersRefreshVersion, setUsersRefreshVersion] = useState(0);
+    const [roleChangeUserId, setRoleChangeUserId] = useState<string | null>(null);
 
     // Estados da listagem de empresas
     const [companyData, setCompanyData] = useState<PaginatedCompanies | null>(null);
@@ -43,11 +83,16 @@ export default function Admin() {
     const [companySearch, setCompanySearch] = useState("");
     const [companySearchInput, setCompanySearchInput] = useState("");
     const [companiesLoading, setCompaniesLoading] = useState(true);
+    const [companiesError, setCompaniesError] = useState(false);
+    const [companiesRefreshVersion, setCompaniesRefreshVersion] = useState(0);
+    const [companyActivationId, setCompanyActivationId] = useState<string | null>(null);
 
-    const isAdmin = user?.email === "dev.ivan@gmail.com";
+    const isAdmin = user?.role === "PlatformAdmin";
 
     const [globalSettings, setGlobalSettings] = useState<SystemSettings | null>(null);
     const [settingsLoading, setSettingsLoading] = useState(false);
+    const [settingsError, setSettingsError] = useState(false);
+    const [settingsRefreshVersion, setSettingsRefreshVersion] = useState(0);
     const [savingSettings, setSavingSettings] = useState(false);
     const [feeInput, setFeeInput] = useState<number>(5.0);
 
@@ -56,6 +101,7 @@ export default function Admin() {
     const [selectedCompanyForDetails, setSelectedCompanyForDetails] = useState<{ id: string, name: string } | null>(null);
     const [companyIntegration, setCompanyIntegration] = useState<MercadoPagoIntegration | null>(null);
     const [loadingDetails, setLoadingDetails] = useState(false);
+    const [integrationDetailsError, setIntegrationDetailsError] = useState(false);
 
     // Estados dos Logs (Admin)
     const [logsData, setLogsData] = useState<PaginatedAdminLogs | null>(null);
@@ -63,13 +109,32 @@ export default function Admin() {
     const [logsSearch, setLogsSearch] = useState("");
     const [logsSearchInput, setLogsSearchInput] = useState("");
     const [logsLoading, setLogsLoading] = useState(true);
+    const [logsError, setLogsError] = useState(false);
+    const [logsRefreshVersion, setLogsRefreshVersion] = useState(0);
     const [selectedLogForDetails, setSelectedLogForDetails] = useState<AdminLog | null>(null);
     const [isLogDetailsOpen, setIsLogDetailsOpen] = useState(false);
+
+    const [inboxData, setInboxData] = useState<DeviceMessageInboxSummary | null>(null);
+    const [inboxPage, setInboxPage] = useState(1);
+    const [inboxLoading, setInboxLoading] = useState(false);
+    const [inboxError, setInboxError] = useState<string | null>(null);
+    const [inboxRetryingId, setInboxRetryingId] = useState<string | null>(null);
+    const [inboxRefreshVersion, setInboxRefreshVersion] = useState(0);
+    const [reconciliationData, setReconciliationData] = useState<ReconciliationQueueSummary | null>(null);
+    const [reconciliationPage, setReconciliationPage] = useState(1);
+    const [reconciliationLoading, setReconciliationLoading] = useState(false);
+    const [reconciliationError, setReconciliationError] = useState<string | null>(null);
+    const [reconciliationRefreshVersion, setReconciliationRefreshVersion] = useState(0);
+    const [workerHealth, setWorkerHealth] = useState<WorkerHealthSummary | null>(null);
+    const [workerHealthLoading, setWorkerHealthLoading] = useState(false);
+    const [workerHealthError, setWorkerHealthError] = useState(false);
+    const [workerHealthRefreshVersion, setWorkerHealthRefreshVersion] = useState(0);
 
     // Efeito para carregar logs
     useEffect(() => {
         if (!isAdmin) return;
         setLogsLoading(true);
+        setLogsError(false);
         getAdminLogs(logsPage, 10, logsSearch)
             .then(data => {
                 setLogsData(data);
@@ -77,9 +142,10 @@ export default function Admin() {
             })
             .catch(err => {
                 console.error("Erro ao carregar logs administrativos:", err);
+                setLogsError(true);
                 setLogsLoading(false);
             });
-    }, [logsPage, logsSearch, isAdmin]);
+    }, [logsPage, logsSearch, logsRefreshVersion, isAdmin]);
 
     const handleLogsSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -92,8 +158,69 @@ export default function Admin() {
         setIsLogDetailsOpen(true);
     };
 
+    useEffect(() => {
+        if (!isAdmin) return;
+        setInboxLoading(true);
+        setInboxError(null);
+        getDeviceMessageInbox(inboxPage, 20)
+            .then(data => {
+                setInboxData(data);
+                setInboxPage(page => Math.min(page, Math.max(1, data.totalPages)));
+            })
+            .catch(error => {
+                console.error("Erro ao consultar a inbox de telemetria:", error);
+                setInboxError(error instanceof Error ? error.message : "Falha ao carregar a fila de telemetria.");
+            })
+            .finally(() => setInboxLoading(false));
+    }, [inboxPage, inboxRefreshVersion, isAdmin]);
+
+    useEffect(() => {
+        if (!isAdmin) return;
+        setReconciliationLoading(true);
+        setReconciliationError(null);
+        getReconciliationQueue(reconciliationPage, 20)
+            .then(data => {
+                setReconciliationData(data);
+                setReconciliationPage(page => Math.min(page, Math.max(1, data.totalPages)));
+            })
+            .catch(error => {
+                console.error("Erro ao consultar a fila de conciliação financeira:", error);
+                setReconciliationError(error instanceof Error ? error.message : "Falha ao carregar a fila de conciliação.");
+            })
+            .finally(() => setReconciliationLoading(false));
+    }, [reconciliationPage, reconciliationRefreshVersion, isAdmin]);
+
+    useEffect(() => {
+        if (!isAdmin) return;
+        setWorkerHealthLoading(true);
+        setWorkerHealthError(false);
+        getWorkerHealth()
+            .then(data => setWorkerHealth(data))
+            .catch(error => {
+                console.error("Erro ao consultar a saúde operacional:", error);
+                setWorkerHealthError(true);
+            })
+            .finally(() => setWorkerHealthLoading(false));
+    }, [workerHealthRefreshVersion, isAdmin]);
+
+    const handleRetryInboxMessage = async (id: string) => {
+        if (!window.confirm("Reprocessar esta mensagem MDB pode repetir eventos operacionais. Deseja continuar?")) return;
+        setInboxRetryingId(id);
+        try {
+            await retryDeviceMessageInbox(id);
+            setInboxRefreshVersion(version => version + 1);
+            window.alert("Mensagem reenfileirada para processamento.");
+        } catch (error) {
+            window.alert(error instanceof Error ? error.message : "Não foi possível reenfileirar a mensagem.");
+        } finally {
+            setInboxRetryingId(null);
+        }
+    };
+
     const handleViewIntegrationDetails = async (companyId: string, companyName: string) => {
         setSelectedCompanyForDetails({ id: companyId, name: companyName });
+        setCompanyIntegration(null);
+        setIntegrationDetailsError(false);
         setIsDetailsOpen(true);
         setLoadingDetails(true);
         try {
@@ -101,7 +228,7 @@ export default function Admin() {
             setCompanyIntegration(data);
         } catch (err) {
             console.error("Erro ao carregar detalhes da integração da empresa:", err);
-            setCompanyIntegration(null);
+            setIntegrationDetailsError(true);
         } finally {
             setLoadingDetails(false);
         }
@@ -111,6 +238,7 @@ export default function Admin() {
     useEffect(() => {
         if (!isAdmin) return;
         setSettingsLoading(true);
+        setSettingsError(false);
         getGlobalSettings()
             .then(data => {
                 setGlobalSettings(data);
@@ -119,9 +247,10 @@ export default function Admin() {
             })
             .catch(err => {
                 console.error("Erro ao carregar configurações de pagamento:", err);
+                setSettingsError(true);
                 setSettingsLoading(false);
             });
-    }, [isAdmin]);
+    }, [isAdmin, settingsRefreshVersion]);
 
     const handleSaveGlobalSettings = async () => {
         if (feeInput < 0 || feeInput > 100) {
@@ -147,6 +276,7 @@ export default function Admin() {
     useEffect(() => {
         if (!isAdmin) return;
         setUsersLoading(true);
+        setUsersError(false);
         getUsers(userPage, 8, userSearch)
             .then(data => {
                 setUserData(data);
@@ -154,14 +284,16 @@ export default function Admin() {
             })
             .catch(err => {
                 console.error("Erro ao carregar usuários:", err);
+                setUsersError(true);
                 setUsersLoading(false);
             });
-    }, [userPage, userSearch, isAdmin]);
+    }, [userPage, userSearch, usersRefreshVersion, isAdmin]);
 
     // Efeito para carregar empresas
     useEffect(() => {
         if (!isAdmin) return;
         setCompaniesLoading(true);
+        setCompaniesError(false);
         getCompanies(companyPage, 8, companySearch)
             .then(data => {
                 setCompanyData(data);
@@ -169,9 +301,10 @@ export default function Admin() {
             })
             .catch(err => {
                 console.error("Erro ao carregar empresas:", err);
+                setCompaniesError(true);
                 setCompaniesLoading(false);
             });
-    }, [companyPage, companySearch, isAdmin]);
+    }, [companyPage, companySearch, companiesRefreshVersion, isAdmin]);
 
     const handleUserSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -179,10 +312,51 @@ export default function Admin() {
         setUserSearch(userSearchInput);
     };
 
+    const handleUserRoleChange = async (userId: string, role: "Admin" | "PlatformAdmin" | "Operator") => {
+        if (!window.confirm("Alterar o papel deste usuário encerrará as sessões ativas dele. Continuar?")) {
+            const refreshed = await getUsers(userPage, 8, userSearch);
+            setUserData(refreshed);
+            return;
+        }
+        setRoleChangeUserId(userId);
+        try {
+            await updateUserRole(userId, role);
+            const refreshed = await getUsers(userPage, 8, userSearch);
+            setUserData(refreshed);
+            alert("Papel atualizado. O usuário deverá entrar novamente.");
+        } catch (error) {
+            alert((error as Error).message);
+        } finally {
+            setRoleChangeUserId(null);
+        }
+    };
+
     const handleCompanySearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         setCompanyPage(1);
         setCompanySearch(companySearchInput);
+    };
+
+    const handleCompanyActivation = async (companyId: string, status: "Active" | "Rejected") => {
+        const isRejecting = status === "Rejected";
+        const confirmation = isRejecting
+            ? "Recusar esta empresa desativará os usuários vinculados e encerrará as sessões deles. Continuar?"
+            : "Aprovar esta empresa liberará o acesso do administrador cadastrado. Como o envio automático de e-mail ainda não está configurado, será necessário avisar o contato cadastrado. Continuar?";
+        if (!window.confirm(confirmation)) return;
+
+        setCompanyActivationId(companyId);
+        try {
+            await updateCompanyActivation(companyId, status);
+            const refreshed = await getCompanies(companyPage, 8, companySearch);
+            setCompanyData(refreshed);
+            window.alert(isRejecting
+                ? "Empresa recusada. Os usuários vinculados foram desativados."
+                : "Empresa aprovada. O administrador já pode entrar; avise o contato cadastrado fora da plataforma.");
+        } catch (error) {
+            window.alert(error instanceof Error ? error.message : "Não foi possível atualizar o status da empresa.");
+        } finally {
+            setCompanyActivationId(null);
+        }
     };
 
     if (!isAdmin) {
@@ -200,7 +374,7 @@ export default function Admin() {
                     </CardHeader>
                     <CardContent className="flex justify-center pt-4 border-t gap-3">
                         <Button variant="outline" onClick={() => navigate("/dashboard")}>
-                            Voltar para o Dashboard
+                            Voltar para o Painel
                         </Button>
                         <Button variant="destructive" onClick={logout}>
                             Desconectar
@@ -221,7 +395,7 @@ export default function Admin() {
                         <h1 className="text-sm font-semibold text-foreground">Administração</h1>
                         <div className="ml-auto flex items-center gap-4">
                             <span className="text-xs text-muted-foreground">
-                                Perfil: <strong className="text-blue-600 font-semibold">{user?.role}</strong>
+                                Perfil: <strong className="text-blue-600 font-semibold">{getRoleLabel(user?.role)}</strong>
                             </span>
                             <button
                                 onClick={logout}
@@ -254,6 +428,12 @@ export default function Admin() {
                                 </TabsTrigger>
                                 <TabsTrigger value="logs" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
                                     Logs de Transações
+                                </TabsTrigger>
+                                <TabsTrigger value="telemetry-inbox" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                    Fila de Telemetria
+                                </TabsTrigger>
+                                <TabsTrigger value="operational-health" className="px-4 py-1.5 text-sm font-medium transition-all rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                                    Saúde operacional
                                 </TabsTrigger>
                             </TabsList>
 
@@ -290,6 +470,12 @@ export default function Admin() {
                                     </CardHeader>
 
                                     <CardContent className="p-0">
+                                        {usersError && (
+                                            <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                                                <span>{userData ? "Não foi possível atualizar os usuários. Os dados exibidos podem estar desatualizados." : "Não foi possível carregar os usuários."}</span>
+                                                <Button variant="outline" size="sm" onClick={() => setUsersRefreshVersion(version => version + 1)} disabled={usersLoading}>Tentar novamente</Button>
+                                            </div>
+                                        )}
                                         <Table>
                                             <TableHeader className="bg-slate-50/70">
                                                 <TableRow>
@@ -302,7 +488,7 @@ export default function Admin() {
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {usersLoading ? (
+                                                {usersLoading && !userData ? (
                                                     Array.from({ length: 5 }).map((_, idx) => (
                                                         <TableRow key={idx}>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
@@ -313,6 +499,8 @@ export default function Admin() {
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
                                                         </TableRow>
                                                     ))
+                                                ) : usersError && !userData ? (
+                                                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-red-700">Dados de usuários indisponíveis.</TableCell></TableRow>
                                                 ) : !userData || userData.items.length === 0 ? (
                                                     <TableRow>
                                                         <TableCell colSpan={6} className="text-center py-12 text-slate-400 font-medium font-sans">
@@ -333,13 +521,26 @@ export default function Admin() {
                                                                 )}
                                                             </TableCell>
                                                             <TableCell className="px-6 py-3.5">
-                                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                                                                    usr.role === "Admin" 
-                                                                        ? "bg-blue-50 text-blue-700 border border-blue-200" 
-                                                                        : "bg-slate-100 text-slate-700 border border-slate-200"
-                                                                }`}>
-                                                                    {usr.role}
-                                                                </span>
+                                                                <select
+                                                                    aria-label={`Papel de ${usr.name}`}
+                                                                    value={usr.role}
+                                                                    disabled={usr.id === user?.id || roleChangeUserId === usr.id}
+                                                                    onChange={event => handleUserRoleChange(
+                                                                        usr.id,
+                                                                        event.target.value as "Admin" | "PlatformAdmin" | "Operator"
+                                                                    )}
+                                                                    className={`rounded-full px-2.5 py-1 text-xs font-semibold border ${
+                                                                        usr.role === "PlatformAdmin"
+                                                                            ? "bg-purple-50 text-purple-700 border-purple-200"
+                                                                            : usr.role === "Admin"
+                                                                                ? "bg-blue-50 text-blue-700 border-blue-200"
+                                                                                : "bg-slate-100 text-slate-700 border-slate-200"
+                                                                    }`}
+                                                                >
+                                                                    <option value="Operator">Operador</option>
+                                                                    <option value="Admin">Administrador</option>
+                                                                    <option value="PlatformAdmin">Administrador da plataforma</option>
+                                                                </select>
                                                             </TableCell>
                                                             <TableCell className="px-6 py-3.5 text-xs text-slate-500 font-mono">
                                                                 {new Date(usr.createdAt).toLocaleDateString("pt-BR", {
@@ -426,6 +627,12 @@ export default function Admin() {
                                     </CardHeader>
 
                                     <CardContent className="p-0">
+                                        {companiesError && (
+                                            <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                                                <span>{companyData ? "Não foi possível atualizar as empresas. Os dados exibidos podem estar desatualizados." : "Não foi possível carregar as empresas."}</span>
+                                                <Button variant="outline" size="sm" onClick={() => setCompaniesRefreshVersion(version => version + 1)} disabled={companiesLoading}>Tentar novamente</Button>
+                                            </div>
+                                        )}
                                         <Table>
                                             <TableHeader className="bg-slate-50/70">
                                                 <TableRow>
@@ -434,12 +641,13 @@ export default function Admin() {
                                                     <TableHead className="px-6 font-semibold text-slate-700">Dono / Criador</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Sócios Vinculados</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Data de Criação</TableHead>
+                                                    <TableHead className="px-6 font-semibold text-slate-700">Ativação</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700">Integrações</TableHead>
                                                     <TableHead className="px-6 font-semibold text-slate-700 text-right">Ações</TableHead>
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {companiesLoading ? (
+                                                {companiesLoading && !companyData ? (
                                                     Array.from({ length: 3 }).map((_, idx) => (
                                                         <TableRow key={idx}>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-40" /></TableCell>
@@ -447,13 +655,16 @@ export default function Admin() {
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-32" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-48" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
+                                                            <TableCell className="px-6 py-4"><Skeleton className="h-5 w-20" /></TableCell>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-24" /></TableCell>
                                                             <TableCell className="px-6 py-4 text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
                                                         </TableRow>
                                                     ))
+                                                ) : companiesError && !companyData ? (
+                                                    <TableRow><TableCell colSpan={8} className="text-center py-12 text-red-700">Dados de empresas indisponíveis.</TableCell></TableRow>
                                                 ) : !companyData || companyData.items.length === 0 ? (
                                                     <TableRow>
-                                                        <TableCell colSpan={7} className="text-center py-12 text-slate-400 font-medium font-sans">
+                                                        <TableCell colSpan={8} className="text-center py-12 text-slate-400 font-medium font-sans">
                                                             Nenhuma empresa localizada.
                                                         </TableCell>
                                                     </TableRow>
@@ -462,7 +673,10 @@ export default function Admin() {
                                                         <TableRow key={comp.id} className="hover:bg-slate-50/50 transition-colors">
                                                             <TableCell className="px-6 py-3.5 font-bold text-slate-900">{comp.name}</TableCell>
                                                             <TableCell className="px-6 py-3.5 font-mono text-xs text-slate-600">{comp.cnpj || "-"}</TableCell>
-                                                            <TableCell className="px-6 py-3.5 font-semibold text-blue-600">{comp.createdBy}</TableCell>
+                                                            <TableCell className="px-6 py-3.5 font-semibold text-blue-600">
+                                                                <div>{comp.createdBy}</div>
+                                                                <div className="text-xs font-normal text-slate-500">{comp.createdByEmail}</div>
+                                                            </TableCell>
                                                             <TableCell className="px-6 py-3.5">
                                                                 <div className="flex flex-wrap gap-1.5 max-w-md">
                                                                     {comp.partners.length > 0 ? (
@@ -484,6 +698,11 @@ export default function Admin() {
                                                                 })}
                                                             </TableCell>
                                                             <TableCell className="px-6 py-3.5">
+                                                                <Badge variant={comp.activationStatus === "Active" ? "default" : comp.activationStatus === "Pending" ? "secondary" : "destructive"}>
+                                                                    {comp.activationStatus === "Active" ? "Ativa" : comp.activationStatus === "Pending" ? "Pendente" : "Recusada"}
+                                                                </Badge>
+                                                            </TableCell>
+                                                            <TableCell className="px-6 py-3.5">
                                                                 <div className="flex flex-wrap gap-1">
                                                                     {comp.enabledIntegrations && comp.enabledIntegrations.length > 0 ? (
                                                                         comp.enabledIntegrations.map((integrationName, idx) => (
@@ -497,14 +716,37 @@ export default function Admin() {
                                                                 </div>
                                                             </TableCell>
                                                             <TableCell className="px-6 py-3.5 text-right">
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    onClick={() => handleViewIntegrationDetails(comp.id, comp.name)}
-                                                                    className="h-8 text-xs font-semibold"
-                                                                >
-                                                                    Detalhes
-                                                                </Button>
+                                                                <div className="flex flex-wrap justify-end gap-2">
+                                                                    {comp.activationStatus !== "Active" && (
+                                                                        <Button
+                                                                            size="sm"
+                                                                            disabled={companyActivationId === comp.id}
+                                                                            onClick={() => handleCompanyActivation(comp.id, "Active")}
+                                                                            className="h-8 text-xs font-semibold"
+                                                                        >
+                                                                            {comp.activationStatus === "Pending" ? "Aprovar" : "Reativar"}
+                                                                        </Button>
+                                                                    )}
+                                                                    {comp.activationStatus === "Pending" && (
+                                                                        <Button
+                                                                            variant="destructive"
+                                                                            size="sm"
+                                                                            disabled={companyActivationId === comp.id}
+                                                                            onClick={() => handleCompanyActivation(comp.id, "Rejected")}
+                                                                            className="h-8 text-xs font-semibold"
+                                                                        >
+                                                                            Recusar
+                                                                        </Button>
+                                                                    )}
+                                                                    <Button
+                                                                        variant="outline"
+                                                                        size="sm"
+                                                                        onClick={() => handleViewIntegrationDetails(comp.id, comp.name)}
+                                                                        className="h-8 text-xs font-semibold"
+                                                                    >
+                                                                        Detalhes
+                                                                    </Button>
+                                                                </div>
                                                             </TableCell>
                                                         </TableRow>
                                                     ))
@@ -562,11 +804,19 @@ export default function Admin() {
                                         </CardDescription>
                                     </CardHeader>
                                     <CardContent className="p-6 space-y-6">
-                                        {settingsLoading ? (
+                                        {settingsError && (
+                                            <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                                                <span>{globalSettings ? "Não foi possível atualizar as configurações. Os valores exibidos podem estar desatualizados." : "Não foi possível carregar as configurações de pagamento."}</span>
+                                                <Button variant="outline" size="sm" onClick={() => setSettingsRefreshVersion(version => version + 1)} disabled={settingsLoading}>Tentar novamente</Button>
+                                            </div>
+                                        )}
+                                        {settingsLoading && !globalSettings ? (
                                             <div className="space-y-2 py-4">
                                                 <Skeleton className="h-4 w-1/3" />
                                                 <Skeleton className="h-10 w-full" />
                                             </div>
+                                        ) : !globalSettings ? (
+                                            <p className="py-4 text-center text-sm text-muted-foreground">Configurações indisponíveis.</p>
                                         ) : (
                                             <div className="space-y-4">
                                                 <div className="space-y-1.5">
@@ -616,6 +866,83 @@ export default function Admin() {
                                         )}
                                     </CardContent>
                                 </Card>
+                                <Card className="border border-slate-200 bg-white shadow-sm">
+                                    <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                                        <div>
+                                            <CardTitle className="text-lg font-bold flex items-center gap-2">
+                                                <Activity className="w-5 h-5 text-amber-600" />
+                                                Conciliação financeira pendente
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Cobranças ainda pendentes ou que precisam de verificação. A consulta não altera o estado dos pagamentos.
+                                            </CardDescription>
+                                        </div>
+                                        <Button variant="outline" size="sm" onClick={() => setReconciliationRefreshVersion(version => version + 1)} disabled={reconciliationLoading} className="gap-2">
+                                            <RefreshCw className={`w-4 h-4 ${reconciliationLoading ? "animate-spin" : ""}`} />
+                                            Atualizar
+                                        </Button>
+                                    </CardHeader>
+                                    <CardContent className="p-0">
+                                        <div className="grid grid-cols-2 gap-3 p-4 border-b bg-slate-50/50">
+                                            <div className="rounded-md border bg-white p-3">
+                                                <p className="text-xs text-muted-foreground">Pendentes</p>
+                                                <p className="text-xl font-semibold">{reconciliationData?.counts.pending ?? (reconciliationError || reconciliationLoading ? "—" : 0)}</p>
+                                            </div>
+                                            <div className="rounded-md border bg-white p-3">
+                                                <p className="text-xs text-muted-foreground">Exigem verificação</p>
+                                                <p className="text-xl font-semibold">{reconciliationData?.counts.reconciliationRequired ?? (reconciliationError || reconciliationLoading ? "—" : 0)}</p>
+                                            </div>
+                                        </div>
+                                        {reconciliationError && (
+                                            <p role="alert" className="border-b p-4 text-sm text-destructive">
+                                                {reconciliationData
+                                                    ? "Não foi possível atualizar a conciliação. Os dados exibidos podem estar desatualizados."
+                                                    : "Não foi possível carregar a fila de conciliação. Use Atualizar para tentar novamente."}
+                                            </p>
+                                        )}
+                                        <div className="overflow-x-auto">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow>
+                                                            <TableHead>Criação</TableHead>
+                                                            <TableHead>Empresa / máquina</TableHead>
+                                                            <TableHead>Valor</TableHead>
+                                                            <TableHead>Estado</TableHead>
+                                                            <TableHead>Estado no provedor</TableHead>
+                                                            <TableHead>Última consulta</TableHead>
+                                                        </TableRow>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {reconciliationLoading && !reconciliationData ? (
+                                                            <TableRow><TableCell colSpan={6} className="p-6 text-center text-muted-foreground">Carregando conciliação...</TableCell></TableRow>
+                                                        ) : reconciliationError && !reconciliationData ? (
+                                                            <TableRow><TableCell colSpan={6} className="p-6 text-center text-destructive">Dados de conciliação indisponíveis.</TableCell></TableRow>
+                                                        ) : !reconciliationData || reconciliationData.items.length === 0 ? (
+                                                            <TableRow><TableCell colSpan={6} className="p-6 text-center text-muted-foreground">Nenhum pagamento pendente de conciliação.</TableCell></TableRow>
+                                                        ) : reconciliationData.items.map(item => (
+                                                            <TableRow key={item.id}>
+                                                                <TableCell className="whitespace-nowrap text-xs">{new Date(item.createdAt).toLocaleString("pt-BR")}</TableCell>
+                                                                <TableCell><span className="block font-medium">{item.companyName}</span><span className="text-xs text-muted-foreground">{item.machineName} · {item.machineId}</span></TableCell>
+                                                                <TableCell className="whitespace-nowrap">{new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(item.amount)}</TableCell>
+                                                                <TableCell><Badge variant={item.status === "ReconciliationRequired" ? "destructive" : "secondary"}>{item.status === "ReconciliationRequired" ? "Verificação necessária" : "Pendente"}</Badge></TableCell>
+                                                                <TableCell><span>{item.mercadoPagoStatus || "Sem status"}</span>{item.mercadoPagoStatusDetail && <span className="block text-xs text-muted-foreground">{item.mercadoPagoStatusDetail}</span>}</TableCell>
+                                                                <TableCell className="whitespace-nowrap text-xs">{item.lastReconciliationAt ? new Date(item.lastReconciliationAt).toLocaleString("pt-BR") : "Ainda não consultado"}</TableCell>
+                                                            </TableRow>
+                                                        ))}
+                                                    </TableBody>
+                                                </Table>
+                                        </div>
+                                        {reconciliationData && reconciliationData.totalPages > 1 && (
+                                            <div className="flex items-center justify-between border-t p-3">
+                                                <span className="text-xs text-muted-foreground">{reconciliationData.totalItems} pagamentos · página {reconciliationPage} de {reconciliationData.totalPages}</span>
+                                                <div className="flex gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setReconciliationPage(page => Math.max(1, page - 1))} disabled={reconciliationPage <= 1 || reconciliationLoading}>Anterior</Button>
+                                                    <Button variant="outline" size="sm" onClick={() => setReconciliationPage(page => Math.min(reconciliationData.totalPages, page + 1))} disabled={reconciliationPage >= reconciliationData.totalPages || reconciliationLoading}>Próxima</Button>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
                             </TabsContent>
 
                             {/* ABA DE LOGS DE TRANSAÇÕES */}
@@ -651,6 +978,12 @@ export default function Admin() {
                                     </CardHeader>
 
                                     <CardContent className="p-0">
+                                        {logsError && (
+                                            <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                                                <span>{logsData ? "Não foi possível atualizar os logs. Os dados exibidos podem estar desatualizados." : "Não foi possível carregar os logs administrativos."}</span>
+                                                <Button variant="outline" size="sm" onClick={() => setLogsRefreshVersion(version => version + 1)} disabled={logsLoading}>Tentar novamente</Button>
+                                            </div>
+                                        )}
                                         <Table>
                                             <TableHeader className="bg-slate-50/70">
                                                 <TableRow>
@@ -663,7 +996,7 @@ export default function Admin() {
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {logsLoading ? (
+                                                {logsLoading && !logsData ? (
                                                     Array.from({ length: 5 }).map((_, idx) => (
                                                         <TableRow key={idx}>
                                                             <TableCell className="px-6 py-4"><Skeleton className="h-4 w-28" /></TableCell>
@@ -674,6 +1007,8 @@ export default function Admin() {
                                                             <TableCell className="px-6 py-4 text-right"><Skeleton className="h-8 w-16 ml-auto" /></TableCell>
                                                         </TableRow>
                                                     ))
+                                                ) : logsError && !logsData ? (
+                                                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-red-700">Dados de logs indisponíveis.</TableCell></TableRow>
                                                 ) : !logsData || logsData.items.length === 0 ? (
                                                     <TableRow>
                                                         <TableCell colSpan={6} className="text-center py-12 text-slate-400 font-medium font-sans">
@@ -759,6 +1094,209 @@ export default function Admin() {
                                     </CardContent>
                                 </Card>
                             </TabsContent>
+
+                            <TabsContent value="telemetry-inbox" className="space-y-4 outline-none">
+                                <Card className="border border-slate-200 bg-white shadow-sm">
+                                    <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                        <div>
+                                            <CardTitle className="text-lg font-bold flex items-center gap-2">
+                                                <Activity className="w-5 h-5 text-amber-600" />
+                                                Inbox durável de telemetria
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Eventos MDB são guardados antes do ACK. Falhas permanecem disponíveis para reprocessamento auditado.
+                                            </CardDescription>
+                                        </div>
+                                        <Button variant="outline" size="sm" onClick={() => setInboxRefreshVersion(version => version + 1)} disabled={inboxLoading}>
+                                            <RefreshCw className={`w-4 h-4 mr-2 ${inboxLoading ? "animate-spin" : ""}`} />
+                                            Atualizar
+                                        </Button>
+                                    </CardHeader>
+                                    <CardContent className="p-6 space-y-5">
+                                        {inboxError && <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">{inboxData ? "Não foi possível atualizar a fila. Os dados exibidos podem estar desatualizados." : "Não foi possível carregar a fila de telemetria. Use Atualizar para tentar novamente."}</p>}
+                                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                            {[
+                                                ["Pendentes", "Pending"],
+                                                ["Em nova tentativa", "Retry"],
+                                                ["Processando", "Processing"],
+                                                ["Falhas", "Failed"],
+                                                ["Processados", "Processed"]
+                                            ].map(([label, key]) => (
+                                                <div key={key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                                    <p className="text-xs text-muted-foreground">{label}</p>
+                                                    <p className="text-xl font-semibold">{inboxData?.counts[key] ?? (inboxError || inboxLoading ? "—" : 0)}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                            <Table>
+                                                <TableHeader className="bg-slate-50/70">
+                                                    <TableRow>
+                                                        <TableHead className="px-4">Recebida em</TableHead>
+                                                        <TableHead className="px-4">Máquina</TableHead>
+                                                        <TableHead className="px-4">Serial</TableHead>
+                                                        <TableHead className="px-4">Mensagem MDB</TableHead>
+                                                        <TableHead className="px-4">Tentativas</TableHead>
+                                                        <TableHead className="px-4">Erro</TableHead>
+                                                        <TableHead className="px-4 text-right">Ação</TableHead>
+                                                    </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {inboxLoading && !inboxData ? (
+                                                        <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Carregando fila...</TableCell></TableRow>
+                                                    ) : inboxError && !inboxData ? (
+                                                        <TableRow><TableCell colSpan={7} className="py-10 text-center text-red-700">Não foi possível carregar as falhas.</TableCell></TableRow>
+                                                    ) : !inboxData || inboxData.failures.length === 0 ? (
+                                                        <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Nenhuma mensagem em falha.</TableCell></TableRow>
+                                                    ) : inboxData.failures.map(item => (
+                                                        <TableRow key={item.id}>
+                                                            <TableCell className="px-4 whitespace-nowrap text-xs">{new Date(item.receivedAt).toLocaleString("pt-BR")}</TableCell>
+                                                            <TableCell className="px-4 font-mono text-xs">{item.machineId}</TableCell>
+                                                            <TableCell className="px-4 font-mono text-xs">{item.serial}</TableCell>
+                                                            <TableCell className="px-4">#{item.messageId}</TableCell>
+                                                            <TableCell className="px-4">{item.attempts}</TableCell>
+                                                            <TableCell className="px-4 text-xs">{item.lastError || "Falha sem detalhe"}</TableCell>
+                                                            <TableCell className="px-4 text-right">
+                                                                <Button size="sm" variant="outline" onClick={() => void handleRetryInboxMessage(item.id)} disabled={inboxRetryingId === item.id}>
+                                                                    <RotateCw className="w-3.5 h-3.5 mr-1.5" />
+                                                                    Reprocessar
+                                                                </Button>
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                        </div>
+
+                                        {inboxData && inboxData.totalPages > 1 && (
+                                            <div className="flex items-center justify-between">
+                                                <p className="text-xs text-muted-foreground">{inboxData.totalFailed} mensagens em falha</p>
+                                                <div className="flex items-center gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setInboxPage(page => Math.max(1, page - 1))} disabled={inboxPage <= 1 || inboxLoading}>Anterior</Button>
+                                                    <span className="text-xs">Página {inboxPage} de {inboxData.totalPages}</span>
+                                                    <Button variant="outline" size="sm" onClick={() => setInboxPage(page => Math.min(inboxData.totalPages, page + 1))} disabled={inboxPage >= inboxData.totalPages || inboxLoading}>Próxima</Button>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            </TabsContent>
+
+                            <TabsContent value="operational-health" className="space-y-4 outline-none">
+                                <Card className="border border-slate-200 bg-white shadow-sm">
+                                    <CardHeader className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                        <div>
+                                            <CardTitle className="text-lg font-bold flex items-center gap-2">
+                                                <Activity className="w-5 h-5 text-blue-600" />
+                                                Saúde de workers e filas
+                                            </CardTitle>
+                                            <CardDescription>
+                                                Diagnóstico da API e do banco. Esta leitura não altera workers, filas nem máquinas.
+                                            </CardDescription>
+                                        </div>
+                                        <Button variant="outline" size="sm" onClick={() => setWorkerHealthRefreshVersion(version => version + 1)} disabled={workerHealthLoading}>
+                                            <RefreshCw className={`w-4 h-4 mr-2 ${workerHealthLoading ? "animate-spin" : ""}`} />
+                                            Atualizar
+                                        </Button>
+                                    </CardHeader>
+                                    <CardContent className="p-6 space-y-5">
+                                        {workerHealthError && (
+                                            <p role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                                                {workerHealth
+                                                    ? "Não foi possível atualizar a saúde operacional. Os dados exibidos podem estar desatualizados."
+                                                    : "Não foi possível carregar a saúde operacional. Use Atualizar para tentar novamente."}
+                                            </p>
+                                        )}
+                                        {workerHealthLoading && !workerHealth ? (
+                                            <p className="text-sm text-muted-foreground">Carregando saúde operacional...</p>
+                                        ) : !workerHealth && !workerHealthError ? (
+                                            <p className="text-sm text-muted-foreground">Aguardando leitura operacional.</p>
+                                        ) : workerHealth && (
+                                            <>
+                                                <p className="text-xs text-muted-foreground">
+                                                    Leitura gerada em {new Date(workerHealth.generatedAt).toLocaleString("pt-BR")}.
+                                                </p>
+                                                {workerHealth.hasUnhealthyWorkers && (
+                                                    <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                                                        Há workers não iniciados, degradados, parados ou sem atualização. Confira o estado de cada um abaixo.
+                                                    </p>
+                                                )}
+                                                {workerHealth.queueMetrics.available && workerHealth.queueMetrics.machineConnections &&
+                                                    (workerHealth.queueMetrics.machineConnections.staleOnline > 0 || workerHealth.queueMetrics.machineConnections.onlineWithoutOwner > 0) && (
+                                                        <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                                                            Há máquinas online sem atualização recente ou sem nó proprietário. Confira o estado da telemetria antes de qualquer rollout.
+                                                        </p>
+                                                    )}
+
+                                                {workerHealth.queueMetrics.available ? (
+                                                    <>
+                                                        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                                                            <div className="rounded-lg border bg-slate-50 p-3"><p className="text-xs text-muted-foreground">Máquinas monitoradas</p><p className="text-xl font-semibold">{workerHealth.queueMetrics.machineConnections?.monitored ?? 0}</p></div>
+                                                            <div className="rounded-lg border bg-slate-50 p-3"><p className="text-xs text-muted-foreground">Máquinas online</p><p className="text-xl font-semibold">{workerHealth.queueMetrics.machineConnections?.online ?? 0}</p></div>
+                                                            <div className="rounded-lg border bg-slate-50 p-3"><p className="text-xs text-muted-foreground">Online sem atualização</p><p className="text-xl font-semibold">{workerHealth.queueMetrics.machineConnections?.staleOnline ?? 0}</p></div>
+                                                            <div className="rounded-lg border bg-slate-50 p-3"><p className="text-xs text-muted-foreground">Online sem proprietário</p><p className="text-xl font-semibold">{workerHealth.queueMetrics.machineConnections?.onlineWithoutOwner ?? 0}</p></div>
+                                                            <div className="rounded-lg border bg-slate-50 p-3"><p className="text-xs text-muted-foreground">Pagamentos pendentes</p><p className="text-xl font-semibold">{workerHealth.queueMetrics.pendingPayments ?? 0}</p><p className="text-xs text-muted-foreground">Mais antigo: {formatAge(workerHealth.queueMetrics.oldestPendingPaymentAgeSeconds)}</p></div>
+                                                        </div>
+                                                        <div className="grid md:grid-cols-3 gap-3">
+                                                            {[
+                                                                { title: "Inbox MDB", counts: workerHealth.queueMetrics.deviceMessageInbox, age: workerHealth.queueMetrics.oldestDeviceMessageAgeSeconds },
+                                                                { title: "Inbox de webhooks", counts: workerHealth.queueMetrics.webhookInbox, age: workerHealth.queueMetrics.oldestWebhookAgeSeconds },
+                                                                { title: "Comandos MDB", counts: workerHealth.queueMetrics.telemetryCommandDispatches, age: workerHealth.queueMetrics.oldestPendingTelemetryDispatchAgeSeconds },
+                                                            ].map(queue => (
+                                                                <div key={queue.title} className="rounded-lg border p-4 space-y-2">
+                                                                    <h3 className="text-sm font-semibold">{queue.title}</h3>
+                                                                    <div className="grid grid-cols-2 gap-2 text-xs">
+                                                                        <span>Pendentes: <strong>{queue.counts?.Pending ?? 0}</strong></span>
+                                                                        <span>Em retry: <strong>{queue.counts?.Retry ?? 0}</strong></span>
+                                                                        <span>Processando: <strong>{queue.counts?.Processing ?? 0}</strong></span>
+                                                                        <span>Falhas: <strong>{queue.counts?.Failed ?? 0}</strong></span>
+                                                                    </div>
+                                                                    <p className="text-xs text-muted-foreground">Item pendente mais antigo: {formatAge(queue.age)}</p>
+                                                                    {queue.title === "Comandos MDB" && <p className="text-xs text-muted-foreground">Processando há mais tempo: {formatAge(workerHealth.queueMetrics.oldestProcessingTelemetryDispatchAgeSeconds)}</p>}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    <p role="alert" className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                                                        O banco não respondeu à consulta das filas. O estado local dos workers continua disponível abaixo.
+                                                    </p>
+                                                )}
+
+                                                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                                    <Table>
+                                                        <TableHeader className="bg-slate-50/70">
+                                                            <TableRow>
+                                                                <TableHead>Worker</TableHead>
+                                                                <TableHead>Estado</TableHead>
+                                                                <TableHead>Último heartbeat</TableHead>
+                                                                <TableHead>Último sucesso</TableHead>
+                                                                <TableHead>Falhas consecutivas</TableHead>
+                                                                <TableHead>Tipo da última falha</TableHead>
+                                                            </TableRow>
+                                                        </TableHeader>
+                                                        <TableBody>
+                                                            {workerHealth.workers.length === 0 ? (
+                                                                <TableRow><TableCell colSpan={6} className="p-6 text-center text-muted-foreground">Nenhum worker registrado.</TableCell></TableRow>
+                                                            ) : workerHealth.workers.map(worker => (
+                                                                <TableRow key={worker.name}>
+                                                                    <TableCell className="font-medium">{workerLabels[worker.name] ?? worker.name}</TableCell>
+                                                                    <TableCell><Badge variant={worker.status === "Healthy" ? "default" : worker.status === "NotStarted" ? "outline" : "destructive"}>{workerStatusLabels[worker.status] ?? worker.status}</Badge></TableCell>
+                                                                    <TableCell className="whitespace-nowrap text-xs">{worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).toLocaleString("pt-BR") : "—"}</TableCell>
+                                                                    <TableCell className="whitespace-nowrap text-xs">{worker.lastSuccessAt ? new Date(worker.lastSuccessAt).toLocaleString("pt-BR") : "—"}</TableCell>
+                                                                    <TableCell>{worker.consecutiveFailures}</TableCell>
+                                                                    <TableCell className="font-mono text-xs">{worker.lastErrorType ?? "—"}</TableCell>
+                                                                </TableRow>
+                                                            ))}
+                                                        </TableBody>
+                                                    </Table>
+                                                </div>
+                                            </>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            </TabsContent>
                         </Tabs>
 
                         {/* MODAL DETALHES DE INTEGRAÇÃO (ADMIN) */}
@@ -772,6 +1310,13 @@ export default function Admin() {
                                 <div className="p-6 space-y-5 text-sm">
                                     {loadingDetails ? (
                                         <p className="text-muted-foreground animate-pulse text-center py-6 font-medium">Carregando detalhes...</p>
+                                    ) : integrationDetailsError ? (
+                                        <div role="alert" className="space-y-3 rounded-md border border-red-200 bg-red-50 p-4 text-center text-sm text-red-800">
+                                            <p>Não foi possível carregar os detalhes da integração. Tente novamente.</p>
+                                            <Button variant="outline" size="sm" onClick={() => {
+                                                if (selectedCompanyForDetails) void handleViewIntegrationDetails(selectedCompanyForDetails.id, selectedCompanyForDetails.name);
+                                            }}>Tentar novamente</Button>
+                                        </div>
                                     ) : companyIntegration ? (
                                         <>
                                             <div className="flex justify-between items-center pb-2 border-b border-slate-100">
@@ -809,22 +1354,22 @@ export default function Admin() {
                                                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">3. Credenciais de API (Mascaradas)</h4>
                                                 <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2 text-xs">
                                                     <div className="flex flex-col gap-0.5">
-                                                        <span className="font-semibold text-slate-600">Access Token:</span>
+                                                        <span className="font-semibold text-slate-600">Token de acesso:</span>
                                                         <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.accessToken}</span>
                                                     </div>
                                                     <div className="flex flex-col gap-0.5">
-                                                        <span className="font-semibold text-slate-600">Public Key:</span>
+                                                        <span className="font-semibold text-slate-600">Chave pública:</span>
                                                         <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.publicKey}</span>
                                                     </div>
                                                     {companyIntegration.clientId && (
                                                         <div className="flex flex-col gap-0.5">
-                                                            <span className="font-semibold text-slate-600">Client ID:</span>
+                                                            <span className="font-semibold text-slate-600">ID do cliente:</span>
                                                             <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.clientId}</span>
                                                         </div>
                                                     )}
                                                     {companyIntegration.clientSecret && (
                                                         <div className="flex flex-col gap-0.5">
-                                                            <span className="font-semibold text-slate-600">Client Secret:</span>
+                                                        <span className="font-semibold text-slate-600">Chave secreta do cliente:</span>
                                                             <span className="font-mono text-slate-700 bg-white border border-slate-200/60 rounded px-2 py-1 select-all">{companyIntegration.clientSecret}</span>
                                                         </div>
                                                     )}
@@ -834,10 +1379,10 @@ export default function Admin() {
                                             <div className="space-y-2">
                                                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">4. Diagnóstico OAuth</h4>
                                                 <div className="grid grid-cols-2 gap-y-2 bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
-                                                    <div><strong className="text-slate-600">User ID MP:</strong> {companyIntegration.mercadoPagoUserId || "-"}</div>
-                                                    <div><strong className="text-slate-600">Nickname:</strong> {companyIntegration.mercadoPagoNickname || "-"}</div>
+                                                    <div><strong className="text-slate-600">ID de usuário no Mercado Pago:</strong> {companyIntegration.mercadoPagoUserId || "-"}</div>
+                                                    <div><strong className="text-slate-600">Apelido:</strong> {companyIntegration.mercadoPagoNickname || "-"}</div>
                                                     <div><strong className="text-slate-600">Site:</strong> {companyIntegration.mercadoPagoSiteId || "-"}</div>
-                                                    <div><strong className="text-slate-600">Refresh token:</strong> {companyIntegration.hasRefreshToken ? "Salvo" : "Ausente"}</div>
+                                                    <div><strong className="text-slate-600">Token de atualização:</strong> {companyIntegration.hasRefreshToken ? "Salvo" : "Ausente"}</div>
                                                     <div><strong className="text-slate-600">Expira em:</strong> {companyIntegration.accessTokenExpiresAt ? new Date(companyIntegration.accessTokenExpiresAt).toLocaleString("pt-BR") : "-"}</div>
                                                     <div><strong className="text-slate-600">Fingerprint:</strong> <span className="font-mono">{companyIntegration.tokenFingerprint || "-"}</span></div>
                                                     <div className="col-span-2"><strong className="text-slate-600">Última validação:</strong> {companyIntegration.lastTokenValidationStatus || "-"}</div>

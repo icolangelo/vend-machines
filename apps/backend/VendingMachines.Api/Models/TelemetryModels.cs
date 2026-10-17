@@ -35,6 +35,8 @@ public class MachineConnectionState
     public bool MonitoringEnabled { get; set; }
     public bool IsOnline { get; set; }
     public string? ConnectionId { get; set; }
+    public string? OwnerNodeId { get; set; }
+    public string? OwnerConnectionId { get; set; }
     public DateTime? ConnectedAt { get; set; }
     public DateTime? DisconnectedAt { get; set; }
     public DateTime? LastSeenAt { get; set; }
@@ -115,6 +117,28 @@ public class TelemetryCommand
     public DateTime? SentAt { get; set; }
     public DateTime? AckAt { get; set; }
     public string? Error { get; set; }
+}
+
+public class TelemetryCommandDispatch
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CompanyId { get; set; }
+    public string MachineId { get; set; } = string.Empty;
+    public string OwnerNodeId { get; set; } = string.Empty;
+    public string Operation { get; set; } = "Command";
+    public int TimeoutMilliseconds { get; set; } = 15000;
+    public string PayloadJson { get; set; } = "null";
+    public string Status { get; set; } = "Pending";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? ProcessingStartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public int? MessageId { get; set; }
+    public int? Attempts { get; set; }
+    public bool? Success { get; set; }
+    public string? Error { get; set; }
+    public string? ResponseStatus { get; set; }
+    public string? ResponseDataJson { get; set; }
+    public DateTime? ResponseAt { get; set; }
 }
 
 public class TelemetryEvent

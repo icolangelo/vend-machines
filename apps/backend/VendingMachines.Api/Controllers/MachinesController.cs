@@ -15,11 +15,19 @@ public class MachinesController : BaseApiController
 {
     private readonly IDataService _dataService;
     private readonly AppDbContext _db;
+    private readonly TelemetryConnectionManager _connections;
+    private readonly IAuditLogService? _audit;
 
-    public MachinesController(IDataService dataService, AppDbContext db)
+    public MachinesController(
+        IDataService dataService,
+        AppDbContext db,
+        TelemetryConnectionManager connections,
+        IAuditLogService? audit = null)
     {
         _dataService = dataService;
         _db = db;
+        _connections = connections;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -46,6 +54,7 @@ public class MachinesController : BaseApiController
         return Ok(machine);
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost]
     public ActionResult Create([FromBody] Machine machine)
     {
@@ -81,6 +90,7 @@ public class MachinesController : BaseApiController
         }
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPut("{id}")]
     public ActionResult Update(string id, [FromBody] Machine machine)
     {
@@ -110,6 +120,62 @@ public class MachinesController : BaseApiController
         }
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpPost("{id}/telemetry-credential")]
+    public async Task<IActionResult> RotateTelemetryCredential(string id, CancellationToken cancellationToken)
+    {
+        if (!TryGetEffectiveCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        var machine = await _db.Machines.FirstOrDefaultAsync(
+            x => x.Id == id && x.CompanyId == companyId,
+            cancellationToken);
+        if (machine == null) return NotFound();
+
+        var credential = DeviceCredentialService.Generate();
+        machine.TelemetryCredentialHash = DeviceCredentialService.Hash(credential);
+        machine.TelemetryCredentialCreatedAt = DateTime.UtcNow;
+        machine.TelemetryCredentialRevokedAt = null;
+        await _db.SaveChangesAsync(cancellationToken);
+        await _connections.DisconnectAsync(machine.SerialNumber, "Credencial rotacionada.");
+        await RecordAuditAsync("machine.telemetry_credential_rotated", "Machine", machine.Id, companyId);
+
+        return Ok(new
+        {
+            machineId = machine.Id,
+            credential,
+            createdAt = machine.TelemetryCredentialCreatedAt,
+            message = "Guarde esta credencial. Ela será exibida somente agora."
+        });
+    }
+
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpDelete("{id}/telemetry-credential")]
+    public async Task<IActionResult> RevokeTelemetryCredential(string id, CancellationToken cancellationToken)
+    {
+        if (!TryGetEffectiveCompanyId(out var companyId))
+        {
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+        }
+
+        var machine = await _db.Machines.FirstOrDefaultAsync(
+            x => x.Id == id && x.CompanyId == companyId,
+            cancellationToken);
+        if (machine == null) return NotFound();
+
+        machine.TelemetryCredentialRevokedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken);
+        await _connections.DisconnectAsync(machine.SerialNumber, "Credencial revogada.");
+        await RecordAuditAsync("machine.telemetry_credential_revoked", "Machine", machine.Id, companyId);
+        return NoContent();
+    }
+
+    private Task RecordAuditAsync(string action, string resourceType, string resourceId, Guid companyId) =>
+        _audit?.RecordAsync(action, resourceType, resourceId, companyId, cancellationToken: HttpContext.RequestAborted)
+        ?? Task.CompletedTask;
+
     private void ApplyAutomaticSessionConfiguration(Machine machine, Guid companyId, bool? previousValue)
     {
         var hasChanged = previousValue.HasValue
@@ -133,6 +199,18 @@ public class MachinesController : BaseApiController
         }
 
         var state = _db.MachineConnectionStates.FirstOrDefault(x => x.MachineId == machine.Id);
+        if (state != null && state.CompanyId != companyId)
+        {
+            if (hasChanged && machine.AutoOpenSessionEnabled)
+            {
+                throw new InvalidOperationException(
+                    "Não foi possível ativar o acompanhamento desta máquina. Atualize o estado de telemetria e tente novamente.");
+            }
+
+            // Never change monitoring preferences or telemetry errors owned by another company.
+            return;
+        }
+
         if (!machine.AutoOpenSessionEnabled)
         {
             if (state != null)

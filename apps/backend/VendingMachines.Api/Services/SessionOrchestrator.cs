@@ -8,7 +8,7 @@ using VendingMachines.Api.Models;
 
 namespace VendingMachines.Api.Services;
 
-public sealed class SessionOrchestrator
+public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionStartGates = new();
 
@@ -79,7 +79,7 @@ public sealed class SessionOrchestrator
             x => x.Id == machineId && x.CompanyId == companyId, cancellationToken)
             ?? throw new KeyNotFoundException("Máquina não encontrada.");
 
-        if (!_connections.IsOnline(machine.SerialNumber))
+        if (!await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
             throw new InvalidOperationException("machine_offline");
 
         var automatic = string.Equals(source, "automatic_mdb", StringComparison.Ordinal);
@@ -107,7 +107,9 @@ public sealed class SessionOrchestrator
                 throw new InvalidOperationException("mdb_not_ready");
         }
 
-        var existing = await ActiveSessions().FirstOrDefaultAsync(x => x.MachineId == machineId, cancellationToken);
+        var existing = await ActiveSessions().FirstOrDefaultAsync(
+            x => x.MachineId == machineId && x.CompanyId == companyId,
+            cancellationToken);
         if (existing != null) throw new InvalidOperationException("session_already_active");
 
         var session = new MachineSession
@@ -205,7 +207,7 @@ public sealed class SessionOrchestrator
         if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(type)) return;
 
         var session = await ActiveSessions().Include(x => x.Machine).Include(x => x.Transaction)
-            .FirstOrDefaultAsync(x => x.MachineId == message.MachineId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId, cancellationToken);
         if (session == null)
         {
             await AddStandaloneEventAsync(message, $"{command}.{type}", "Evento recebido sem sessão ativa.", message.DataJson, cancellationToken);
@@ -301,7 +303,12 @@ public sealed class SessionOrchestrator
     public async Task HandlePaymentResultAsync(Guid transactionId, bool approved, string reason, CancellationToken cancellationToken)
     {
         var session = await _db.MachineSessions.Include(x => x.Machine).Include(x => x.Transaction)
-            .FirstOrDefaultAsync(x => x.TransactionId == transactionId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.TransactionId == transactionId &&
+                                      x.Transaction != null && x.Machine != null &&
+                                      x.CompanyId == x.Transaction.CompanyId &&
+                                      x.MachineId == x.Transaction.MachineId &&
+                                      x.CompanyId == x.Machine.CompanyId,
+                cancellationToken);
         if (session == null || session.Transaction == null || session.Machine == null) return;
 
         if (session.State != MachineSessionStates.PaymentPending)
@@ -414,6 +421,25 @@ public sealed class SessionOrchestrator
             {
                 message.Status = "failed";
                 message.LastError = "transaction_not_found";
+                message.ProcessedAt = now;
+                continue;
+            }
+
+            var associationIsValid = transaction.CompanyId == message.CompanyId &&
+                                     transaction.MachineId == message.MachineId &&
+                                     (!message.SessionId.HasValue ||
+                                      session != null &&
+                                      session.CompanyId == message.CompanyId &&
+                                      session.MachineId == message.MachineId &&
+                                      session.TransactionId == transaction.Id);
+            if (!associationIsValid)
+            {
+                message.Status = "failed";
+                message.LastError = "association_mismatch";
+                message.ProcessedAt = now;
+                _logger.LogError(
+                    "Outbox financeiro {OutboxId} foi encerrado porque sessão, cobrança e máquina não correspondem.",
+                    message.Id);
                 continue;
             }
 
@@ -433,6 +459,16 @@ public sealed class SessionOrchestrator
                 {
                     session.State = MachineSessionStates.Refunded;
                     transaction.Status = "Refunded";
+                    var sale = await _db.SaleRecords.FirstOrDefaultAsync(
+                        record => record.TransactionId == transaction.Id &&
+                                  record.CompanyId == transaction.CompanyId &&
+                                  record.MachineId == transaction.MachineId,
+                        cancellationToken);
+                    if (sale != null)
+                    {
+                        sale.RefundedAmount = sale.GrossAmount;
+                        sale.FinancialStatus = "Refunded";
+                    }
                     await AddEventAsync(session, "refund.completed", null, null, null, cancellationToken);
                     sessionsToBroadcast.Add(session);
                 }
@@ -525,7 +561,7 @@ public sealed class SessionOrchestrator
                 x => x.CompanyId == session.CompanyId && x.IsActive, cancellationToken)
                 ?? throw new InvalidOperationException("Integração Mercado Pago não configurada.");
             var accessToken = EncryptionService.Decrypt(integration.AccessToken);
-            if (_environment.IsDevelopment() || accessToken.Contains("mock", StringComparison.OrdinalIgnoreCase) || accessToken.Length < 15)
+            if (_environment.IsDevelopment())
             {
                 transaction.MercadoPagoPaymentId = $"mock_mp_{Guid.NewGuid():N}";
                 transaction.MercadoPagoStatus = "pending";
@@ -534,6 +570,9 @@ public sealed class SessionOrchestrator
             }
             else
             {
+                if (accessToken.Contains("mock", StringComparison.OrdinalIgnoreCase) || accessToken.Length < 15)
+                    throw new InvalidOperationException("Credenciais Mercado Pago de simulação ou inválidas não podem ser usadas fora do ambiente de desenvolvimento.");
+
                 var client = _httpClientFactory.CreateClient("MercadoPago");
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
                 client.DefaultRequestHeaders.Add("X-Idempotency-Key", transaction.Id.ToString());
@@ -549,7 +588,6 @@ public sealed class SessionOrchestrator
                 };
                 var response = await client.PostAsJsonAsync("https://api.mercadopago.com/v1/payments", payload, cancellationToken);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                transaction.RawResponse = body;
                 response.EnsureSuccessStatusCode();
                 using var doc = JsonDocument.Parse(body);
                 var root = doc.RootElement;
@@ -569,7 +607,6 @@ public sealed class SessionOrchestrator
         {
             _logger.LogError(ex, "Falha ao criar Pix para a sessão {SessionId}.", session.Id);
             transaction.Status = "Failed";
-            transaction.RawResponse ??= JsonSerializer.Serialize(new { error = ex.Message });
             await DenyWithoutPaymentAsync(session, "provider_error", cancellationToken);
         }
 
@@ -598,6 +635,55 @@ public sealed class SessionOrchestrator
         {
             session.State = MachineSessionStates.Completed;
             session.DeliveryDeadlineAt = null;
+            if (session.Transaction is { Status: "Approved" } transaction && session.ItemNumber.HasValue &&
+                !await _db.SaleRecords.AnyAsync(sale => sale.TransactionId == transaction.Id, cancellationToken))
+            {
+                var slot = await _db.MachineProductSlots.FirstOrDefaultAsync(
+                    candidate => candidate.CompanyId == session.CompanyId &&
+                                 candidate.MachineId == session.MachineId &&
+                                 candidate.ItemNumber == session.ItemNumber.Value,
+                    cancellationToken);
+                var productName = slot == null
+                    ? null
+                    : await _db.Products.Where(product => product.Id == slot.ProductId &&
+                                                          (product.CompanyId == null || product.CompanyId == session.CompanyId))
+                        .Select(product => product.Name).FirstOrDefaultAsync(cancellationToken);
+                var sale = new SaleRecord
+                {
+                    CompanyId = session.CompanyId,
+                    MachineId = session.MachineId,
+                    SessionId = session.Id,
+                    TransactionId = transaction.Id,
+                    ItemNumber = session.ItemNumber.Value,
+                    ProductId = slot?.ProductId,
+                    ProductNameSnapshot = productName,
+                    Quantity = 1,
+                    GrossAmount = transaction.Amount,
+                    ApplicationFee = transaction.ApplicationFee,
+                    NetAmount = transaction.Amount - transaction.ApplicationFee,
+                    SoldAt = DateTime.UtcNow
+                };
+                _db.SaleRecords.Add(sale);
+
+                if (slot != null)
+                {
+                    slot.CurrentStock--;
+                    slot.UpdatedAt = DateTime.UtcNow;
+                    _db.InventoryMovements.Add(new InventoryMovement
+                    {
+                        CompanyId = session.CompanyId,
+                        MachineId = session.MachineId,
+                        ItemNumber = session.ItemNumber.Value,
+                        ProductId = slot.ProductId,
+                        SaleRecordId = sale.Id,
+                        MovementType = "Sale",
+                        QuantityDelta = -1,
+                        QuantityAfter = slot.CurrentStock,
+                        Reason = "Entrega confirmada pela máquina.",
+                        CreatedAt = sale.SoldAt
+                    });
+                }
+            }
             if (session.Transaction != null) session.Transaction.Status = "Approved";
             await AddEventAsync(session, "delivery.success", "Entrega confirmada pela máquina.", null, data.GetRawText(), cancellationToken);
         }
@@ -816,12 +902,14 @@ public sealed class SessionOrchestrator
             cancellationToken);
         if (machine?.AutoOpenSessionEnabled != true ||
             !connectionState.MonitoringEnabled ||
-            !_connections.IsOnline(machine.SerialNumber))
+            !await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
         {
             return;
         }
 
-        if (await ActiveSessions().AnyAsync(x => x.MachineId == message.MachineId, cancellationToken))
+        if (await ActiveSessions().AnyAsync(
+                x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId,
+                cancellationToken))
         {
             return;
         }

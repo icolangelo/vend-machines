@@ -5,6 +5,11 @@ import {
     productTypes as mockProductTypes,
     topProducts as mockTopProducts,
     bottomProducts as mockBottomProducts,
+    secondaryCompanyMachines,
+    secondaryCompanyClients,
+    secondaryCompanyProducts,
+    secondaryCompanyTopProducts,
+    secondaryCompanyBottomProducts,
     generateHistoricalData as mockHistoricalData,
     type Machine,
     type Client,
@@ -13,17 +18,74 @@ import {
     type Product,
     type ProductType
 } from "@/data/mockData";
-import { API_BASE_URL, authenticatedFetch } from "@/lib/authClient";
+import { API_BASE_URL, authenticatedFetch, getCurrentAuthUser } from "@/lib/authClient";
 
 export { API_BASE_URL } from "@/lib/authClient";
 
 const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
 const authFetch = authenticatedFetch;
+const TEST_COMPANY_ACME_ID = "11111111-1111-1111-1111-111111111111";
+const TEST_COMPANY_SABOR_ID = "55555555-5555-5555-5555-555555555555";
+
+function getTestCompanyId(): string {
+    const user = getCurrentAuthUser();
+    if (user?.role === "PlatformAdmin") {
+        try {
+            const stored = sessionStorage.getItem("impersonatedCompany");
+            const impersonatedId = stored ? (JSON.parse(stored) as { id?: string }).id : null;
+            if (impersonatedId) return impersonatedId;
+        } catch {
+            // Ignore invalid test-only impersonation state and use the signed-in company.
+        }
+    }
+    return user?.companyId || TEST_COMPANY_ACME_ID;
+}
+
+function getTestMachines(): Machine[] {
+    const companyId = getTestCompanyId();
+    if (companyId === TEST_COMPANY_SABOR_ID) return secondaryCompanyMachines;
+    if (companyId === TEST_COMPANY_ACME_ID) return mockMachines;
+    return [];
+}
+
+function getTestClients(): Client[] {
+    const companyId = getTestCompanyId();
+    if (companyId === TEST_COMPANY_SABOR_ID) return secondaryCompanyClients;
+    if (companyId === TEST_COMPANY_ACME_ID) return mockClients;
+    return [];
+}
+
+function isSaborTestCompany(): boolean {
+    return getTestCompanyId() === TEST_COMPANY_SABOR_ID;
+}
+
+function isGlobalTestPlatformAdmin(): boolean {
+    if (getCurrentAuthUser()?.role !== "PlatformAdmin") return false;
+    try {
+        return !sessionStorage.getItem("impersonatedCompany");
+    } catch {
+        return false;
+    }
+}
+
+function canModifyTestUser(userId: string): boolean {
+    const currentUser = getCurrentAuthUser();
+    if (!currentUser || (currentUser.role !== "Admin" && currentUser.role !== "PlatformAdmin")) return false;
+    if (currentUser.id === userId) return false;
+    const match = /^usr-(\d+)$/.exec(userId);
+    if (!match) return false;
+    const userNumber = Number(match[1]);
+    if (!Number.isInteger(userNumber) || userNumber < 1 || userNumber > 45) return false;
+    if (isGlobalTestPlatformAdmin()) return true;
+
+    const companyId = (userNumber - 1) % 2 === 0 ? TEST_COMPANY_ACME_ID : TEST_COMPANY_SABOR_ID;
+    return companyId === getTestCompanyId();
+}
 
 export async function getMachines(): Promise<Machine[]> {
     if (isTestEnv()) {
-        return mockMachines;
+        return getTestMachines();
     }
     const response = await authFetch(`${API_BASE_URL}/machines`);
     if (!response.ok) throw new Error("Erro ao buscar máquinas da API");
@@ -69,8 +131,6 @@ export interface TelemetryEventItem {
     sessionId?: string | null;
     transactionId?: string | null;
     eventType: string;
-    detail?: string | null;
-    dataJson?: string | null;
     createdAt: string;
 }
 
@@ -162,7 +222,7 @@ export async function createTelemetrySocketTicket(): Promise<{ ticket: string; e
 
 export async function getMachine(id: string): Promise<Machine | null> {
     if (isTestEnv()) {
-        return mockMachines.find(m => m.id === id) || null;
+        return getTestMachines().find(m => m.id === id) || null;
     }
     const response = await authFetch(`${API_BASE_URL}/machines/${id}`);
     if (!response.ok) return null;
@@ -171,8 +231,12 @@ export async function getMachine(id: string): Promise<Machine | null> {
 
 export async function createMachine(machine: Partial<Machine>): Promise<Machine> {
     if (isTestEnv()) {
-        const newId = `VM-${String(mockMachines.length + 1).padStart(3, '0')}`;
-        const selectedLocation = mockClients.find(location => location.id === machine.locationId);
+        const machines = getTestMachines();
+        const clients = getTestClients();
+        const newId = isSaborTestCompany()
+            ? `VM-${String(101 + machines.length).padStart(3, '0')}`
+            : `VM-${String(machines.length + 1).padStart(3, '0')}`;
+        const selectedLocation = clients.find(location => location.id === machine.locationId);
         const newMachine: Machine = {
             id: newId,
             name: machine.name || "",
@@ -187,7 +251,7 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
             serialNumber: machine.serialNumber || "",
             autoOpenSessionEnabled: machine.autoOpenSessionEnabled ?? false,
         };
-        mockMachines.push(newMachine);
+        machines.push(newMachine);
         return newMachine;
     }
     const response = await authFetch(`${API_BASE_URL}/machines`, {
@@ -204,14 +268,16 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
 
 export async function updateMachine(id: string, machine: Partial<Machine>): Promise<void> {
     if (isTestEnv()) {
-        const idx = mockMachines.findIndex(m => m.id === id);
+        const machines = getTestMachines();
+        const clients = getTestClients();
+        const idx = machines.findIndex(m => m.id === id);
         if (idx > -1) {
-            const selectedLocation = mockClients.find(location => location.id === machine.locationId);
-            mockMachines[idx] = {
-                ...mockMachines[idx],
+            const selectedLocation = clients.find(location => location.id === machine.locationId);
+            machines[idx] = {
+                ...machines[idx],
                 ...machine,
-                clientName: selectedLocation?.name || machine.clientName || mockMachines[idx].clientName,
-                location: machine.location || selectedLocation?.name || mockMachines[idx].location
+                clientName: selectedLocation?.name || machine.clientName || machines[idx].clientName,
+                location: machine.location || selectedLocation?.name || machines[idx].location
             } as Machine;
         }
         return;
@@ -227,9 +293,37 @@ export async function updateMachine(id: string, machine: Partial<Machine>): Prom
     }
 }
 
+export interface TelemetryCredentialRotation {
+    machineId: string;
+    credential: string;
+    createdAt: string;
+    message: string;
+}
+
+export async function rotateTelemetryCredential(id: string): Promise<TelemetryCredentialRotation> {
+    const response = await authFetch(`${API_BASE_URL}/machines/${encodeURIComponent(id)}/telemetry-credential`, {
+        method: "POST",
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível gerar a credencial da máquina.");
+    }
+    return response.json();
+}
+
+export async function revokeTelemetryCredential(id: string): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/machines/${encodeURIComponent(id)}/telemetry-credential`, {
+        method: "DELETE",
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível revogar a credencial da máquina.");
+    }
+}
+
 export async function getLocations(): Promise<Location[]> {
     if (isTestEnv()) {
-        return mockClients;
+        return getTestClients();
     }
     const response = await authFetch(`${API_BASE_URL}/locations`);
     if (!response.ok) throw new Error("Erro ao buscar localizações da API");
@@ -238,6 +332,7 @@ export async function getLocations(): Promise<Location[]> {
 
 export async function createLocation(name: string): Promise<Location> {
     if (isTestEnv()) {
+        const clients = getTestClients();
         const location: Location = {
             id: `loc-${Date.now()}`,
             name,
@@ -246,7 +341,7 @@ export async function createLocation(name: string): Promise<Location> {
             totalSales30d: 0,
             createdAt: new Date().toISOString()
         };
-        mockClients.push(location);
+        clients.push(location);
         return location;
     }
     const response = await authFetch(`${API_BASE_URL}/locations`, {
@@ -263,11 +358,11 @@ export async function createLocation(name: string): Promise<Location> {
 
 export async function updateLocation(id: string, name: string): Promise<void> {
     if (isTestEnv()) {
-        const location = mockClients.find(item => item.id === id);
+        const location = getTestClients().find(item => item.id === id);
         if (location) {
             location.name = name;
             location.updatedAt = new Date().toISOString();
-            mockMachines
+            getTestMachines()
                 .filter(machine => machine.locationId === id)
                 .forEach(machine => {
                     machine.clientName = name;
@@ -289,13 +384,14 @@ export async function updateLocation(id: string, name: string): Promise<void> {
 
 export async function deleteLocation(id: string): Promise<void> {
     if (isTestEnv()) {
-        const hasMachines = mockMachines.some(machine => machine.locationId === id);
+        const hasMachines = getTestMachines().some(machine => machine.locationId === id);
         if (hasMachines) {
             throw new Error("Não é possível excluir uma localização com máquinas vinculadas.");
         }
-        const index = mockClients.findIndex(item => item.id === id);
+        const clients = getTestClients();
+        const index = clients.findIndex(item => item.id === id);
         if (index >= 0) {
-            mockClients.splice(index, 1);
+            clients.splice(index, 1);
         }
         return;
     }
@@ -314,7 +410,7 @@ export async function getClients(): Promise<Client[]> {
 
 export async function getProducts(): Promise<FullProduct[]> {
     if (isTestEnv()) {
-        return mockProducts;
+        return isSaborTestCompany() ? secondaryCompanyProducts : mockProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products`);
     if (!response.ok) throw new Error("Erro ao buscar produtos da API");
@@ -395,7 +491,7 @@ export async function deleteProduct(id: string): Promise<void> {
 
 export async function getTopProducts(): Promise<Product[]> {
     if (isTestEnv()) {
-        return mockTopProducts;
+        return isSaborTestCompany() ? secondaryCompanyTopProducts : mockTopProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/top`);
     if (!response.ok) throw new Error("Erro ao buscar mais vendidos da API");
@@ -404,11 +500,203 @@ export async function getTopProducts(): Promise<Product[]> {
 
 export async function getBottomProducts(): Promise<Product[]> {
     if (isTestEnv()) {
-        return mockBottomProducts;
+        return isSaborTestCompany() ? secondaryCompanyBottomProducts : mockBottomProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/bottom`);
     if (!response.ok) throw new Error("Erro ao buscar menos vendidos da API");
     return response.json();
+}
+
+export interface InventorySlot {
+    id: string;
+    machineId: string;
+    machineName?: string | null;
+    itemNumber: number;
+    productId: string;
+    productName?: string | null;
+    capacity: number;
+    currentStock: number;
+    lowStockThreshold: number;
+    isLowStock: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface InventoryMovementItem {
+    id: string;
+    machineId: string;
+    itemNumber: number;
+    productId: string;
+    productName?: string | null;
+    movementType: string;
+    quantityDelta: number;
+    quantityAfter: number;
+    reason: string;
+    userId?: string | null;
+    createdAt: string;
+}
+
+export interface OperationalAlertItem {
+    id: string;
+    machineId?: string | null;
+    machineName?: string | null;
+    clientName?: string | null;
+    sessionId?: string | null;
+    transactionId?: string | null;
+    type: string;
+    severity: "warning" | "critical";
+    status: "Active" | "Resolved";
+    title: string;
+    description: string;
+    occurredAt: string;
+    updatedAt: string;
+    resolvedAt?: string | null;
+    resolution?: string | null;
+    isRead: boolean;
+}
+
+export async function getOperationalAlerts(status: "Active" | "Resolved" | "All" = "Active"): Promise<OperationalAlertItem[]> {
+    if (isTestEnv()) return [];
+    const response = await authFetch(`${API_BASE_URL}/alerts?status=${status}&page=1&pageSize=200`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao buscar alertas."));
+    const result = await response.json();
+    return result.items;
+}
+
+export async function markOperationalAlertRead(id: string): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/alerts/${encodeURIComponent(id)}/read`, { method: "PUT" });
+    if (!response.ok) throw new Error(await readApiError(response, "Não foi possível marcar o alerta como lido."));
+}
+
+export interface SalesReportRow {
+    id: string;
+    soldAt: string;
+    machineId: string;
+    machineName: string;
+    clientName: string;
+    location: string;
+    itemNumber: number;
+    productName: string;
+    quantity: number;
+    grossAmount: number;
+    refundedAmount: number;
+    netRevenue: number;
+    applicationFee: number;
+    netAfterPlatformFee: number;
+    financialStatus: string;
+}
+
+export interface SalesReportResult {
+    from: string;
+    to: string;
+    total: number;
+    truncated: boolean;
+    items: SalesReportRow[];
+}
+
+export interface SalesReportFilters {
+    machineId?: string;
+    locationId?: string;
+    productId?: string;
+}
+
+function buildSalesReportQuery(from: string, to: string, filters: SalesReportFilters = {}): string {
+    const query = new URLSearchParams({ from, to });
+    if (filters.machineId) query.set("machineId", filters.machineId);
+    if (filters.locationId) query.set("locationId", filters.locationId);
+    if (filters.productId) query.set("productId", filters.productId);
+    return query.toString();
+}
+
+export async function getSalesReport(from: string, to: string, filters: SalesReportFilters = {}): Promise<SalesReportResult> {
+    if (isTestEnv()) return { from, to, total: 0, truncated: false, items: [] };
+    const response = await authFetch(`${API_BASE_URL}/reports/sales?${buildSalesReportQuery(from, to, filters)}`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao gerar relatório de vendas."));
+    return response.json();
+}
+
+export async function exportSalesReport(from: string, to: string, filters: SalesReportFilters = {}): Promise<Blob> {
+    if (isTestEnv()) return new Blob(["Id;Data UTC\n"], { type: "text/csv;charset=utf-8" });
+    const response = await authFetch(`${API_BASE_URL}/reports/sales/export?${buildSalesReportQuery(from, to, filters)}`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao exportar relatório de vendas."));
+    return response.blob();
+}
+
+export async function getInventorySlots(machineId?: string): Promise<InventorySlot[]> {
+    if (isTestEnv()) return [];
+    const query = machineId ? `?machineId=${encodeURIComponent(machineId)}` : "";
+    const response = await authFetch(`${API_BASE_URL}/inventory/slots${query}`);
+    if (!response.ok) throw new Error("Erro ao buscar compartimentos do estoque.");
+    return response.json();
+}
+
+export async function configureInventorySlot(
+    machineId: string,
+    itemNumber: number,
+    data: { productId: string; capacity: number; initialStock: number; lowStockThreshold: number }
+): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+    });
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao configurar compartimento."));
+}
+
+export async function restockInventorySlot(
+    machineId: string,
+    itemNumber: number,
+    quantity: number,
+    reason: string
+): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/restock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity, reason })
+    });
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao registrar reposição."));
+}
+
+export async function adjustInventorySlot(
+    machineId: string,
+    itemNumber: number,
+    quantityDelta: number,
+    reason: string
+): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/adjustment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantityDelta, reason })
+    });
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao ajustar estoque."));
+}
+
+export async function getInventoryMovements(
+    page = 1,
+    pageSize = 50,
+    filters: { machineId?: string; itemNumber?: number } = {}
+): Promise<InventoryMovementItem[]> {
+    if (isTestEnv()) return [];
+    const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (filters.machineId) query.set("machineId", filters.machineId);
+    if (filters.itemNumber !== undefined) query.set("itemNumber", String(filters.itemNumber));
+    const response = await authFetch(`${API_BASE_URL}/inventory/movements?${query}`);
+    if (!response.ok) throw new Error("Erro ao buscar histórico de estoque.");
+    const result = await response.json();
+    return result.items;
+}
+
+async function readApiError(response: Response, fallback: string): Promise<string> {
+    try {
+        const payload = await response.json();
+        return payload.message || fallback;
+    } catch {
+        return fallback;
+    }
 }
 
 export interface DashboardStats {
@@ -423,19 +711,23 @@ export interface DashboardStats {
 
 export async function getDashboardStats(): Promise<DashboardStats> {
     if (isTestEnv()) {
-        const totalRevenue = mockMachines.reduce((s, m) => s + m.revenue30d, 0);
-        const totalSales = mockMachines.reduce((s, m) => s + m.totalSales30d, 0);
-        const online = mockMachines.filter((m) => m.status === "online").length;
-        const warning = mockMachines.filter((m) => m.status === "warning").length;
-        const offline = mockMachines.filter((m) => m.status === "offline").length;
-
-        return {
-            totalRevenue30d: totalRevenue,
-            totalSales30d: totalSales,
-            onlineMachines: online,
-            warningMachines: warning,
-            offlineMachines: offline,
-            revenueHistory: [
+        const machines = getTestMachines();
+        const totalRevenue = machines.reduce((s, m) => s + m.revenue30d, 0);
+        const totalSales = machines.reduce((s, m) => s + m.totalSales30d, 0);
+        const online = machines.filter((m) => m.status === "online").length;
+        const warning = machines.filter((m) => m.status === "warning").length;
+        const offline = machines.filter((m) => m.status === "offline").length;
+        const revenueHistory = isSaborTestCompany()
+            ? [
+                { day: "Seg", revenue: 410 },
+                { day: "Ter", revenue: 455 },
+                { day: "Qua", revenue: 438 },
+                { day: "Qui", revenue: 492 },
+                { day: "Sex", revenue: 517 },
+                { day: "Sáb", revenue: 560 },
+                { day: "Dom", revenue: 448 },
+            ]
+            : [
                 { day: "Seg", revenue: 2840 },
                 { day: "Ter", revenue: 3120 },
                 { day: "Qua", revenue: 2960 },
@@ -443,8 +735,27 @@ export async function getDashboardStats(): Promise<DashboardStats> {
                 { day: "Sex", revenue: 3890 },
                 { day: "Sáb", revenue: 4210 },
                 { day: "Dom", revenue: 2180 }
-            ],
-            performanceHistory: mockHistoricalData(30)
+            ];
+        const performanceHistory = isSaborTestCompany()
+            ? Array.from({ length: 30 }, (_, index) => {
+                const date = new Date();
+                date.setDate(date.getDate() - (29 - index));
+                return {
+                    date: date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }),
+                    revenue: Math.round(totalRevenue / 30),
+                    products: Math.round(totalSales / 30),
+                };
+            })
+            : mockHistoricalData(30);
+
+        return {
+            totalRevenue30d: totalRevenue,
+            totalSales30d: totalSales,
+            onlineMachines: online,
+            warningMachines: warning,
+            offlineMachines: offline,
+            revenueHistory,
+            performanceHistory
         };
     }
     const response = await authFetch(`${API_BASE_URL}/dashboard/stats`);
@@ -458,6 +769,7 @@ export interface PaginatedUsers {
         name: string;
         email: string;
         role: string;
+        isActive: boolean;
         cpf?: string;
         companyId?: string | null;
         companyName?: string | null;
@@ -469,23 +781,29 @@ export interface PaginatedUsers {
     totalPages: number;
 }
 
+const mockUserRoleOverrides = new Map<string, string>();
+const mockUserActiveOverrides = new Map<string, boolean>();
+
 export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedUsers> {
     if (isTestEnv()) {
         const allMockUsers = Array.from({ length: 45 }, (_, i) => ({
             id: `usr-${i + 1}`,
             name: i === 0 ? "Admin Ivan" : i === 1 ? "João da Silva" : `Usuário Operador ${i + 1}`,
             email: i === 0 ? "dev.ivan@gmail.com" : i === 1 ? "joao@vendmachine.com.br" : `operador${i + 1}@vendmachine.com.br`,
-            role: i === 0 ? "Admin" : "Operator",
+            role: mockUserRoleOverrides.get(`usr-${i + 1}`) ?? (i === 0 ? "Admin" : "Operator"),
+            isActive: mockUserActiveOverrides.get(`usr-${i + 1}`) ?? true,
             cpf: i === 0 ? "123.456.789-00" : i === 1 ? "987.654.321-99" : `000.000.000-${String(i).padStart(2, '0')}`,
             companyId: i % 2 === 0 ? "11111111-1111-1111-1111-111111111111" : "55555555-5555-5555-5555-555555555555",
             companyName: i % 2 === 0 ? "ACME Machines LTDA" : "Sabor & Cia Vending",
             createdAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString()
         }));
 
-        let filtered = allMockUsers;
+        let filtered = isGlobalTestPlatformAdmin()
+            ? allMockUsers
+            : allMockUsers.filter(user => user.companyId === getTestCompanyId());
         if (searchTerm) {
             const search = searchTerm.toLowerCase();
-            filtered = allMockUsers.filter(u => u.name.toLowerCase().includes(search) || u.email.toLowerCase().includes(search));
+            filtered = filtered.filter(u => u.name.toLowerCase().includes(search) || u.email.toLowerCase().includes(search));
         }
 
         const totalItems = filtered.length;
@@ -507,12 +825,156 @@ export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): 
     return response.json();
 }
 
+export async function updateUserRole(userId: string, role: "Admin" | "PlatformAdmin" | "Operator"): Promise<void> {
+    if (isTestEnv()) {
+        if (!canModifyTestUser(userId) || (role === "PlatformAdmin" && getCurrentAuthUser()?.role !== "PlatformAdmin")) {
+            throw new Error("Usuário não encontrado no escopo permitido.");
+        }
+        mockUserRoleOverrides.set(userId, role);
+        return;
+    }
+
+    const response = await authFetch(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/role`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível alterar o papel do usuário.");
+    }
+}
+
+export async function updateUserActiveStatus(userId: string, isActive: boolean): Promise<void> {
+    if (isTestEnv()) {
+        if (!canModifyTestUser(userId)) {
+            throw new Error("Usuário não encontrado no escopo permitido.");
+        }
+        mockUserActiveOverrides.set(userId, isActive);
+        return;
+    }
+
+    const response = await authFetch(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/active`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive }),
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível atualizar o status do usuário.");
+    }
+}
+
+export async function createUserInvitation(email: string, role: "Admin" | "Operator"): Promise<{
+    invitationId: string;
+    invitationToken: string | null;
+    emailSent: boolean;
+    expiresAt: string;
+    rotated: boolean;
+}> {
+    if (isTestEnv()) {
+        return {
+            invitationId: crypto.randomUUID(),
+            invitationToken: `mock-invitation-${crypto.randomUUID()}`,
+            emailSent: false,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            rotated: false,
+        };
+    }
+
+    const response = await authFetch(`${API_BASE_URL}/users/invitations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, role }),
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível criar o convite.");
+    }
+    return response.json();
+}
+
+export async function revokeUserInvitation(invitationId: string): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await authFetch(`${API_BASE_URL}/users/invitations/${encodeURIComponent(invitationId)}/revoke`, {
+        method: "PUT",
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível revogar o convite.");
+    }
+}
+
+export async function createPasswordResetLink(userId: string): Promise<{ resetToken: string | null; emailSent: boolean; expiresAt: string }> {
+    if (isTestEnv()) {
+        return { resetToken: `mock-reset-${crypto.randomUUID()}`, emailSent: false, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
+    }
+    const response = await authFetch(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/password-reset`, { method: "POST" });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível gerar o link de recuperação.");
+    }
+    return response.json();
+}
+
+export async function resetPassword(resetToken: string, password: string): Promise<void> {
+    if (isTestEnv()) return;
+    const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resetToken, password }),
+    });
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || "Não foi possível redefinir a senha.");
+    }
+}
+
+export interface EmailVerificationResult {
+    emailVerified: boolean;
+    accountActive?: boolean;
+    message: string;
+}
+
+export async function verifyEmail(token: string): Promise<EmailVerificationResult> {
+    if (isTestEnv()) {
+        return { emailVerified: true, accountActive: false, message: "E-mail confirmado. A empresa ainda aguarda análise da plataforma." };
+    }
+    const response = await fetch(`${API_BASE_URL}/auth/verify-email`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Não foi possível confirmar o e-mail.");
+    return result;
+}
+
+export async function resendEmailVerification(email: string): Promise<{ message: string }> {
+    if (isTestEnv()) {
+        return { message: "Se houver um cadastro aguardando confirmação, enviaremos um novo link para o endereço informado." };
+    }
+    const response = await fetch(`${API_BASE_URL}/auth/resend-email-verification`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Não foi possível solicitar um novo link.");
+    return result;
+}
+
 export interface PaginatedCompanies {
     items: {
         id: string;
         name: string;
         cnpj?: string;
+        activationStatus: "Pending" | "Active" | "Rejected";
         createdBy: string;
+        createdByEmail: string;
         partners: string[];
         createdAt: string;
         enabledIntegrations?: string[];
@@ -530,7 +992,9 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 id: "11111111-1111-1111-1111-111111111111",
                 name: "ACME Machines LTDA",
                 cnpj: "12.345.678/0001-99",
+                activationStatus: "Active" as const,
                 createdBy: "Admin Ivan",
+                createdByEmail: "admin@acme.example",
                 partners: ["João da Silva", "Maria Santos"],
                 createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
                 enabledIntegrations: ["Mercado Pago"]
@@ -539,7 +1003,9 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 id: "55555555-5555-5555-5555-555555555555",
                 name: "Sabor & Cia Vending",
                 cnpj: "98.765.432/0001-00",
+                activationStatus: "Active" as const,
                 createdBy: "Eduardo Souza",
+                createdByEmail: "eduardo@example.com",
                 partners: ["Ana Julia", "Pedro Mendes"],
                 createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
                 enabledIntegrations: []
@@ -548,7 +1014,9 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
                 id: "99999999-9999-9999-9999-999999999999",
                 name: "Express Café Vending",
                 cnpj: "11.222.333/0001-44",
+                activationStatus: "Pending" as const,
                 createdBy: "Roberto Lima",
+                createdByEmail: "roberto@example.com",
                 partners: [],
                 createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
                 enabledIntegrations: []
@@ -577,6 +1045,26 @@ export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = "
 
     const response = await authFetch(`${API_BASE_URL}/companies?pageNumber=${pageNumber}&pageSize=${pageSize}&searchTerm=${encodeURIComponent(searchTerm)}`);
     if (!response.ok) throw new Error("Erro ao buscar empresas");
+    return response.json();
+}
+
+export async function updateCompanyActivation(
+    companyId: string,
+    status: "Active" | "Rejected",
+): Promise<{ companyId: string; activationStatus: string; affectedUsers: number }> {
+    if (isTestEnv()) {
+        return { companyId, activationStatus: status, affectedUsers: status === "Rejected" ? 1 : 0 };
+    }
+
+    const response = await authFetch(`${API_BASE_URL}/companies/${companyId}/activation`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || "Não foi possível atualizar a ativação da empresa.");
+    }
     return response.json();
 }
 
@@ -618,15 +1106,13 @@ export interface MercadoPagoIntegration {
 export interface PaymentTransaction {
     id: string;
     machineId: string;
-    machine?: Machine;
+    machine?: Pick<Machine, "id" | "name" | "serialNumber">;
     amount: number;
     applicationFee: number;
     status: "Pending" | "Approved" | "Rejected" | "Failed" | "Refunded";
     mercadoPagoPaymentId?: string;
     mercadoPagoStatus?: string;
     mercadoPagoStatusDetail?: string;
-    qrCode: string;
-    qrCodeBase64: string;
     createdAt: string;
     completedAt?: string;
 }
@@ -931,8 +1417,15 @@ export async function simulateWebhook(transactionId: string, approved: boolean, 
 
 export async function getTransactions(machineId?: string): Promise<PaymentTransaction[]> {
     if (isTestEnv()) {
-        const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
-        return (list as PaymentTransaction[]).filter((transaction) => !machineId || transaction.machineId === machineId);
+        const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]") as Array<PaymentTransaction & { qrCode?: string; qrCodeBase64?: string }>;
+        return list
+            .filter((transaction) => !machineId || transaction.machineId === machineId)
+            .map((transaction) => {
+                const summary = { ...transaction };
+                Reflect.deleteProperty(summary, "qrCode");
+                Reflect.deleteProperty(summary, "qrCodeBase64");
+                return summary;
+            });
     }
     const url = machineId ? `${API_BASE_URL}/payments/transactions?machineId=${machineId}` : `${API_BASE_URL}/payments/transactions`;
     const response = await authFetch(url);
@@ -967,6 +1460,142 @@ export interface PaginatedAdminLogs {
     pageSize: number;
     totalItems: number;
     totalPages: number;
+}
+
+export interface DeviceMessageInboxFailure {
+    id: string;
+    machineId: string;
+    serial: string;
+    messageId: number;
+    receivedAt: string;
+    attempts: number;
+    lastError?: string | null;
+}
+
+export interface DeviceMessageInboxSummary {
+    counts: Record<string, number>;
+    failures: DeviceMessageInboxFailure[];
+    page: number;
+    pageSize: number;
+    totalFailed: number;
+    totalPages: number;
+}
+
+export interface ReconciliationQueueItem {
+    id: string;
+    companyId: string;
+    companyName: string;
+    machineId: string;
+    machineName: string;
+    amount: number;
+    status: "Pending" | "ReconciliationRequired";
+    mercadoPagoStatus?: string | null;
+    mercadoPagoStatusDetail?: string | null;
+    mercadoPagoPaymentId?: string | null;
+    createdAt: string;
+    lastReconciliationAt?: string | null;
+}
+
+export interface ReconciliationQueueSummary {
+    counts: { pending: number; reconciliationRequired: number };
+    items: ReconciliationQueueItem[];
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export interface BackgroundWorkerHealth {
+    name: string;
+    status: "Healthy" | "Degraded" | "Stale" | "Stopped" | "NotStarted" | string;
+    startedAt?: string | null;
+    lastHeartbeatAt?: string | null;
+    lastSuccessAt?: string | null;
+    consecutiveFailures: number;
+    lastErrorType?: string | null;
+}
+
+export interface WorkerHealthQueueMetrics {
+    available: boolean;
+    machineConnections?: {
+        monitored: number;
+        online: number;
+        staleOnline: number;
+        onlineWithoutOwner: number;
+    };
+    deviceMessageInbox?: Record<string, number>;
+    oldestDeviceMessageAgeSeconds?: number | null;
+    telemetryCommandDispatches?: Record<string, number>;
+    oldestPendingTelemetryDispatchAgeSeconds?: number | null;
+    oldestProcessingTelemetryDispatchAgeSeconds?: number | null;
+    webhookInbox?: Record<string, number>;
+    oldestWebhookAgeSeconds?: number | null;
+    pendingPayments?: number;
+    oldestPendingPaymentAgeSeconds?: number | null;
+}
+
+export interface WorkerHealthSummary {
+    generatedAt: string;
+    workers: BackgroundWorkerHealth[];
+    hasUnhealthyWorkers: boolean;
+    queueMetrics: WorkerHealthQueueMetrics;
+}
+
+export async function getWorkerHealth(): Promise<WorkerHealthSummary> {
+    if (isTestEnv()) {
+        return {
+            generatedAt: new Date().toISOString(),
+            workers: [
+                { name: "telemetry-inbox", status: "Healthy", startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0 },
+                { name: "mercado-pago-webhook", status: "Healthy", startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0 },
+            ],
+            hasUnhealthyWorkers: false,
+            queueMetrics: {
+                available: true,
+                machineConnections: { monitored: 3, online: 2, staleOnline: 0, onlineWithoutOwner: 0 },
+                deviceMessageInbox: { Pending: 0, Retry: 0, Processing: 0, Failed: 0, Processed: 0 },
+                oldestDeviceMessageAgeSeconds: null,
+                telemetryCommandDispatches: { Pending: 0, Processing: 0, Failed: 0 },
+                oldestPendingTelemetryDispatchAgeSeconds: null,
+                oldestProcessingTelemetryDispatchAgeSeconds: null,
+                webhookInbox: { Pending: 0, Retry: 0, Processing: 0, Failed: 0, Processed: 0 },
+                oldestWebhookAgeSeconds: null,
+                pendingPayments: 0,
+                oldestPendingPaymentAgeSeconds: null,
+            },
+        };
+    }
+
+    const response = await authFetch(`${API_BASE_URL}/admin/worker-health`);
+    if (!response.ok) throw new Error("Não foi possível consultar a saúde operacional.");
+    return response.json();
+}
+
+export async function getReconciliationQueue(page: number = 1, pageSize: number = 20): Promise<ReconciliationQueueSummary> {
+    if (isTestEnv()) {
+        return { counts: { pending: 0, reconciliationRequired: 0 }, items: [], page, pageSize, totalItems: 0, totalPages: 0 };
+    }
+    const response = await authFetch(`${API_BASE_URL}/payments/admin/reconciliation-queue?page=${page}&pageSize=${pageSize}`);
+    if (!response.ok) throw new Error("Não foi possível consultar a fila de conciliação financeira.");
+    return response.json();
+}
+
+export async function getDeviceMessageInbox(page: number = 1, pageSize: number = 20): Promise<DeviceMessageInboxSummary> {
+    const response = await authFetch(`${API_BASE_URL}/admin/device-message-inbox?page=${page}&pageSize=${pageSize}`);
+    if (!response.ok) throw new Error("Não foi possível consultar a fila durável de telemetria.");
+    return response.json();
+}
+
+export async function retryDeviceMessageInbox(id: string): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/admin/device-message-inbox/${encodeURIComponent(id)}/retry`, {
+        method: "POST"
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error === "message_not_failed"
+            ? "Esta mensagem não está mais em falha. Atualize a lista."
+            : "Não foi possível reenfileirar a mensagem.");
+    }
 }
 
 export async function getAdminLogs(page: number = 1, pageSize: number = 20, search: string = ""): Promise<PaginatedAdminLogs> {

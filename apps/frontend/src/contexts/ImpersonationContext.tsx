@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 
-export const SUPER_ADMIN_EMAIL = "dev.ivan@gmail.com";
 const STORAGE_KEY = "impersonatedCompany";
 
 export interface ImpersonatedCompany {
@@ -21,7 +20,7 @@ const ImpersonationContext = createContext<ImpersonationContextType | undefined>
 
 export const ImpersonationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
-  const isSuperAdmin = user?.email === SUPER_ADMIN_EMAIL;
+  const isSuperAdmin = user?.role === "PlatformAdmin";
 
   const [impersonatedCompany, setImpersonatedCompanyState] = useState<ImpersonatedCompany | null>(() => {
     try {

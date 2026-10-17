@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { useState, useEffect } from "react";
-import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type Machine, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import type { Machine } from "@/data/mockData";
 import { getErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -252,7 +253,7 @@ export default function PaymentSimulator() {
                                     ) : (
                                         <form onSubmit={handleCreateCharge} className="space-y-4">
                                             <div className="space-y-1.5">
-                                                <label className="text-xs font-semibold text-slate-600">Selecione a Vending Machine</label>
+                                                <label className="text-xs font-semibold text-slate-600">Selecione a máquina</label>
                                                 <Select value={selectedMachineId} onValueChange={setSelectedMachineId}>
                                                     <SelectTrigger>
                                                         <SelectValue placeholder="Escolha a máquina..." />
@@ -344,7 +345,7 @@ export default function PaymentSimulator() {
                                             <div className="border p-4 bg-white rounded-lg shadow-sm">
                                                 <img 
                                                     src={`data:image/png;base64,${transaction.qrCodeBase64}`} 
-                                                    alt="Pix QR Code" 
+                                                    alt="Código QR do Pix"
                                                     className="w-44 h-44 select-none"
                                                 />
                                             </div>
