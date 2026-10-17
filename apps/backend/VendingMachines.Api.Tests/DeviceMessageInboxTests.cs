@@ -184,20 +184,20 @@ public sealed class DeviceMessageInboxTests
             return;
         }
 
-        var schema = $"inbox_capacity_{Guid.NewGuid():N}";
-        var adminBuilder = new NpgsqlConnectionStringBuilder(configuredConnection);
+        var databaseName = $"vendmachines_inbox_capacity_{Guid.NewGuid():N}";
+        var adminBuilder = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = "postgres" };
+        var databaseBuilder = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = databaseName };
         await using (var admin = new NpgsqlConnection(adminBuilder.ConnectionString))
         {
             await admin.OpenAsync();
-            await using var createSchema = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\"", admin);
-            await createSchema.ExecuteNonQueryAsync();
+            await using var createDatabase = new NpgsqlCommand($"CREATE DATABASE \"{databaseName}\"", admin);
+            await createDatabase.ExecuteNonQueryAsync();
         }
 
         try
         {
-            var scopedBuilder = new NpgsqlConnectionStringBuilder(configuredConnection) { SearchPath = schema };
             var options = new DbContextOptionsBuilder<AppDbContext>()
-                .UseNpgsql(scopedBuilder.ConnectionString)
+                .UseNpgsql(databaseBuilder.ConnectionString)
                 .Options;
             await using (var setup = new AppDbContext(options))
             {
@@ -249,8 +249,8 @@ public sealed class DeviceMessageInboxTests
         {
             await using var cleanup = new NpgsqlConnection(adminBuilder.ConnectionString);
             await cleanup.OpenAsync();
-            await using var dropSchema = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
-            await dropSchema.ExecuteNonQueryAsync();
+            await using var dropDatabase = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE)", cleanup);
+            await dropDatabase.ExecuteNonQueryAsync();
         }
     }
 
