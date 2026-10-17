@@ -33,6 +33,78 @@ public sealed class DatabaseDataServiceScopeTests
     }
 
     [Fact]
+    public async Task GetLocations_AggregatesClientRevenueFromDeliveredSalesAfterRefundsWithinCompany()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var companyA = new Company { Id = Guid.NewGuid(), Name = "Operadora A" };
+        var companyB = new Company { Id = Guid.NewGuid(), Name = "Operadora B" };
+        var hospital = new Location { Id = Guid.NewGuid(), CompanyId = companyA.Id, Name = "Hospital São Luiz" };
+        var clinic = new Location { Id = Guid.NewGuid(), CompanyId = companyA.Id, Name = "Clínica Central" };
+        var foreignLocation = new Location { Id = Guid.NewGuid(), CompanyId = companyB.Id, Name = "Cliente estrangeiro" };
+        var hospitalMachine = new Machine
+        {
+            Id = "HOSPITAL-1", Name = "Máquina Hospital", CompanyId = companyA.Id,
+            LocationId = hospital.Id, SerialNumber = "HOSPITAL-1"
+        };
+        var clinicMachine = new Machine
+        {
+            Id = "CLINIC-1", Name = "Máquina Clínica", CompanyId = companyA.Id,
+            LocationId = clinic.Id, SerialNumber = "CLINIC-1"
+        };
+        var foreignMachine = new Machine
+        {
+            Id = "FOREIGN-1", Name = "Máquina estrangeira", CompanyId = companyB.Id,
+            LocationId = foreignLocation.Id, SerialNumber = "FOREIGN-1"
+        };
+
+        scenario.Db.Companies.AddRange(companyA, companyB);
+        scenario.Db.Locations.AddRange(hospital, clinic, foreignLocation);
+        scenario.Db.Machines.AddRange(hospitalMachine, clinicMachine, foreignMachine);
+
+        var hospitalFirst = AddSale(hospitalMachine, companyA, grossAmount: 100m, refundedAmount: 20m, quantity: 2);
+        var hospitalSecond = AddSale(hospitalMachine, companyA, grossAmount: 50m, refundedAmount: 50m, quantity: 1);
+        var clinicSale = AddSale(clinicMachine, companyA, grossAmount: 150m, refundedAmount: 10m, quantity: 1);
+        var foreignSale = AddSale(foreignMachine, companyB, grossAmount: 900m, refundedAmount: 0m, quantity: 9);
+
+        scenario.Db.MachineSessions.AddRange(hospitalFirst.Session, hospitalSecond.Session, clinicSale.Session, foreignSale.Session);
+        scenario.Db.PaymentTransactions.AddRange(hospitalFirst.Transaction, hospitalSecond.Transaction, clinicSale.Transaction, foreignSale.Transaction);
+        scenario.Db.SaleRecords.AddRange(hospitalFirst.Record, hospitalSecond.Record, clinicSale.Record, foreignSale.Record);
+        await scenario.Db.SaveChangesAsync();
+
+        var result = new DatabaseDataService(scenario.Db).GetLocations(companyA.Id).ToDictionary(location => location.Name);
+
+        Assert.Equal(80m, result["Hospital São Luiz"].Revenue30d);
+        Assert.Equal(3, result["Hospital São Luiz"].TotalSales30d);
+        Assert.Equal(1, result["Hospital São Luiz"].MachineCount);
+        Assert.Equal(140m, result["Clínica Central"].Revenue30d);
+        Assert.DoesNotContain("Cliente estrangeiro", result.Keys);
+
+        static (MachineSession Session, PaymentTransaction Transaction, SaleRecord Record) AddSale(
+            Machine machine, Company company, decimal grossAmount, decimal refundedAmount, int quantity)
+        {
+            var transaction = new PaymentTransaction
+            {
+                Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+                Amount = grossAmount, Status = "Approved"
+            };
+            var session = new MachineSession
+            {
+                Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+                TransactionId = transaction.Id, State = MachineSessionStates.Completed,
+                ClosedAt = DateTime.UtcNow.AddMinutes(-1)
+            };
+            var record = new SaleRecord
+            {
+                CompanyId = company.Id, MachineId = machine.Id, SessionId = session.Id,
+                TransactionId = transaction.Id, ItemNumber = 1, Quantity = quantity,
+                GrossAmount = grossAmount, RefundedAmount = refundedAmount,
+                SoldAt = DateTime.UtcNow.AddDays(-1)
+            };
+            return (session, transaction, record);
+        }
+    }
+
+    [Fact]
     public async Task GetMachinesAndLocationsIgnoreOperationalRowsAssignedToAnotherCompany()
     {
         await using var scenario = await CreateScenarioAsync();

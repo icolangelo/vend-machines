@@ -49,6 +49,16 @@ test("PlatformAdmin vê as ações administrativas na navegação", async ({ pag
   await expect(page.getByRole("tab", { name: "Telemetria" })).toBeVisible();
 });
 
+test("Painel mostra o faturamento dos clientes no período de trinta dias", async ({ page }) => {
+  await signIn(page, "admin@acme.example", "admin123");
+
+  const ranking = page.getByRole("region", { name: "Faturamento por cliente" });
+  await expect(ranking).toBeVisible();
+  await expect(ranking.getByText("Após estornos e antes da taxa da plataforma")).toBeVisible();
+  await expect(ranking.getByText("ACME - Shopping", { exact: true })).toBeVisible();
+  await expect(ranking.getByText("30 dias", { exact: true })).toBeVisible();
+});
+
 test("Operator navega no celular sem ações administrativas nem rolagem horizontal", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await signIn(page, "operador@example.com", "teste123");
