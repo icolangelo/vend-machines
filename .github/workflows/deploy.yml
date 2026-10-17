@@ -1,6 +1,12 @@
 name: Backend CI & Immutable Image
 
 on:
+  pull_request:
+    branches: ["develop"]
+    paths:
+      - "apps/backend/**"
+      - ".github/workflows/deploy.yml"
+      - "tools/Deployment/Test-Release-Workflow-Gates.sh"
   push:
     branches: ["develop", "main", "master"]
     paths:
@@ -11,15 +17,14 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/vend-machines-backend
 
 jobs:
-  build-and-push:
-    name: Test and publish immutable candidate
+  validate:
+    name: Validate workflow and backend without publishing
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -35,6 +40,29 @@ jobs:
 
       - name: Run backend tests
         run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend container without publishing
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/backend/VendingMachines.Api
+          file: ./apps/backend/VendingMachines.Api/Dockerfile
+          push: false
+          tags: vend-machines-backend:verify
+
+  build-and-push:
+    name: Publish immutable image candidate
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
