@@ -12,6 +12,55 @@ public sealed class PostgresMigrationChainTests
     private const string BootstrapMigration = "20260927163720_BootstrapPlatformAdmin";
 
     [Fact]
+    public async Task ProductionInitializerFailsClosedWithoutApplyingPendingMigrations()
+    {
+        var configuredConnection = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(configuredConnection)) return;
+
+        var databaseName = $"vendmachines_no_startup_migration_{Guid.NewGuid():N}";
+        var adminConnection = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = "postgres" };
+        var databaseConnection = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = databaseName };
+
+        await using (var admin = new NpgsqlConnection(adminConnection.ConnectionString))
+        {
+            await admin.OpenAsync();
+            await using var createDatabase = new NpgsqlCommand($"CREATE DATABASE \"{databaseName}\"", admin);
+            await createDatabase.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(databaseConnection.ConnectionString)
+                .Options;
+
+            await using var db = new AppDbContext(options);
+            var migrations = db.Database.GetMigrations().ToArray();
+            Assert.NotEmpty(migrations);
+            await db.GetService<IMigrator>().MigrateAsync(migrations[0]);
+
+            var pendingBeforeInitialization = (await db.Database.GetPendingMigrationsAsync()).ToArray();
+            Assert.NotEmpty(pendingBeforeInitialization);
+
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => DbInitializer.Initialize(db, seedDemoData: false));
+
+            Assert.Contains(
+                $"Há {pendingBeforeInitialization.Length} migração(ões) pendente(s)",
+                exception.Message,
+                StringComparison.Ordinal);
+            Assert.Equal(pendingBeforeInitialization, await db.Database.GetPendingMigrationsAsync());
+        }
+        finally
+        {
+            await using var admin = new NpgsqlConnection(adminConnection.ConnectionString);
+            await admin.OpenAsync();
+            await using var dropDatabase = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE)", admin);
+            await dropDatabase.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Fact]
     public async Task FullMigrationChainAppliesWhenReservedBootstrapAccountExists()
     {
         var configuredConnection = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
