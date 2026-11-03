@@ -2837,3 +2837,8 @@ No snapshot atual, `Test-PostgresReleaseMigrationSegments.ps1 -SegmentsDirectory
 ### Risco de migrations e rehearsal da release revalidados (03/11/2026)
 
 No snapshot atual, `check_migration_risk.py` aprovou 46 migrations e a suíte dos validadores de risco/espera por lock passou **22/22**. `Test-Release-Workflow-Gates.sh` passou **17/17**. `Test-PostgresMigrationRehearsal.ps1` aplicou os sete segmentos no fixture sintético em 27,39 s e repetiu a cadeia em schema já atualizado em 27,41 s; validou índices concorrentes, repetição idempotente e rejeitou índice inválido, checksum alterado e migration esperada divergente. O container de ensaio foi removido; apenas o `pgvector-db` preexistente permaneceu ativo. Os tempos são de schema sintético vazio, não estimam locks, I/O, WAL ou duração do banco comercial.
+
+
+### Revarredura atual do histórico e conteúdo local (03/11/2026)
+
+Gitleaks na imagem fixada examinou todas as refs locais disponíveis do snapshot (`--log-opts=--all`): **120 commits / 21,92 MB**, com **seis achados históricos** em saída redigida. O scan separado `--no-git` cobriu **12,18 MB** da árvore atual sem achados. O resultado atual confirma que o conteúdo presente está limpo no escopo varrido, mas os valores históricos seguem comprometidos até rotação pelo titular; refs públicas não buscadas, PRs, forks, caches e clones externos não estão cobertos. Nenhuma credencial ou referência foi alterada.
