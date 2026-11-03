@@ -11,13 +11,13 @@ Este preflight é somente leitura. Ele não envia comandos MDB, não cria sessõ
 
 ## Verificação somente leitura
 
-Execute de uma máquina autorizada a consultar a candidata e a API antiga. O token precisa pertencer a um administrador de plataforma. Sem variável de ambiente, o script solicita o token com entrada oculta; não o coloque no comando, em arquivo ou em histórico de shell. `--expected-commit` é obrigatório e deve receber o SHA Git completo, com 40 caracteres hexadecimais; o script compara o valor inteiro informado pelos endpoints de readiness. Ajuste o mínimo para a quantidade de sockets que a equipe espera observar:
+Execute de uma máquina autorizada a consultar a candidata e a API antiga. O token precisa pertencer a um administrador de plataforma. Sem variável de ambiente, o script solicita o token com entrada oculta; não o coloque no comando, em arquivo ou em histórico de shell. `--expected-commit` é obrigatório e deve receber o SHA Git completo, com 40 caracteres hexadecimais; o script compara o valor inteiro informado pelos endpoints de readiness. `--minimum-legacy-connections` também é obrigatório: informe a quantidade esperada de sockets conforme a fonte operacional da frota; não use `1` por conveniência quando houver mais máquinas conectadas:
 
 ```powershell
 python tools/Deployment/Validate-TelemetryOverlapReadiness.py `
   --api-base-url 'http://candidate-api:8080' `
   --expected-commit '<sha da candidata>' `
-  --minimum-legacy-connections 1
+  --minimum-legacy-connections '<quantidade esperada de sockets legados>'
 ```
 
 O verificador consulta `/health`, `/health/ready`, `/health/deploy-ready`, `/api/admin/legacy-machine-connections` e `/api/admin/worker-health`. Não segue redirects. Só retorna sucesso quando:
