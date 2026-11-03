@@ -197,6 +197,112 @@ public sealed class LegacyTelemetryRequestRelayTests
     }
 
     [Fact]
+    public async Task LegacyCancellationRetryAfterOwnerCommitAndLostResponseDoesNotForwardAgain()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        const string machineId = "MACHINE-LEGACY-CANCEL-TIMEOUT";
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa legada" });
+        db.Machines.Add(new Machine
+        {
+            Id = machineId,
+            Name = "Máquina legada",
+            SerialNumber = "SERIAL-LEGACY-CANCEL-TIMEOUT",
+            NormalizedSerialNumber = "SERIAL-LEGACY-CANCEL-TIMEOUT",
+            CompanyId = companyId
+        });
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = machineId,
+            CompanyId = companyId,
+            IsOnline = true,
+            ConnectionId = "legacy-socket",
+            LastSeenAt = DateTime.UtcNow
+        });
+        db.MachineSessions.Add(new MachineSession
+        {
+            Id = sessionId,
+            MachineId = machineId,
+            CompanyId = companyId,
+            State = MachineSessionStates.AwaitingSelection
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new CaptureHttpHandler
+        {
+            StatusCodeToReturn = HttpStatusCode.GatewayTimeout,
+            ResponseContent = "{\"code\":\"legacy_owner_outcome_unknown\"}",
+            OnSendAsync = async cancellationToken =>
+            {
+                // Model the legacy API committing its state and physical command before
+                // the response is lost between the owner and the candidate.
+                var session = await db.MachineSessions.SingleAsync(item => item.Id == sessionId, cancellationToken);
+                session.State = MachineSessionStates.ClosingWithoutSelection;
+                db.TelemetryCommands.Add(new TelemetryCommand
+                {
+                    CompanyId = companyId,
+                    MachineId = machineId,
+                    SessionId = sessionId,
+                    UserId = userId,
+                    Command = "FECHAR_SESSAO",
+                    Status = "acknowledged"
+                });
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        };
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+        var controller = new TelemetryController(
+            db,
+            orchestrator: null!,
+            connections: null!,
+            panelHub: null!,
+            tickets: null!,
+            mdbStatusRequests: null!,
+            mdbOptions: Options.Create(new MdbStatusOptions()),
+            commandSender: null,
+            scopeFactory: null,
+            legacyTelemetryRelay: relay);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Method = "POST";
+        httpContext.Request.Headers.Authorization = "Bearer original-user-token";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("company_id", companyId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.Role, AppRoles.Admin)
+        ], "test"));
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+
+        var firstAttempt = await controller.CancelSession(
+            sessionId,
+            new CancelSessionRequest { Reason = "user_cancelled" },
+            CancellationToken.None);
+        var uncertain = Assert.IsType<ContentResult>(firstAttempt);
+        Assert.Equal(StatusCodes.Status504GatewayTimeout, uncertain.StatusCode);
+        Assert.Equal(1, handler.RequestCount);
+
+        var retry = await controller.CancelSession(
+            sessionId,
+            new CancelSessionRequest { Reason = "user_cancelled" },
+            CancellationToken.None);
+
+        Assert.IsType<AcceptedResult>(retry);
+        Assert.Equal(1, handler.RequestCount);
+        var closeCommands = await db.TelemetryCommands
+            .CountAsync(command => command.SessionId == sessionId && command.Command == "FECHAR_SESSAO");
+        Assert.Equal(1, closeCommands);
+    }
+
+    [Fact]
     public async Task ManualCommandForLegacySocketIsForwardedOnceWithOriginalBearerAndRequestId()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -433,6 +539,7 @@ public sealed class LegacyTelemetryRequestRelayTests
         public System.Net.Http.Headers.AuthenticationHeaderValue? Authorization { get; private set; }
         public string? Body { get; private set; }
         public Dictionary<string, string> Headers { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Func<CancellationToken, Task>? OnSendAsync { get; init; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -448,6 +555,7 @@ public sealed class LegacyTelemetryRequestRelayTests
                     Headers[header.Key] = string.Join(",", header.Value);
             }
             Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (OnSendAsync is not null) await OnSendAsync(cancellationToken);
             return new HttpResponseMessage(StatusCodeToReturn)
             {
                 Content = new StringContent(ResponseContent, System.Text.Encoding.UTF8, "application/json")
