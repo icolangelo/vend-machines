@@ -91,7 +91,8 @@ const machineFormSchema = z.object({
     autoOpenSessionEnabled: z.boolean().default(false),
 });
 
-type MachineFormValues = z.infer<typeof machineFormSchema>;
+type MachineFormInput = z.input<typeof machineFormSchema>;
+type MachineFormValues = z.output<typeof machineFormSchema>;
 
 export default function MachineFormPage() {
     const navigate = useNavigate();
@@ -102,7 +103,7 @@ export default function MachineFormPage() {
     const [mdbConnection, setMdbConnection] = useState<TelemetryConnection | null>(null);
     const [mdbBusy, setMdbBusy] = useState(false);
 
-    const form = useForm<MachineFormValues>({
+    const form = useForm<MachineFormInput, undefined, MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
         defaultValues: {
             useGsm: false,
