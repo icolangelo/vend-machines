@@ -13,12 +13,10 @@ import {
     CreditCard,
     Blocks,
     Eye,
-    Users,
-    Warehouse,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { useAuth } from "@/contexts/useAuth";
-import { useImpersonation } from "@/contexts/useImpersonation";
+import { useAuth } from "@/contexts/AuthContext";
+import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { CompanySwitcherModal } from "@/components/CompanySwitcherModal";
 import {
     Sidebar,
@@ -36,17 +34,15 @@ import {
 import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
 
 const mainItems = [
-    { title: "Painel", url: "/", icon: LayoutDashboard },
-    { title: "Máquinas", url: "/machines", icon: Box },
-    { title: "Localizações", url: "/locations", icon: MapPin },
+    { title: "Dashboard", url: "/", icon: LayoutDashboard },
+    { title: "Maquinas", url: "/machines", icon: Box },
+    { title: "Localizacoes", url: "/locations", icon: MapPin },
     { title: "Produtos", url: "/products", icon: Package },
-    { title: "Estoque", url: "/inventory", icon: Warehouse },
-    { title: "Pagamentos", url: "/payments", icon: CreditCard },
-    { title: "Relatórios", url: "/reports", icon: BarChart3 },
+    { title: "Relatorios", url: "/reports", icon: BarChart3 },
 ];
 
 export function AppSidebar() {
-    const { state, isMobile, setOpenMobile } = useSidebar();
+    const state = useSidebar().state;
     const collapsed = state === "collapsed";
     const { user } = useAuth();
     const { isSuperAdmin, impersonatedCompany, effectiveCompanyName } = useImpersonation();
@@ -74,16 +70,10 @@ export function AppSidebar() {
     const systemItems = [
         { title: "Alertas", url: "/alerts", icon: Bell },
         { title: "Telemetria (MDB)", url: "/telemetry", icon: Terminal },
-        ...((import.meta.env.DEV || import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true") &&
-            (user?.role === "Admin" || user?.role === "PlatformAdmin")
-            ? [{ title: "Simulador Pix", url: "/payment-simulator", icon: QrCode }]
-            : []),
+        { title: "Simulador Pix", url: "/payment-simulator", icon: QrCode },
         ...(isSuperAdmin ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
-        ...((user?.role === "Admin" || user?.role === "PlatformAdmin")
-            ? [{ title: "Integrações", url: "/integrations", icon: Blocks }]
-            : []),
-        ...(user?.role === "Admin" ? [{ title: "Usuários", url: "/users", icon: Users }] : []),
-        { title: "Configurações", url: "/settings", icon: Settings },
+        { title: "Integracoes", url: "/integrations", icon: Blocks },
+        { title: "Configuracoes", url: "/settings", icon: Settings },
     ];
 
     return (
@@ -147,7 +137,6 @@ export function AppSidebar() {
                                         <NavLink
                                             to={item.url}
                                             end={item.url === "/"}
-                                            onClick={() => { if (isMobile) setOpenMobile(false); }}
                                             className="text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors duration-150"
                                             activeClassName="text-sidebar-primary-foreground bg-sidebar-accent border-l-2 border-sidebar-primary"
                                         >
@@ -172,7 +161,6 @@ export function AppSidebar() {
                                     <SidebarMenuButton asChild>
                                         <NavLink
                                             to={item.url}
-                                            onClick={() => { if (isMobile) setOpenMobile(false); }}
                                             className="text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors duration-150"
                                             activeClassName="text-sidebar-primary-foreground bg-sidebar-accent border-l-2 border-sidebar-primary"
                                         >

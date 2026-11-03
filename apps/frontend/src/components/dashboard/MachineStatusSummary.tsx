@@ -1,23 +1,17 @@
 import { type Machine } from "@/data/mockData";
-import { CheckCircle2, AlertTriangle, XCircle, Package, TrendingDown } from "lucide-react";
+import { CheckCircle2, AlertTriangle, XCircle, Package } from "lucide-react";
 
 export function MachineStatusSummary({ machines }: { machines: Machine[] }) {
     const online = machines.filter((m) => m.status === "online").length;
     const warning = machines.filter((m) => m.status === "warning").length;
     const offline = machines.filter((m) => m.status === "offline").length;
-    const unmonitored = machines.filter((m) => m.status === "unmonitored").length;
-    const inactive = machines.filter((m) => m.status === "inactive").length;
-    const lowStock = machines.filter((m) => m.lowStock === true).length;
-    const belowSalesTarget = machines.filter((m) => m.belowSalesTarget === true).length;
+    const lowStock = machines.filter((m) => m.stockLevel < 25 && m.stockLevel > 0).length;
 
     const items = [
-        { label: "Conectadas", count: online, icon: CheckCircle2, colorClass: "text-success" },
+        { label: "Online", count: online, icon: CheckCircle2, colorClass: "text-success" },
         { label: "Atenção", count: warning, icon: AlertTriangle, colorClass: "text-warning" },
-        { label: "Desconectadas", count: offline, icon: XCircle, colorClass: "text-destructive" },
-        { label: "Sem monitoramento", count: unmonitored, icon: AlertTriangle, colorClass: "text-muted-foreground" },
-        { label: "Inativas", count: inactive, icon: XCircle, colorClass: "text-muted-foreground" },
+        { label: "Offline", count: offline, icon: XCircle, colorClass: "text-destructive" },
         { label: "Estoque Baixo", count: lowStock, icon: Package, colorClass: "text-warning" },
-        { label: "Abaixo da meta", count: belowSalesTarget, icon: TrendingDown, colorClass: "text-destructive" },
     ];
 
     return (

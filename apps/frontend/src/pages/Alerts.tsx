@@ -1,127 +1,158 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Bell, Search, AlertTriangle, AlertCircle, Calendar, Users, RefreshCw, Package } from "lucide-react";
+import { Bell, Search, AlertTriangle, AlertCircle, Calendar, Users, RefreshCw, CheckCheck } from "lucide-react";
 import { type Machine } from "@/data/mockData";
-import { getMachines, getOperationalAlerts, getOperationalAlertSummary, markOperationalAlertRead, resolveIncompleteSessionClosure, type OperationalAlertItem } from "@/lib/api";
-import type { OperationalAlertFilter } from "@/lib/operationalAlertFilters";
+import { getMachines } from "@/lib/api";
 import { StatusIndicator } from "@/components/dashboard/StatusIndicator";
 import { toast } from "sonner";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "@/contexts/useAuth";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 
-const ALERTS_PAGE_SIZE = 50;
+interface AlertNotification {
+    id: string;
+    machineId: string;
+    machineName: string;
+    clientName: string;
+    status: "warning" | "offline";
+    date: string;
+    reason: string;
+    isRead: boolean;
+}
 
 export default function Alerts() {
-    const navigate = useNavigate();
-    const { user } = useAuth();
     const [machines, setMachines] = useState<Machine[]>([]);
     const [loading, setLoading] = useState(true);
-    const [hasLoadedMachines, setHasLoadedMachines] = useState(false);
-    const [hasLoadedAlerts, setHasLoadedAlerts] = useState(false);
-    const [hasLoadedSummary, setHasLoadedSummary] = useState(false);
     const [search, setSearch] = useState("");
-    const [statusFilter, setStatusFilter] = useState<OperationalAlertFilter>("all");
-    const [page, setPage] = useState(1);
-    const [loadedPage, setLoadedPage] = useState(1);
-    const [totalAlerts, setTotalAlerts] = useState(0);
-    const [alerts, setAlerts] = useState<OperationalAlertItem[]>([]);
-    const [closureAlert, setClosureAlert] = useState<OperationalAlertItem | null>(null);
-    const [closureEvidence, setClosureEvidence] = useState("");
-    const [closureConfirmed, setClosureConfirmed] = useState(false);
-    const [resolvingClosure, setResolvingClosure] = useState(false);
-    const [alertSummary, setAlertSummary] = useState<{ disconnectedMachines: number; otherActiveAlerts: number } | null>(null);
-    const [loadError, setLoadError] = useState(false);
-    const [alertsLoadError, setAlertsLoadError] = useState(false);
-    const requestVersion = useRef(0);
+    const [statusFilter, setStatusFilter] = useState<string>("all");
+    const [alerts, setAlerts] = useState<AlertNotification[]>([]);
 
-    const fetchAlertsData = useCallback(async () => {
-        const currentRequest = ++requestVersion.current;
+    const fetchAlertsData = async () => {
         setLoading(true);
-        setLoadError(false);
-        setAlertsLoadError(false);
-        const requestedStatus = statusFilter === "resolved" ? "Resolved" : statusFilter === "all" ? "All" : "Active";
-        const requestedType = statusFilter === "offline" ? "TelemetryOffline" : statusFilter === "warning" ? "OtherActive" : "All";
-        const results = await Promise.allSettled([
-            getMachines(),
-            getOperationalAlerts(requestedStatus, page, ALERTS_PAGE_SIZE, requestedType, search),
-            getOperationalAlertSummary(),
-        ]);
-        if (currentRequest !== requestVersion.current) return;
+        try {
+            const machinesData = await getMachines();
+            setMachines(machinesData);
 
-        let hasFailure = false;
-        const [machinesResult, alertsResult, summaryResult] = results;
-        if (machinesResult.status === "fulfilled") {
-            setMachines(machinesResult.value);
-            setHasLoadedMachines(true);
-        } else {
-            hasFailure = true;
-            console.error("Erro ao buscar máquinas para os alertas:", machinesResult.reason);
+            // Generate active alerts from current warning/offline machines
+            const activeAlerts: AlertNotification[] = machinesData
+                .filter(m => m.status === "offline" || m.status === "warning")
+                .map((m, idx) => {
+                    let reason = "";
+                    if (m.status === "offline") {
+                        reason = "Sem sinal de comunicação com o servidor há mais de 24 horas.";
+                    } else if (m.stockLevel <= 20) {
+                        reason = `Nível de estoque crítico: apenas ${m.stockLevel}% da capacidade preenchida.`;
+                    } else {
+                        reason = `Estoque abaixo do limite preventivo configurado: ${m.stockLevel}%.`;
+                    }
+
+                    // Format realistic recent date based on sync info or last hours
+                    let alertDate = "Hoje, há pouco";
+                    if (m.lastSync.includes("atrás")) {
+                        alertDate = `Hoje, há ${m.lastSync}`;
+                    } else if (m.lastSync.includes("dias")) {
+                        alertDate = `Há ${m.lastSync}`;
+                    }
+
+                    return {
+                        id: `alert-active-${m.id}-${idx}`,
+                        machineId: m.id,
+                        machineName: m.name,
+                        clientName: m.clientName,
+                        status: m.status as "warning" | "offline",
+                        date: alertDate,
+                        reason: reason,
+                        isRead: false
+                    };
+                });
+
+            // Mocked historical alert logs to enrich the list and show history
+            const historicalAlerts: AlertNotification[] = [
+                {
+                    id: "alert-hist-1",
+                    machineId: "VM-003",
+                    machineName: "UTI C1",
+                    clientName: "Hospital São Luiz",
+                    status: "warning",
+                    date: "Ontem às 18:45",
+                    reason: "Flutuação térmica incomum no refrigerador interno (temperatura registrada: 7.2°C).",
+                    isRead: true
+                },
+                {
+                    id: "alert-hist-2",
+                    machineId: "VM-004",
+                    machineName: "Recepção D1",
+                    clientName: "Faculdade Anhanguera",
+                    status: "warning",
+                    date: "Ontem às 10:12",
+                    reason: "Validador de moedas MDB relatou bloqueio físico temporário. Resolvido automaticamente.",
+                    isRead: true
+                },
+                {
+                    id: "alert-hist-3",
+                    machineId: "VM-011",
+                    machineName: "Escritório K1",
+                    clientName: "WeWork Faria Lima",
+                    status: "offline",
+                    date: "02 Jun 2026, 14:00",
+                    reason: "Falha de autenticação de token de rede Wi-Fi. Equipamento reestabelecido após sincronia manual.",
+                    isRead: true
+                },
+                {
+                    id: "alert-hist-4",
+                    machineId: "VM-008",
+                    machineName: "Terminal H1",
+                    clientName: "Rodoviária Tietê",
+                    status: "warning",
+                    date: "01 Jun 2026, 23:30",
+                    reason: "Tentativa de abertura de porta sem autorização externa detectada. Alerta de segurança gerado.",
+                    isRead: true
+                }
+            ];
+
+            // Combine active alerts first, then historical logs
+            setAlerts([...activeAlerts, ...historicalAlerts]);
+        } catch (error) {
+            console.error("Erro ao buscar dados de alertas:", error);
+            toast.error("Falha ao carregar a lista de alertas.");
+        } finally {
+            setLoading(false);
         }
-        if (alertsResult.status === "fulfilled") {
-            setAlerts(alertsResult.value.items);
-            setLoadedPage(alertsResult.value.page);
-            setTotalAlerts(alertsResult.value.total);
-            setHasLoadedAlerts(true);
-        } else {
-            hasFailure = true;
-            setAlertsLoadError(true);
-            console.error("Erro ao buscar a lista de alertas:", alertsResult.reason);
-        }
-        if (summaryResult.status === "fulfilled") {
-            setAlertSummary(summaryResult.value);
-            setHasLoadedSummary(true);
-        } else {
-            hasFailure = true;
-            console.error("Erro ao buscar o resumo de alertas:", summaryResult.reason);
-        }
-        setLoadError(hasFailure);
-        if (hasFailure) toast.error("Alguns dados de alertas não puderam ser atualizados.");
-        setLoading(false);
-    }, [page, search, statusFilter]);
+    };
 
     useEffect(() => {
-        void fetchAlertsData();
-        return () => { requestVersion.current += 1; };
-    }, [fetchAlertsData]);
+        fetchAlertsData();
+    }, []);
 
-    const handleMarkRead = async (alert: OperationalAlertItem) => {
-        try {
-            await markOperationalAlertRead(alert.id);
-            setAlerts(current => current.map(item => item.id === alert.id ? { ...item, isRead: true } : item));
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o alerta.");
-        }
+    // Mark all as read
+    const handleMarkAllRead = () => {
+        setAlerts(prev => prev.map(a => ({ ...a, isRead: true })));
+        toast.success("Todos os alertas foram marcados como lidos.");
     };
 
-    const handleResolveIncompleteClosure = async () => {
-        if (!closureAlert?.sessionId) return;
-        setResolvingClosure(true);
-        try {
-            await resolveIncompleteSessionClosure(closureAlert.sessionId, closureEvidence.trim());
-            toast.success("Encerramento confirmado e registrado na auditoria.");
-            setClosureAlert(null);
-            setClosureEvidence("");
-            setClosureConfirmed(false);
-            await fetchAlertsData();
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Não foi possível confirmar o encerramento da sessão.");
-        } finally {
-            setResolvingClosure(false);
-        }
+    // Mark single alert as read/unread
+    const toggleReadStatus = (id: string) => {
+        setAlerts(prev => prev.map(a => a.id === id ? { ...a, isRead: !a.isRead } : a));
     };
 
-    const filteredAlerts = alerts;
-    const summaryValue = (value: number | undefined, isLoaded: boolean) => isLoaded
-        ? (value ?? 0).toLocaleString("pt-BR")
-        : loading ? "…" : "Indisponível";
-    const hasLoadedAnyData = hasLoadedMachines || hasLoadedAlerts || hasLoadedSummary;
+    // Filter alerts based on search and status selection
+    const filteredAlerts = useMemo(() => {
+        return alerts.filter(alert => {
+            const matchesSearch = 
+                alert.machineName.toLowerCase().includes(search.toLowerCase()) ||
+                alert.clientName.toLowerCase().includes(search.toLowerCase()) ||
+                alert.machineId.toLowerCase().includes(search.toLowerCase()) ||
+                alert.reason.toLowerCase().includes(search.toLowerCase());
+
+            const matchesStatus = 
+                statusFilter === "all" || 
+                (statusFilter === "warning" && alert.status === "warning") ||
+                (statusFilter === "offline" && alert.status === "offline");
+
+            return matchesSearch && matchesStatus;
+        });
+    }, [alerts, search, statusFilter]);
 
     return (
         <SidebarProvider>
@@ -143,64 +174,63 @@ export default function Alerts() {
                         
                         {/* Summary Cards */}
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
                                 <div className="h-10 w-10 rounded-full bg-red-100 dark:bg-red-950/30 flex items-center justify-center text-red-600">
                                     <AlertCircle className="w-5 h-5" />
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas desconectadas</p>
+                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas Offline</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {summaryValue(alertSummary?.disconnectedMachines, hasLoadedSummary)}
+                                        {alerts.filter(a => a.status === "offline" && !a.isRead).length}
                                     </p>
                                 </div>
                             </div>
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
                                 <div className="h-10 w-10 rounded-full bg-amber-100 dark:bg-amber-950/30 flex items-center justify-center text-amber-600">
                                     <AlertTriangle className="w-5 h-5" />
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Outros alertas ativos</p>
+                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Status de Atenção</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {summaryValue(alertSummary?.otherActiveAlerts, hasLoadedSummary)}
+                                        {alerts.filter(a => a.status === "warning" && !a.isRead).length}
                                     </p>
                                 </div>
                             </div>
-                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-xs">
+                            <div className="bg-card border p-4 rounded-lg flex items-center gap-4 shadow-sm">
                                 <div className="h-10 w-10 rounded-full bg-blue-100 dark:bg-blue-950/30 flex items-center justify-center text-blue-600">
-                                    <Package className="w-5 h-5" />
+                                    <CheckCheck className="w-5 h-5" />
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas com estoque baixo</p>
+                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Histórico Lido</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {summaryValue(machines.filter(machine => machine.lowStock).length, hasLoadedMachines)}
+                                        {alerts.filter(a => a.isRead).length}
                                     </p>
                                 </div>
                             </div>
                         </div>
 
                         {/* Filters & Control bar */}
-                        <div className="bg-card border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
+                        <div className="bg-card border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
                             <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center flex-1 max-w-3xl">
                                 <div className="relative flex-1">
                                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                                     <Input 
                                         type="text"
-                                        placeholder="Buscar por máquina, cliente ou motivo..."
+                                        placeholder="Buscar por máquina, localização ou motivo..."
                                         className="pl-9 w-full"
                                         value={search}
-                                        onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                                        onChange={(e) => setSearch(e.target.value)}
                                     />
                                 </div>
                                 <div className="w-full sm:w-48">
-                                    <Select value={statusFilter} onValueChange={value => { setStatusFilter(value as OperationalAlertFilter); setPage(1); }}>
+                                    <Select value={statusFilter} onValueChange={setStatusFilter}>
                                         <SelectTrigger>
                                             <SelectValue placeholder="Filtrar por Status" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             <SelectItem value="all">Todos os Status</SelectItem>
-                                            <SelectItem value="offline">Apenas desconectadas</SelectItem>
+                                            <SelectItem value="offline">Apenas Offline</SelectItem>
                                             <SelectItem value="warning">Apenas Atenção</SelectItem>
-                                            <SelectItem value="resolved">Histórico resolvido</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -209,7 +239,7 @@ export default function Alerts() {
                             <div className="flex gap-2">
                                 <Button 
                                     variant="outline"
-                                    onClick={() => void fetchAlertsData()}
+                                    onClick={fetchAlertsData}
                                     disabled={loading}
                                     className="gap-2 text-muted-foreground hover:text-foreground"
                                     title="Sincronizar Alertas"
@@ -217,31 +247,21 @@ export default function Alerts() {
                                     <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
                                     Atualizar
                                 </Button>
+                                <Button 
+                                    variant="outline"
+                                    onClick={handleMarkAllRead}
+                                    className="gap-2 text-muted-foreground hover:text-foreground"
+                                >
+                                    <CheckCheck className="w-4 h-4 text-success" />
+                                    Marcar todos como lidos
+                                </Button>
                             </div>
                         </div>
 
                         {/* Alerts Notification List */}
-                        {loadError && hasLoadedAnyData && (
-                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
-                                <span>Alguns dados de alertas não puderam ser atualizados. As informações exibidas podem estar desatualizadas ou indisponíveis.</span>
-                                <Button variant="outline" size="sm" onClick={() => void fetchAlertsData()} disabled={loading}>
-                                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                                    Tentar novamente
-                                </Button>
-                            </div>
-                        )}
-                        {loading && !hasLoadedAlerts ? (
+                        {loading ? (
                             <div className="flex items-center justify-center py-20 bg-card border rounded-lg">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando alertas...</p>
-                            </div>
-                        ) : alertsLoadError && !hasLoadedAlerts ? (
-                            <div role="alert" className="flex flex-col items-center justify-center gap-3 py-20 bg-card border rounded-lg border-dashed text-center">
-                                <h3 className="text-base font-semibold text-foreground">Não foi possível carregar os alertas</h3>
-                                <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
-                                <Button variant="outline" onClick={() => void fetchAlertsData()} disabled={loading}>
-                                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                                    Tentar novamente
-                                </Button>
                             </div>
                         ) : filteredAlerts.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-20 bg-card border rounded-lg border-dashed">
@@ -256,11 +276,14 @@ export default function Alerts() {
                                 {filteredAlerts.map((alert) => (
                                     <div 
                                         key={alert.id}
-                                        className="p-5 bg-card border rounded-lg flex flex-col sm:flex-row gap-4 justify-between items-start shadow-xs"
+                                        onClick={() => toggleReadStatus(alert.id)}
+                                        className={`p-5 bg-card border rounded-lg flex flex-col sm:flex-row gap-4 justify-between items-start transition-all cursor-pointer select-none shadow-sm hover:border-muted-foreground/30 ${
+                                            !alert.isRead ? "border-l-4 border-l-primary font-medium" : "opacity-75"
+                                        }`}
                                     >
                                         <div className="flex gap-4 items-start flex-1">
                                             <div className="mt-1">
-                                                {alert.type === "TelemetryOffline" || alert.severity === "critical" ? (
+                                                {alert.status === "offline" ? (
                                                     <div className="p-2 rounded-full bg-red-100 dark:bg-red-950/20 text-red-600">
                                                         <AlertCircle className="w-4 h-4" />
                                                     </div>
@@ -274,145 +297,38 @@ export default function Alerts() {
                                             <div className="space-y-1">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className="text-sm font-bold text-foreground">
-                                                        {alert.title}{alert.machineId ? ` — ${alert.machineName || alert.machineId}` : ""}
+                                                        {alert.machineName} ({alert.machineId})
                                                     </span>
                                                     <span className="text-xs bg-muted px-2 py-0.5 rounded text-muted-foreground flex items-center gap-1">
                                                         <Users className="w-3 h-3" />
-                                                        {alert.clientName || "Operação"}
+                                                        {alert.clientName}
                                                     </span>
+                                                    {!alert.isRead && (
+                                                        <span className="text-[10px] uppercase tracking-wide bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold">
+                                                            Novo
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <p className="text-sm text-muted-foreground leading-relaxed">
-                                                    {alert.description}
-                                                    {alert.resolution && <span className="block mt-1">Resolução: {alert.resolution}</span>}
+                                                    {alert.reason}
                                                 </p>
                                                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground/75 pt-1">
                                                     <Calendar className="w-3.5 h-3.5" />
-                                                    <span>{new Date(alert.occurredAt).toLocaleString("pt-BR")}</span>
+                                                    <span>{alert.date}</span>
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div className="sm:self-center flex items-center gap-2">
-                                            {alert.status === "Resolved" ? (
-                                                <span className="text-xs rounded-full bg-muted px-2 py-1 text-muted-foreground">Resolvido</span>
-                                            ) : (
-                                                <StatusIndicator status={alert.type === "TelemetryOffline" ? "offline" : alert.type === "TelemetryUnmonitored" ? "unmonitored" : "warning"} />
-                                            )}
-                                            {alert.type === "LowStock" && alert.machineId && (
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => navigate(`/inventory?machineId=${encodeURIComponent(alert.machineId!)}`)}
-                                                >
-                                                    Ver estoque
-                                                </Button>
-                                            )}
-                                            {alert.type === "InventoryMappingMismatch" && alert.machineId && (
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => navigate(`/inventory?machineId=${encodeURIComponent(alert.machineId!)}`)}
-                                                >
-                                                    Conferir estoque
-                                                </Button>
-                                            )}
-                                            {["TelemetryOffline", "TelemetryWarning", "TelemetryUnmonitored", "TelemetryOwnerUnknown", "SessionFailure"].includes(alert.type) && alert.machineId && (
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => navigate(`/telemetry?machineId=${encodeURIComponent(alert.machineId!)}`)}
-                                                >
-                                                    Ver telemetria
-                                                </Button>
-                                            )}
-                                            {alert.type === "PaymentPending" && alert.transactionId && (
-                                                <Button variant="outline" size="sm" onClick={() => navigate(`/payments?transactionId=${encodeURIComponent(alert.transactionId!)}`)}>
-                                                    Ver pagamento
-                                                </Button>
-                                            )}
-                                            {alert.type === "PaymentPending" && user?.role === "PlatformAdmin" && (
-                                                <Button variant="outline" size="sm" onClick={() => navigate("/admin?tab=payments")}>
-                                                    Ver conciliação
-                                                </Button>
-                                            )}
-                                            {alert.type === "SessionFailure" && alert.status === "Active" && alert.sessionState === "ClosureIncomplete" && alert.sessionId && user?.role !== "Operator" && (
-                                                <Button variant="outline" size="sm" onClick={() => setClosureAlert(alert)}>
-                                                    Confirmar máquina ociosa
-                                                </Button>
-                                            )}
-                                            {!alert.isRead && alert.status === "Active" && <Button variant="outline" size="sm" onClick={() => void handleMarkRead(alert)}>Marcar como lido</Button>}
+                                            <StatusIndicator status={alert.status} />
                                         </div>
                                     </div>
                                 ))}
                             </div>
                         )}
-                        {hasLoadedAlerts && totalAlerts > 0 && (
-                            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Paginação de alertas">
-                                <p className="text-sm text-muted-foreground">
-                                    Exibindo {(loadedPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(loadedPage * ALERTS_PAGE_SIZE, totalAlerts)} de {totalAlerts} alertas
-                                </p>
-                                <div className="flex items-center gap-2">
-                                    <Button variant="outline" size="sm" onClick={() => setPage(current => Math.max(1, loadedPage - 1))} disabled={loading || loadedPage <= 1}>
-                                        Anterior
-                                    </Button>
-                                    <span className="text-sm text-muted-foreground">Página {loadedPage} de {Math.ceil(totalAlerts / ALERTS_PAGE_SIZE)}</span>
-                                    <Button variant="outline" size="sm" onClick={() => setPage(loadedPage + 1)} disabled={loading || loadedPage * ALERTS_PAGE_SIZE >= totalAlerts}>
-                                        Próxima
-                                    </Button>
-                                </div>
-                            </div>
-                        )}
                     </main>
                 </div>
             </div>
-            <Dialog open={closureAlert !== null} onOpenChange={open => {
-                if (!open && !resolvingClosure) {
-                    setClosureAlert(null);
-                    setClosureEvidence("");
-                    setClosureConfirmed(false);
-                }
-            }}>
-                <DialogContent>
-                    <DialogHeader>
-                        <DialogTitle>Confirmar encerramento físico</DialogTitle>
-                        <DialogDescription>
-                            Inspecione a máquina antes de continuar. Só confirme se ela está ociosa e segura para receber uma nova sessão. Esta ação será registrada com seu usuário e uma referência de evidência.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                        <div className="space-y-2">
-                            <Label htmlFor="closure-evidence-reference">Referência do chamado ou registro</Label>
-                            <Input
-                                id="closure-evidence-reference"
-                                value={closureEvidence}
-                                onChange={event => setClosureEvidence(event.target.value)}
-                                placeholder="SUP-1234"
-                                maxLength={64}
-                                autoComplete="off"
-                            />
-                        </div>
-                        <div className="flex items-start gap-2">
-                            <Checkbox
-                                id="closure-machine-idle-confirmation"
-                                checked={closureConfirmed}
-                                onCheckedChange={checked => setClosureConfirmed(checked === true)}
-                            />
-                            <Label htmlFor="closure-machine-idle-confirmation" className="leading-5">
-                                Inspecionei a máquina e confirmei que não há sessão ou entrega em andamento.
-                            </Label>
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setClosureAlert(null)} disabled={resolvingClosure}>Cancelar</Button>
-                        <Button
-                            onClick={() => void handleResolveIncompleteClosure()}
-                            disabled={resolvingClosure || !closureConfirmed || !/^[A-Za-z0-9._/:_-]{3,64}$/.test(closureEvidence.trim())}
-                        >
-                            {resolvingClosure ? "Salvando…" : "Registrar confirmação"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </SidebarProvider>
     );
 }

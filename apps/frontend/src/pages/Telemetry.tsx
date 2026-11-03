@@ -16,16 +16,12 @@ import {
     getTelemetryEvents,
     requestMdbStatus,
     sendTelemetryCommand,
-    TelemetryCommandRequestError,
     setTelemetryMonitoring,
     startTelemetrySession,
     type TelemetryConnection,
     type TelemetryEventItem,
 } from "@/lib/api";
 import { getMdbStatusDetail } from "@/lib/mdbStatus";
-import { getTelemetryEventLabel } from "@/lib/telemetryEvents";
-import { useAuth } from "@/contexts/useAuth";
-import { useSearchParams } from "react-router-dom";
 
 const stateLabels: Record<string, string> = {
     Opening: "Abrindo sessão",
@@ -54,76 +50,37 @@ const formatDate = (value?: string | null) => value
     : "—";
 
 export default function Telemetry() {
-    const [searchParams, setSearchParams] = useSearchParams();
-    const requestedMachineId = searchParams.get("machineId");
     const { toast } = useToast();
-    const { user } = useAuth();
-    const canOperateTelemetry = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [connections, setConnections] = useState<TelemetryConnection[]>([]);
     const [events, setEvents] = useState<TelemetryEventItem[]>([]);
     const [selectedId, setSelectedId] = useState<string>("");
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
-    const [hasLoadedConnections, setHasLoadedConnections] = useState(false);
-    const [connectionsLoadError, setConnectionsLoadError] = useState(false);
-    const [eventsLoading, setEventsLoading] = useState(false);
-    const [eventsLoadError, setEventsLoadError] = useState(false);
     const [busy, setBusy] = useState(false);
     const [realtimeConnected, setRealtimeConnected] = useState(false);
     const socketRef = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<number>();
     const selectedIdRef = useRef(selectedId);
-    const connectionsRequestIdRef = useRef(0);
-    const eventsMachineIdRef = useRef("");
-    const eventsRequestIdRef = useRef(0);
-    const manualCommandRequestIdsRef = useRef(new Map<string, string>());
 
     const loadConnections = useCallback(async () => {
-        const requestId = ++connectionsRequestIdRef.current;
-        setLoading(true);
-        setConnectionsLoadError(false);
         try {
             const data = await getTelemetryConnections();
-            if (requestId !== connectionsRequestIdRef.current) return;
             setConnections(data);
-            setHasLoadedConnections(true);
-            setSelectedId(current => {
-                const preferred = data.find(item => item.machineId === requestedMachineId)?.machineId;
-                const currentStillExists = data.some(item => item.machineId === current);
-                return preferred ?? (currentStillExists ? current : data[0]?.machineId || "");
-            });
-        } catch {
-            if (requestId === connectionsRequestIdRef.current) setConnectionsLoadError(true);
+            setSelectedId(current => current || data[0]?.machineId || "");
+        } catch (error) {
+            toast({ title: "Erro ao carregar conexões", description: (error as Error).message, variant: "destructive" });
         } finally {
-            if (requestId === connectionsRequestIdRef.current) setLoading(false);
+            setLoading(false);
         }
-    }, [requestedMachineId]);
+    }, [toast]);
 
     const loadEvents = useCallback(async (machineId: string) => {
-        if (!machineId || machineId !== selectedIdRef.current) return;
-        const requestId = ++eventsRequestIdRef.current;
-        if (eventsMachineIdRef.current !== machineId) {
-            eventsMachineIdRef.current = machineId;
-            setEvents([]);
-        }
-        setEventsLoadError(false);
-        setEventsLoading(true);
-        try {
-            const data = await getTelemetryEvents(machineId);
-            if (requestId === eventsRequestIdRef.current && selectedIdRef.current === machineId) setEvents(data);
-        } catch {
-            if (requestId === eventsRequestIdRef.current && selectedIdRef.current === machineId) setEventsLoadError(true);
-        } finally {
-            if (requestId === eventsRequestIdRef.current) setEventsLoading(false);
-        }
+        if (!machineId) return;
+        try { setEvents(await getTelemetryEvents(machineId)); }
+        catch { setEvents([]); }
     }, []);
 
     useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
-
-    useEffect(() => {
-        if (requestedMachineId && connections.some(item => item.machineId === requestedMachineId))
-            setSelectedId(requestedMachineId);
-    }, [connections, requestedMachineId]);
 
     useEffect(() => {
         loadConnections();
@@ -132,12 +89,6 @@ export default function Telemetry() {
     }, [loadConnections]);
 
     useEffect(() => { loadEvents(selectedId); }, [selectedId, loadEvents]);
-
-    useEffect(() => {
-        if (!selectedId) return;
-        const timer = window.setInterval(() => loadEvents(selectedId), 15000);
-        return () => window.clearInterval(timer);
-    }, [selectedId, loadEvents]);
 
     useEffect(() => {
         let disposed = false;
@@ -155,20 +106,13 @@ export default function Telemetry() {
                     setRealtimeConnected(true);
                     const machineId = selectedIdRef.current;
                     if (machineId) socket.send(JSON.stringify({ type: "subscribe", machineIds: [machineId] }));
-                    loadConnections();
-                    if (machineId) loadEvents(machineId);
                 };
                 socket.onmessage = event => {
                     try {
                         const message = JSON.parse(event.data);
                         if (message.type === "connection.updated") {
                             setConnections(current => current.map(item => item.machineId === message.machineId
-                                ? {
-                                    ...item,
-                                    online: message.online,
-                                    commandRouteAvailable: message.commandRouteAvailable === true,
-                                    lastSeenAt: message.lastSeenAt ?? item.lastSeenAt,
-                                }
+                                ? { ...item, online: message.online, lastSeenAt: message.lastSeenAt ?? item.lastSeenAt }
                                 : item));
                         }
                         if (message.type === "monitoring.updated") {
@@ -185,10 +129,6 @@ export default function Telemetry() {
                                     mdbStatusFresh: message.mdbStatusFresh,
                                 }
                                 : item));
-                        }
-                        if (message.type === "refresh.required") {
-                            loadConnections();
-                            if (message.machineId) loadEvents(message.machineId);
                         }
                         if (["sale.updated", "telemetry.received"].includes(message.type)) {
                             if (message.machineId === selectedIdRef.current) loadEvents(message.machineId);
@@ -229,12 +169,9 @@ export default function Telemetry() {
     const canCancelSession = selected?.activeSession
         ? cancellableSessionStates.has(selected.activeSession.state)
         : false;
-    const cancelNeedsCommandRoute = selected?.activeSession != null &&
-        (selected.activeSession.state !== "PaymentPending" || selected.online);
     const mdbReady = selected?.mdbStatusFresh && selected.mdbStatus === "enabled_state";
     const canStartSession = !!selected &&
         selected.online &&
-        selected.commandRouteAvailable &&
         selected.monitoringEnabled &&
         (!selected.manualStartRequiresMdb || mdbReady);
     const filtered = useMemo(() => {
@@ -243,10 +180,6 @@ export default function Telemetry() {
     }, [connections, search]);
 
     const run = async (operation: () => Promise<unknown>, success: string) => {
-        if (!canOperateTelemetry) {
-            toast({ title: "Acesso somente para administradores", description: "Seu perfil pode consultar a telemetria, mas não pode enviar comandos ou alterar sessões.", variant: "destructive" });
-            return;
-        }
         setBusy(true);
         try {
             await operation();
@@ -256,47 +189,6 @@ export default function Telemetry() {
         } catch (error) {
             toast({ title: "Operação não concluída", description: (error as Error).message, variant: "destructive" });
         } finally { setBusy(false); }
-    };
-
-    const sendManualTelemetryCommand = async (machineId: string, command: string) => {
-        const operationKey = JSON.stringify([user?.id ?? "unknown", machineId, command]);
-        const storageKey = `telemetry-command-request:${operationKey}`;
-        let requestId = manualCommandRequestIdsRef.current.get(operationKey);
-        if (!requestId) {
-            try { requestId = sessionStorage.getItem(storageKey) ?? undefined; } catch { /* Storage may be unavailable. */ }
-        }
-        if (!requestId) {
-            requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
-                ? crypto.randomUUID()
-                : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-        }
-        manualCommandRequestIdsRef.current.set(operationKey, requestId);
-        try { sessionStorage.setItem(storageKey, requestId); } catch { /* The in-memory key still protects retries on this page. */ }
-
-        try {
-            await sendTelemetryCommand(machineId, command, requestId);
-            manualCommandRequestIdsRef.current.delete(operationKey);
-            try { sessionStorage.removeItem(storageKey); } catch { /* Ignore unavailable storage. */ }
-        } catch (error) {
-            const definitelyNotSentCodes = new Set([
-                "machine_offline",
-                "monitoring_inactive",
-                "machine_owner_unknown",
-                "command_queue_timeout",
-                "deployment_draining",
-                "session_admission_gate_unavailable",
-                "command_outcome_unresolved",
-                "command_request_resolved",
-                "request_id_conflict",
-            ]);
-            const resultIsDefinite = error instanceof TelemetryCommandRequestError &&
-                error.code !== "command_in_progress" && definitelyNotSentCodes.has(error.code ?? "");
-            if (resultIsDefinite) {
-                manualCommandRequestIdsRef.current.delete(operationKey);
-                try { sessionStorage.removeItem(storageKey); } catch { /* Ignore unavailable storage. */ }
-            }
-            throw error;
-        }
     };
 
     return (
@@ -322,13 +214,7 @@ export default function Telemetry() {
                         <Card className="lg:h-[calc(100vh-6.5rem)]">
                             <CardHeader className="pb-3">
                                 <CardTitle className="text-base flex items-center justify-between">
-                                    Máquinas
-                                    <span className="flex items-center gap-2">
-                                        <Badge variant="secondary">{hasLoadedConnections ? connections.length : "—"}</Badge>
-                                        <Button size="icon" variant="ghost" aria-label="Atualizar conexões" onClick={() => void loadConnections()} disabled={loading}>
-                                            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                                        </Button>
-                                    </span>
+                                    Máquinas <Badge variant="secondary">{connections.length}</Badge>
                                 </CardTitle>
                                 <div className="relative">
                                     <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -337,33 +223,9 @@ export default function Telemetry() {
                             </CardHeader>
                             <CardContent className="p-0">
                                 <ScrollArea className="h-[calc(100vh-13rem)]">
-                                    {loading && !hasLoadedConnections && <p className="p-4 text-sm text-muted-foreground">Carregando conexões...</p>}
-                                    {connectionsLoadError && !hasLoadedConnections && (
-                                        <div role="alert" className="space-y-3 p-4 text-sm">
-                                            <p>Não foi possível carregar as conexões das máquinas.</p>
-                                            <Button size="sm" variant="outline" onClick={() => void loadConnections()} disabled={loading}>Tentar novamente</Button>
-                                        </div>
-                                    )}
-                                    {connectionsLoadError && hasLoadedConnections && (
-                                        <div role="alert" className="space-y-2 border-t p-4 text-sm">
-                                            <p>A atualização das conexões falhou. Os dados exibidos podem estar desatualizados.</p>
-                                            <Button size="sm" variant="outline" onClick={() => void loadConnections()} disabled={loading}>Tentar novamente</Button>
-                                        </div>
-                                    )}
+                                    {loading && <p className="p-4 text-sm text-muted-foreground">Carregando conexões...</p>}
                                     {filtered.map(machine => (
-                                        <button key={machine.machineId} onClick={() => {
-                                            if (machine.machineId !== selectedId) {
-                                                selectedIdRef.current = machine.machineId;
-                                                eventsRequestIdRef.current += 1;
-                                                eventsMachineIdRef.current = machine.machineId;
-                                                setEvents([]);
-                                                setEventsLoadError(false);
-                                                setEventsLoading(false);
-                                            }
-                                            setSelectedId(machine.machineId);
-                                            setSearchParams({ machineId: machine.machineId });
-                                        }}
-                                            aria-pressed={selectedId === machine.machineId}
+                                        <button key={machine.machineId} onClick={() => setSelectedId(machine.machineId)}
                                             className={`w-full text-left p-4 border-t hover:bg-muted/60 transition-colors ${selectedId === machine.machineId ? "bg-primary/5 border-l-2 border-l-primary" : ""}`}>
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="min-w-0">
@@ -377,26 +239,16 @@ export default function Telemetry() {
                                                 <Badge variant={machine.mdbStatusFresh ? "secondary" : "outline"}>
                                                     {getMdbStatusDetail(machine.mdbStatus).label}
                                                 </Badge>
-                                                {machine.online && !machine.commandRouteAvailable && (
-                                                    <Badge variant="destructive">Aguardando reconexão</Badge>
-                                                )}
                                                 {machine.activeSession && <Badge variant="secondary">{stateLabels[machine.activeSession.state] ?? machine.activeSession.state}</Badge>}
                                             </div>
                                         </button>
                                     ))}
-                                    {!loading && hasLoadedConnections && connections.length === 0 && !connectionsLoadError && (
-                                        <p className="p-4 text-sm text-muted-foreground">Nenhuma máquina cadastrada.</p>
-                                    )}
-                                    {!loading && connections.length > 0 && filtered.length === 0 && (
-                                        <p className="p-4 text-sm text-muted-foreground">Nenhuma máquina corresponde à busca.</p>
-                                    )}
                                 </ScrollArea>
                             </CardContent>
                         </Card>
 
                         {selected ? (
                             <div className="space-y-4 min-w-0">
-                                {!canOperateTelemetry && <p role="status" className="rounded-md border bg-card p-3 text-sm text-muted-foreground">Modo somente leitura: administradores podem alterar o acompanhamento, abrir/encerrar sessões e enviar comandos.</p>}
                                 <Card>
                                     <CardHeader className="pb-3">
                                         <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
@@ -405,7 +257,7 @@ export default function Telemetry() {
                                                 <p className="text-sm text-muted-foreground">{selected.serialNumber} · {selected.location}</p>
                                             </div>
                                             <div className="flex gap-2 flex-wrap">
-                                                <Button variant="outline" disabled={busy || !canOperateTelemetry} onClick={() => run(
+                                                <Button variant="outline" disabled={busy} onClick={() => run(
                                                     () => setTelemetryMonitoring(selected.machineId, !selected.monitoringEnabled),
                                                     selected.monitoringEnabled ? "Acompanhamento desativado" : "Acompanhamento ativado") }>
                                                     <Activity className="h-4 w-4 mr-2" />
@@ -413,7 +265,7 @@ export default function Telemetry() {
                                                 </Button>
                                                 <Button
                                                     variant="outline"
-                                                    disabled={busy || !canOperateTelemetry || !selected.online || !selected.commandRouteAvailable || !selected.monitoringEnabled}
+                                                    disabled={busy || !selected.online || !selected.monitoringEnabled}
                                                     onClick={() => run(
                                                         () => requestMdbStatus(selected.machineId),
                                                         "Status MDB atualizado")}
@@ -422,12 +274,12 @@ export default function Telemetry() {
                                                     Consultar MDB
                                                 </Button>
                                                 {!selected.activeSession ? (
-                                                    <Button disabled={busy || !canOperateTelemetry || !canStartSession} onClick={() => run(
+                                                    <Button disabled={busy || !canStartSession} onClick={() => run(
                                                         () => startTelemetrySession(selected.machineId), "Sessão solicitada") }>
                                                         <DoorOpen className="h-4 w-4 mr-2" /> Abrir sessão
                                                     </Button>
                                                 ) : canCancelSession ? (
-                                                    <Button variant="destructive" disabled={busy || !canOperateTelemetry || (cancelNeedsCommandRoute && !selected.commandRouteAvailable)} onClick={() => run(
+                                                    <Button variant="destructive" disabled={busy} onClick={() => run(
                                                         () => cancelTelemetrySession(selected.activeSession!.sessionId), "Encerramento solicitado") }>
                                                         <XCircle className="h-4 w-4 mr-2" />
                                                         {selected.activeSession.state === "Opening" || selected.activeSession.state === "AwaitingSelection"
@@ -438,14 +290,8 @@ export default function Telemetry() {
                                             </div>
                                         </div>
                                     </CardHeader>
-                                    <CardContent className="grid sm:grid-cols-2 xl:grid-cols-6 gap-3">
-                                        <StatusItem icon={selected.online ? Wifi : WifiOff} label="Conexão física" value={selected.online ? "Conectada" : "Desconectada"} alert={!selected.online} />
-                                        <StatusItem
-                                            icon={selected.commandRouteAvailable ? Server : AlertTriangle}
-                                            label="Rota de comandos"
-                                            value={selected.commandRouteAvailable ? "Disponível" : selected.online ? "Aguardando reconexão" : "Indisponível"}
-                                            alert={!selected.commandRouteAvailable}
-                                        />
+                                    <CardContent className="grid sm:grid-cols-2 xl:grid-cols-5 gap-3">
+                                        <StatusItem icon={selected.online ? Wifi : WifiOff} label="Conexão física" value={selected.online ? "Online" : "Offline"} alert={!selected.online} />
                                         <StatusItem icon={Server} label="Último contato" value={formatDate(selected.lastSeenAt)} />
                                         <StatusItem
                                             icon={Activity}
@@ -461,12 +307,6 @@ export default function Telemetry() {
                                             {getMdbStatusDetail(selected.mdbStatus).description}
                                             {" "}Última atualização: {formatDate(selected.mdbStatusUpdatedAt)}.
                                         </p>
-                                        {selected.online && !selected.commandRouteAvailable && (
-                                            <p role="alert" className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-3 mt-3">
-                                                A conexão física está ativa, mas esta versão não consegue encaminhar comandos para a máquina.
-                                                Aguarde a reconexão dela antes de abrir sessões ou enviar comandos MDB.
-                                            </p>
-                                        )}
                                         {selected.autoOpenSessionEnabled && (
                                             <p className="text-xs text-primary mt-1">Abertura automática habilitada para esta máquina.</p>
                                         )}
@@ -492,31 +332,26 @@ export default function Telemetry() {
                                 <Card>
                                     <CardHeader className="flex flex-row items-center justify-between">
                                         <CardTitle className="text-base">Eventos em tempo real</CardTitle>
-                                        <Button size="sm" variant="ghost" aria-label="Atualizar eventos" onClick={() => void loadEvents(selected.machineId)} disabled={eventsLoading}><RefreshCw className={`h-4 w-4 ${eventsLoading ? "animate-spin" : ""}`} /></Button>
+                                        <Button size="sm" variant="ghost" onClick={() => loadEvents(selected.machineId)}><RefreshCw className="h-4 w-4" /></Button>
                                     </CardHeader>
                                     <CardContent>
                                         <ScrollArea className="h-[320px] rounded-md bg-slate-950 p-3">
-                                            {eventsLoadError && (
-                                                <div role="alert" className="mb-3 rounded border border-red-800 bg-red-950 p-3 text-xs text-red-200">
-                                                    <p>{events.length > 0 ? "Não foi possível atualizar os eventos. A lista exibida pode estar desatualizada." : "Não foi possível carregar os eventos desta máquina."}</p>
-                                                    <Button size="sm" variant="outline" className="mt-2" onClick={() => void loadEvents(selected.machineId)} disabled={eventsLoading}>Tentar novamente</Button>
-                                                </div>
-                                            )}
-                                            {eventsLoading && events.length === 0 && <p role="status" className="text-xs text-slate-400">Carregando eventos...</p>}
-                                            {!eventsLoading && !eventsLoadError && events.length === 0 && <p className="text-xs text-slate-500">Nenhum evento registrado.</p>}
+                                            {events.length === 0 && <p className="text-xs text-slate-500">Nenhum evento registrado.</p>}
                                             {events.map(event => (
                                                 <div key={event.id} className="border-b border-slate-800 py-2 text-xs font-mono">
                                                     <div className="flex justify-between gap-3 text-slate-500">
-                                                        <span>{getTelemetryEventLabel(event.eventType)}</span><span>{formatDate(event.createdAt)}</span>
+                                                        <span>{event.eventType}</span><span>{formatDate(event.createdAt)}</span>
                                                     </div>
+                                                    {event.detail && <p className="mt-1 text-slate-200">{event.detail}</p>}
+                                                    {event.dataJson && <p className="mt-1 text-emerald-400 break-all">{event.dataJson}</p>}
                                                 </div>
                                             ))}
                                         </ScrollArea>
                                         <div className="mt-3 flex gap-2 flex-wrap">
                                             {["RELATORIO_AUDITORIA", "REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
-                                                <Button key={command} size="sm" variant="outline" disabled={busy || !canOperateTelemetry || !selected.online || !selected.commandRouteAvailable || !selected.monitoringEnabled}
-                                                    onClick={() => run(() => sendManualTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
-                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.split("_").join(" ")}
+                                                <Button key={command} size="sm" variant="outline" disabled={busy || !selected.online || !selected.monitoringEnabled}
+                                                    onClick={() => run(() => sendTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
+                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.replaceAll("_", " ")}
                                                 </Button>
                                             ))}
                                         </div>

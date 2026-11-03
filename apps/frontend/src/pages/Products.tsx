@@ -1,8 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag, RefreshCw } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
-import { useAuth } from "@/contexts/useAuth";
+import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag } from "lucide-react";
+import { useState, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { type FullProduct, type ProductType } from "@/data/mockData";
 import { getProducts, getProductTypes, createProduct, updateProduct, deleteProduct } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,6 @@ import {
 import {
     Dialog,
     DialogContent,
-    DialogDescription,
     DialogHeader,
     DialogTitle,
     DialogFooter,
@@ -38,39 +37,25 @@ import { Textarea } from "@/components/ui/textarea";
 import { getErrorMessage } from "@/lib/utils";
 
 export default function Products() {
-    const { logout, user } = useAuth();
-    const canManageProducts = user?.role === "Admin" || user?.role === "PlatformAdmin";
+    const { logout } = useAuth();
     const { toast } = useToast();
     const [products, setProducts] = useState<FullProduct[]>([]);
     const [productTypes, setProductTypes] = useState<ProductType[]>([]);
     const [loading, setLoading] = useState(true);
-    const [hasLoaded, setHasLoaded] = useState(false);
-    const [loadError, setLoadError] = useState(false);
-    const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
 
-    const loadProducts = useCallback(async () => {
+    useEffect(() => {
         setLoading(true);
-        setLoadError(false);
-        try {
-            const [pList, ptList] = await Promise.all([getProducts(), getProductTypes()]);
-            setProducts(pList);
-            setProductTypes(ptList);
-            setHasLoaded(true);
-            setLastLoadedAt(new Date());
-        } catch (err) {
-            console.error("Erro ao carregar produtos:", err);
-            setLoadError(true);
-            toast({
-                title: "Não foi possível carregar os produtos",
-                description: "Confira sua conexão e tente novamente.",
-                variant: "destructive",
+        Promise.all([getProducts(), getProductTypes()])
+            .then(([pList, ptList]) => {
+                setProducts(pList);
+                setProductTypes(ptList);
+                setLoading(false);
+            })
+            .catch(err => {
+                console.error("Erro ao carregar produtos:", err);
+                setLoading(false);
             });
-        } finally {
-            setLoading(false);
-        }
-    }, [toast]);
-
-    useEffect(() => { void loadProducts(); }, [loadProducts]);
+    }, []);
 
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingProduct, setEditingProduct] = useState<FullProduct | null>(null);
@@ -90,7 +75,6 @@ export default function Products() {
     };
 
     const handleSaveProduct = async () => {
-        if (!canManageProducts) return;
         if (!formData.code || !formData.name || !formData.typeId) {
             toast({
                 title: "Erro",
@@ -137,14 +121,12 @@ export default function Products() {
     };
 
     const handleEdit = (product: FullProduct) => {
-        if (!canManageProducts) return;
         setEditingProduct(product);
         setFormData(product);
         setIsDialogOpen(true);
     };
 
     const handleDelete = async (id: string) => {
-        if (!canManageProducts) return;
         if (confirm("Tem certeza que deseja excluir este produto?")) {
             try {
                 await deleteProduct(id);
@@ -190,11 +172,8 @@ export default function Products() {
                         <h1 className="text-sm font-semibold text-foreground">Produtos</h1>
                         <div className="ml-auto flex items-center gap-4">
                             <span className="text-xs text-muted-foreground">
-                                {lastLoadedAt ? `Atualizado às ${lastLoadedAt.toLocaleTimeString("pt-BR")}` : "Catálogo de produtos"}
+                                Última atualização: agora
                             </span>
-                            <Button variant="ghost" size="icon" onClick={() => void loadProducts()} disabled={loading} aria-label="Atualizar produtos">
-                                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                            </Button>
                             <button
                                 onClick={handleLogout}
                                 className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"
@@ -206,24 +185,12 @@ export default function Products() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {loading && !hasLoaded ? (
+                        {loading ? (
                             <div className="flex items-center justify-center h-[50vh]">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando produtos...</p>
                             </div>
-                        ) : loadError && !hasLoaded ? (
-                            <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
-                                <p className="font-medium">Não foi possível carregar o catálogo de produtos.</p>
-                                <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
-                                <Button variant="outline" onClick={() => void loadProducts()} disabled={loading}>Tentar novamente</Button>
-                            </div>
                         ) : (
                             <>
-                                {loadError && (
-                                    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
-                                        <span>Não foi possível atualizar o catálogo. Os dados exibidos podem estar desatualizados.</span>
-                                        <Button variant="outline" size="sm" onClick={() => void loadProducts()} disabled={loading}>Tentar novamente</Button>
-                                    </div>
-                                )}
                                 <div className="flex items-center justify-between pb-4 border-b">
                             <div>
                                 <h2 className="text-2xl font-bold tracking-tight">Gerenciamento de Produtos</h2>
@@ -231,14 +198,14 @@ export default function Products() {
                                     Cadastre e gerencie o catálogo de produtos das suas máquinas.
                                 </p>
                             </div>
-                            {canManageProducts && <Button onClick={openNewDialog} className="flex items-center gap-2">
+                            <Button onClick={openNewDialog} className="flex items-center gap-2">
                                 <Plus className="w-4 h-4" />
                                 Novo Produto
-                            </Button>}
+                            </Button>
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-3">
-                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Total de Produtos</CardTitle>
                                     <Package className="h-4 w-4 text-primary" />
@@ -248,7 +215,7 @@ export default function Products() {
                                     <p className="text-xs text-muted-foreground">Cadastrados no sistema</p>
                                 </CardContent>
                             </Card>
-                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Produtos Alcoólicos</CardTitle>
                                     <Wine className="h-4 w-4 text-orange-500" />
@@ -258,7 +225,7 @@ export default function Products() {
                                     <p className="text-xs text-muted-foreground">Requerem verificação de idade</p>
                                 </CardContent>
                             </Card>
-                            <Card className="bg-card/50 backdrop-blur-xs border-primary/10">
+                            <Card className="bg-card/50 backdrop-blur-sm border-primary/10">
                                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                                     <CardTitle className="text-sm font-medium">Custo Médio</CardTitle>
                                     <DollarSign className="h-4 w-4 text-green-500" />
@@ -304,7 +271,7 @@ export default function Products() {
                                                         </TableCell>
                                                         <TableCell className="text-center px-6">
                                                             {product.isAlcoholic ? (
-                                                                <Wine className="h-4 w-4 text-orange-500 mx-auto" aria-label="Alcoólico" />
+                                                                <Wine className="h-4 w-4 text-orange-500 mx-auto" title="Alcoólico" />
                                                             ) : (
                                                                 <span className="text-muted-foreground/30">-</span>
                                                             )}
@@ -313,7 +280,7 @@ export default function Products() {
                                                             {product.cost.toLocaleString('pt-BR', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}
                                                         </TableCell>
                                                         <TableCell className="text-right px-6">
-                                                            {canManageProducts && <div className="flex justify-end gap-2">
+                                                            <div className="flex justify-end gap-2">
                                                                 <Button
                                                                     variant="ghost"
                                                                     size="icon"
@@ -329,7 +296,7 @@ export default function Products() {
                                                                 >
                                                                     <Trash2 className="w-4 h-4" />
                                                                 </Button>
-                                                            </div>}
+                                                            </div>
                                                         </TableCell>
                                                     </TableRow>
                                                 );
@@ -346,9 +313,6 @@ export default function Products() {
                                     <DialogTitle>
                                         {editingProduct ? "Editar Produto" : "Novo Cadastro de Produto"}
                                     </DialogTitle>
-                                    <DialogDescription className="sr-only">
-                                        Preencha os dados de identificação, categoria e preço do produto.
-                                    </DialogDescription>
                                 </DialogHeader>
                                 <div className="grid gap-4 py-4">
                                     <div className="grid grid-cols-2 gap-4">

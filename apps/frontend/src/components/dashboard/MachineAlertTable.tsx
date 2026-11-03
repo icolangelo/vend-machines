@@ -4,8 +4,7 @@ import { AlertTriangle } from "lucide-react";
 
 export function MachineAlertTable({ machines }: { machines: Machine[] }) {
     const alertMachines = machines.filter(
-        (m) => m.status === "offline" || m.status === "warning" || m.status === "unmonitored" || m.lowStock === true
-            || m.belowSalesTarget === true
+        (m) => m.status === "offline" || m.status === "warning" || m.stockLevel < 25
     );
 
     return (
@@ -28,18 +27,11 @@ export function MachineAlertTable({ machines }: { machines: Machine[] }) {
                             <th className="text-left px-5 py-2.5 text-label font-medium">Localização</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Status</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Estoque</th>
-                            <th className="text-left px-5 py-2.5 text-label font-medium">Vendas / meta 30 dias</th>
                             <th className="text-left px-5 py-2.5 text-label font-medium">Última Sinc.</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {alertMachines.length === 0 ? (
-                            <tr>
-                                <td colSpan={7} className="px-5 py-8 text-center text-sm text-muted-foreground">
-                                    Nenhuma máquina precisa de atenção no momento.
-                                </td>
-                            </tr>
-                        ) : alertMachines.map((machine) => (
+                        {alertMachines.map((machine) => (
                             <tr
                                 key={machine.id}
                                 className="border-b last:border-b-0 hover:bg-muted/30 transition-colors duration-150 cursor-pointer"
@@ -57,7 +49,7 @@ export function MachineAlertTable({ machines }: { machines: Machine[] }) {
                                     <StatusIndicator status={machine.status} />
                                 </td>
                                 <td className="px-5 py-3">
-                                    {machine.inventoryConfigured ? <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2">
                                         <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
                                             <div
                                                 className={`h-full rounded-full ${machine.stockLevel > 50
@@ -70,15 +62,7 @@ export function MachineAlertTable({ machines }: { machines: Machine[] }) {
                                             />
                                         </div>
                                         <span className="font-mono-data text-xs">{machine.stockLevel}%</span>
-                                    </div> : <span className="text-xs text-muted-foreground">Não cadastrado</span>}
-                                </td>
-                                <td className="px-5 py-3 text-xs">
-                                    {machine.minimumSalesTarget30d != null ? (
-                                        <div>
-                                            <span className="font-mono-data">{machine.totalSales30d} / {machine.minimumSalesTarget30d}</span>
-                                            {machine.belowSalesTarget && <span className="block text-destructive">Abaixo da meta</span>}
-                                        </div>
-                                    ) : <span className="text-muted-foreground">Sem meta</span>}
+                                    </div>
                                 </td>
                                 <td className="px-5 py-3 text-xs text-muted-foreground">
                                     {machine.lastSync}

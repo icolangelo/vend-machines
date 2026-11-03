@@ -6,5 +6,5 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && !(error instanceof TypeError) && error.message ? error.message : fallback;
+  return error instanceof Error && error.message ? error.message : fallback;
 }

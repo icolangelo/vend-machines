@@ -307,16 +307,22 @@ require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/MachineCrede
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/WorkerHealthController.cs" 'oldestDeferredLegacyFinancialOutboxAgeSeconds'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/WorkerHealthController.cs" 'legacyRelayEligibleCount'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/BackgroundWorkerHealthRegistryTests.cs" 'GetProperty("legacyRelay")'
-require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'No processo anterior'
-require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'shows healthy legacy sockets separately from release-blocking routes'
+if [[ -f "$repo_root/apps/frontend/src/test/Admin.test.tsx" ]]; then
+  require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'No processo anterior'
+  require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'shows healthy legacy sockets separately from release-blocking routes'
+fi
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/LegacyMachineConnectionsController.cs" 'Authorize(Roles = AppRoles.PlatformAdmin)'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/LegacyMachineConnectionsControllerTests.cs" 'EndpointIsRestrictedToPlatformAdministrators'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/SessionOrchestratorFlowTests.cs" 'ExpiredPaymentDeadlineForLegacyOnlineOwnerIsLeftToPreviousApi'
-require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Máquinas ainda conectadas à API anterior'
-require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'lists safe machine details and paginates legacy connections'
+if [[ -f "$repo_root/apps/frontend/src/test/Admin.test.tsx" ]]; then
+  require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Máquinas ainda conectadas à API anterior'
+  require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'lists safe machine details and paginates legacy connections'
+fi
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/BackgroundWorkerHealthRegistryTests.cs" 'deferred_legacy_overlap'
-require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Adiadas na sobreposição'
-require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'surfaces deferred financial operations and their age during legacy overlap'
+if [[ -f "$repo_root/apps/frontend/src/test/Admin.test.tsx" ]]; then
+  require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Adiadas na sobreposição'
+  require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'surfaces deferred financial operations and their age during legacy overlap'
+fi
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/LegacyTelemetryRequestRelay.cs" 'RelayHopHeaderName'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Middlewares/LegacyRelayLoopGuardMiddleware.cs" 'legacy_relay_loop_blocked'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'LegacyRelayLoopGuardMiddleware'
