@@ -74,6 +74,20 @@ bash ./start-private-backend-candidate.sh \
   --host-port 18080
 ```
 
+## Efeitos da candidata no banco compartilhado
+
+“Sem tráfego público” significa que a porta publicada fica limitada a loopback; **não significa que o processo seja somente leitura**. A API inicia workers de inbox de telemetria, webhooks, conciliação de pagamentos, deadlines/outbox, polling MDB e alertas sobre o banco configurado. O worker de telemetria também executa a limpeza de retenção de eventos e comandos antigos. Esses workers podem reivindicar e processar trabalho pendente enquanto a API anterior continua atendendo.
+
+Os workers usam claims/transações no PostgreSQL para coordenar réplicas; os caminhos MDB e financeiros verificam o owner/lease e encaminham ou adiam operações de sockets legados. Os ensaios sintéticos cobrem esses fluxos e a convivência com o binário anterior, mas não provam o estado nem os efeitos na base comercial. Antes de iniciar, exija backup restaurável, ensaio da cadeia de migrations em cópia recente e o `deploy-preflight.sql` aprovado para o mesmo SHA. Acompanhe `/api/admin/worker-health`, logs redigidos, contagens de inbox/outbox e pings da API antiga durante a janela. Não considere a candidata isolada um probe inerte.
+
+Se readiness ou preflight falhar, não encaminhe rota. Para parar apenas a candidata privada e manter a API antiga, use o nome exato `container=` impresso pelo launcher:
+
+```bash
+docker stop --time 45 '<nome exato do container candidato>'
+```
+
+Essa parada não reverte alterações de workers já confirmadas no banco; preserve os registros e investigue antes de qualquer recuperação. Não pare nem remova o container antigo e não restaure backup sobre o banco de produção como rollback.
+
 ## Operações que ficam indisponíveis para sockets legados
 
 Enquanto uma máquina estiver conectada à API antiga, não rotacione nem revogue sua credencial pela candidata e não altere campos que exigem desconexão, como número de série ou ativação. A API antiga de `origin/develop` não oferece a operação de credencial e não conhece o protocolo de owner/dispatch da candidata. A candidata deve responder `503 machine_owner_unknown` antes de alterar a credencial; alterações de identidade/ativação online devem ser recusadas. Não contorne essas respostas editando diretamente o banco. Faça essas mudanças somente depois que o socket estiver offline ou pertencer a uma versão com rota de desconexão comprovada.
