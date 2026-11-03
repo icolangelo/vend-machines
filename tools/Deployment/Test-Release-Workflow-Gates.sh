@@ -69,7 +69,10 @@ require_contains "$workflow" 'python -B tools/Deployment/test_backend_docker_con
 require_contains "$verify_workflow" 'python -B tools/Deployment/test_backend_docker_context.py'
 require_contains "$verify_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$verify_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
-require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.pull_request.base.sha || github.event.before }}'
+require_contains "$verify_workflow" 'id: frontend-target'
+require_contains "$verify_workflow" 'git diff --quiet "$base_ref" "$GITHUB_SHA" -- apps/frontend'
+require_contains "$verify_workflow" "if: steps.frontend-target.outputs.changed == 'true'"
+require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ steps.frontend-target.outputs.base_ref }}'
 require_contains "$verify_workflow" '--backend-ref "$backend_ref"'
 frontend_checkout="$(sed -n '/^  frontend-checks:/,$p' "$verify_workflow" | sed -n '/^[[:space:]]*- name: Checkout code$/,/^[[:space:]]*- name: Set up Node.js$/p')"
 if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
@@ -80,6 +83,12 @@ require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiCon
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$frontend_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.before }}'
 require_contains "$frontend_workflow" '--backend-ref "$backend_ref"'
+require_contains "$frontend_workflow" 'tools/Deployment/CheckFrontendApiContract.mjs'
+require_contains "$frontend_workflow" 'tools/Deployment/test_frontend_api_contract.mjs'
+if grep -Fq 'tools/Deployment/**' "$frontend_workflow"; then
+  echo "A publicação da imagem frontend não deve disparar por alterações backend-only em tools/Deployment." >&2
+  exit 1
+fi
 require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$workflow" 'FRONTEND_COMPAT_REF: ${{ github.event.before }}'

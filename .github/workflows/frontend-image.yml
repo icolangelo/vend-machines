@@ -5,8 +5,8 @@ on:
     branches: ["develop", "main", "master"]
     paths:
       - "apps/frontend/**"
-      - "tools/Deployment/**"
-      - ".github/workflows/frontend-image.yml"
+      - "tools/Deployment/CheckFrontendApiContract.mjs"
+      - "tools/Deployment/test_frontend_api_contract.mjs"
   workflow_dispatch:
 
 permissions:

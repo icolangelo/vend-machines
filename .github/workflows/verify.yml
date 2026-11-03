@@ -139,6 +139,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Detect frontend changes against the release base
+        id: frontend-target
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            base_ref="$PR_BASE_SHA"
+          elif [[ "$REF_NAME" == "develop" || "$REF_NAME" == "main" || "$REF_NAME" == "master" ]]; then
+            base_ref="$EVENT_BEFORE_SHA"
+          elif git rev-parse --verify origin/develop^{commit} >/dev/null 2>&1; then
+            base_ref="origin/develop"
+          else
+            base_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          if [[ -z "$base_ref" || "$base_ref" =~ ^0+$ ]]; then
+            base_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          if ! git cat-file -e "${base_ref}^{commit}"; then
+            echo "::error::Não foi possível resolver a base para verificar alterações do frontend."
+            exit 1
+          fi
+          if git diff --quiet "$base_ref" "$GITHUB_SHA" -- apps/frontend; then
+            frontend_changed=false
+          else
+            frontend_changed=true
+          fi
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "changed=$frontend_changed" >> "$GITHUB_OUTPUT"
+          echo "Frontend changed against $base_ref: $frontend_changed"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -146,18 +179,15 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
-      - name: Install dependencies
-        working-directory: apps/frontend
-        run: npm ci
-
       - name: Verify frontend API contract
         run: |
           node tools/Deployment/CheckFrontendApiContract.mjs
           node --test tools/Deployment/test_frontend_api_contract.mjs
 
       - name: Verify frontend compatibility with the target API
+        if: steps.frontend-target.outputs.changed == 'true'
         env:
-          BACKEND_COMPAT_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BACKEND_COMPAT_REF: ${{ steps.frontend-target.outputs.base_ref }}
         run: |
           set -euo pipefail
           backend_ref="$BACKEND_COMPAT_REF"
@@ -166,31 +196,43 @@ jobs:
           fi
           node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
 
+      - name: Install dependencies
+        if: steps.frontend-target.outputs.changed == 'true'
+        working-directory: apps/frontend
+        run: npm ci
+
       - name: Audit dependencies
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npm audit --audit-level=moderate
 
       - name: Check types
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npx tsc --noEmit -p tsconfig.app.json
 
       - name: Lint
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npm run lint
 
       - name: Run tests
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npm test
 
       - name: Install Playwright browsers
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npx playwright install --with-deps chromium firefox webkit
 
       - name: Run browser tests across Chromium, Firefox and WebKit
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         run: npm run test:e2e:cross-browser
 
       - name: Build for production
+        if: steps.frontend-target.outputs.changed == 'true'
         working-directory: apps/frontend
         env:
           VITE_API_URL: https://api.vendmachine.com.br/api
@@ -198,6 +240,7 @@ jobs:
         run: npm run build
 
       - name: Build frontend container without publishing
+        if: steps.frontend-target.outputs.changed == 'true'
         run: >-
           docker build
           --build-arg VITE_API_URL=https://api.vendmachine.com.br/api
@@ -206,6 +249,7 @@ jobs:
           apps/frontend
 
       - name: Verify frontend container user and health check
+        if: steps.frontend-target.outputs.changed == 'true'
         run: |
           image_user="$(docker image inspect --format '{{.Config.User}}' vend-machines-frontend:verify)"
           runtime_uid="$(docker run --rm --entrypoint id vend-machines-frontend:verify -u)"
