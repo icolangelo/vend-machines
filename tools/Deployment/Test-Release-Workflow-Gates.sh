@@ -71,6 +71,11 @@ require_contains "$verify_workflow" 'node tools/Deployment/CheckFrontendApiContr
 require_contains "$verify_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.pull_request.base.sha || github.event.before }}'
 require_contains "$verify_workflow" '--backend-ref "$backend_ref"'
+frontend_checkout="$(sed -n '/^  frontend-checks:/,$p' "$verify_workflow" | sed -n '/^[[:space:]]*- name: Checkout code$/,/^[[:space:]]*- name: Set up Node.js$/p')"
+if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
+  echo "O job frontend-checks precisa buscar o histórico-base completo para validar a API de destino." >&2
+  exit 1
+fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$frontend_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.before }}'
