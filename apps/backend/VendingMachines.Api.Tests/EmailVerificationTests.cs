@@ -14,6 +14,61 @@ namespace VendingMachines.Api.Tests;
 
 public sealed class EmailVerificationTests
 {
+    [Theory]
+    [InlineData("email")]
+    [InlineData("cpf")]
+    [InlineData("cnpj")]
+    public async Task PublicRegistrationDoesNotRevealWhichIdentityFieldIsAlreadyRegistered(string duplicateField)
+    {
+        await using var scenario = await CreateScenarioAsync();
+        const string existingEmail = "existente@example.com";
+        const string existingCpf = "529.982.247-25";
+        const string existingCnpj = "12.345.678/0001-95";
+
+        if (duplicateField is "email" or "cpf")
+        {
+            scenario.Db.Users.Add(new User
+            {
+                Name = "Conta existente",
+                Email = existingEmail,
+                NormalizedEmail = RegistrationIdentity.NormalizeEmail(existingEmail),
+                Cpf = existingCpf,
+                NormalizedCpf = RegistrationIdentity.NormalizeCpf(existingCpf)
+            });
+            await scenario.Db.SaveChangesAsync();
+        }
+
+        if (duplicateField == "cnpj")
+        {
+            scenario.Db.Companies.Add(new Company
+            {
+                Name = "Empresa existente",
+                Cnpj = existingCnpj,
+                NormalizedCnpj = RegistrationIdentity.NormalizeCnpj(existingCnpj)
+            });
+            await scenario.Db.SaveChangesAsync();
+        }
+
+        var request = new RegisterRequest
+        {
+            Name = "Nova pessoa",
+            Email = duplicateField == "email" ? existingEmail : "novo@example.com",
+            Password = "senha-segura-com-12", // gitleaks:allow
+            Cpf = duplicateField == "cpf" ? existingCpf : "111.444.777-35",
+            CompanyName = "Nova empresa",
+            CompanyCnpj = duplicateField == "cnpj" ? existingCnpj : "11.222.333/0001-81",
+            AcceptedPrivacyPolicy = true
+        };
+
+        var result = Assert.IsType<ConflictObjectResult>(await CreateAuthController(
+            scenario.Db,
+            new RecordingAccountEmailSender()).Register(request));
+
+        Assert.Equal(
+            "E-mail, CPF ou CNPJ já cadastrado.",
+            result.Value!.GetType().GetProperty("message")!.GetValue(result.Value));
+    }
+
     [Fact]
     public async Task RegistrationRequiresVerificationEvenIfCompanyIsApprovedFirst()
     {
@@ -35,6 +90,7 @@ public sealed class EmailVerificationTests
         Assert.True((bool)registration.Value!.GetType().GetProperty("verificationEmailSent")!.GetValue(registration.Value)!);
         var company = await scenario.Db.Companies.SingleAsync();
         var owner = await scenario.Db.Users.SingleAsync();
+        Assert.Equal(PrivacyPolicyVersions.Current, owner.PrivacyPolicyVersion);
         var firstToken = Assert.Single(emailSender.VerificationTokens).Token;
         Assert.DoesNotContain(firstToken, JsonSerializer.Serialize(registration.Value), StringComparison.Ordinal);
         Assert.True(owner.RequiresEmailVerification);

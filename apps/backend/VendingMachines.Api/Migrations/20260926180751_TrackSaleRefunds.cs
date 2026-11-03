@@ -29,13 +29,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "FinancialStatus",
-                table: "SaleRecords");
-
-            migrationBuilder.DropColumn(
-                name: "RefundedAmount",
-                table: "SaleRecords");
+            throw new System.InvalidOperationException(
+                "Esta migration contém estado financeiro de estorno. Reverta somente o binário e preserve FinancialStatus e RefundedAmount.");
         }
     }
 }

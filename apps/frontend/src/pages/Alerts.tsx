@@ -1,43 +1,94 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Bell, Search, AlertTriangle, AlertCircle, Calendar, Users, RefreshCw, Package } from "lucide-react";
 import { type Machine } from "@/data/mockData";
-import { getMachines, getOperationalAlerts, markOperationalAlertRead, type OperationalAlertItem } from "@/lib/api";
-import { filterOperationalAlerts, type OperationalAlertFilter } from "@/lib/operationalAlertFilters";
+import { getMachines, getOperationalAlerts, getOperationalAlertSummary, markOperationalAlertRead, resolveIncompleteSessionClosure, type OperationalAlertItem } from "@/lib/api";
+import type { OperationalAlertFilter } from "@/lib/operationalAlertFilters";
 import { StatusIndicator } from "@/components/dashboard/StatusIndicator";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/useAuth";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+
+const ALERTS_PAGE_SIZE = 50;
 
 export default function Alerts() {
+    const navigate = useNavigate();
+    const { user } = useAuth();
     const [machines, setMachines] = useState<Machine[]>([]);
     const [loading, setLoading] = useState(true);
+    const [hasLoadedMachines, setHasLoadedMachines] = useState(false);
+    const [hasLoadedAlerts, setHasLoadedAlerts] = useState(false);
+    const [hasLoadedSummary, setHasLoadedSummary] = useState(false);
     const [search, setSearch] = useState("");
     const [statusFilter, setStatusFilter] = useState<OperationalAlertFilter>("all");
+    const [page, setPage] = useState(1);
+    const [loadedPage, setLoadedPage] = useState(1);
+    const [totalAlerts, setTotalAlerts] = useState(0);
     const [alerts, setAlerts] = useState<OperationalAlertItem[]>([]);
+    const [closureAlert, setClosureAlert] = useState<OperationalAlertItem | null>(null);
+    const [closureEvidence, setClosureEvidence] = useState("");
+    const [closureConfirmed, setClosureConfirmed] = useState(false);
+    const [resolvingClosure, setResolvingClosure] = useState(false);
+    const [alertSummary, setAlertSummary] = useState<{ disconnectedMachines: number; otherActiveAlerts: number } | null>(null);
     const [loadError, setLoadError] = useState(false);
+    const [alertsLoadError, setAlertsLoadError] = useState(false);
+    const requestVersion = useRef(0);
 
     const fetchAlertsData = useCallback(async () => {
+        const currentRequest = ++requestVersion.current;
         setLoading(true);
         setLoadError(false);
-        try {
-            const requestedStatus = statusFilter === "resolved" ? "Resolved" : statusFilter === "all" ? "All" : "Active";
-            const [machinesData, alertData] = await Promise.all([getMachines(), getOperationalAlerts(requestedStatus)]);
-            setMachines(machinesData);
-            setAlerts(alertData);
-        } catch (error) {
-            console.error("Erro ao buscar dados de alertas:", error);
-            setLoadError(true);
-            toast.error("Falha ao carregar a lista de alertas.");
-        } finally {
-            setLoading(false);
+        setAlertsLoadError(false);
+        const requestedStatus = statusFilter === "resolved" ? "Resolved" : statusFilter === "all" ? "All" : "Active";
+        const requestedType = statusFilter === "offline" ? "TelemetryOffline" : statusFilter === "warning" ? "OtherActive" : "All";
+        const results = await Promise.allSettled([
+            getMachines(),
+            getOperationalAlerts(requestedStatus, page, ALERTS_PAGE_SIZE, requestedType, search),
+            getOperationalAlertSummary(),
+        ]);
+        if (currentRequest !== requestVersion.current) return;
+
+        let hasFailure = false;
+        const [machinesResult, alertsResult, summaryResult] = results;
+        if (machinesResult.status === "fulfilled") {
+            setMachines(machinesResult.value);
+            setHasLoadedMachines(true);
+        } else {
+            hasFailure = true;
+            console.error("Erro ao buscar máquinas para os alertas:", machinesResult.reason);
         }
-    }, [statusFilter]);
+        if (alertsResult.status === "fulfilled") {
+            setAlerts(alertsResult.value.items);
+            setLoadedPage(alertsResult.value.page);
+            setTotalAlerts(alertsResult.value.total);
+            setHasLoadedAlerts(true);
+        } else {
+            hasFailure = true;
+            setAlertsLoadError(true);
+            console.error("Erro ao buscar a lista de alertas:", alertsResult.reason);
+        }
+        if (summaryResult.status === "fulfilled") {
+            setAlertSummary(summaryResult.value);
+            setHasLoadedSummary(true);
+        } else {
+            hasFailure = true;
+            console.error("Erro ao buscar o resumo de alertas:", summaryResult.reason);
+        }
+        setLoadError(hasFailure);
+        if (hasFailure) toast.error("Alguns dados de alertas não puderam ser atualizados.");
+        setLoading(false);
+    }, [page, search, statusFilter]);
 
     useEffect(() => {
         void fetchAlertsData();
+        return () => { requestVersion.current += 1; };
     }, [fetchAlertsData]);
 
     const handleMarkRead = async (alert: OperationalAlertItem) => {
@@ -49,11 +100,28 @@ export default function Alerts() {
         }
     };
 
-    // Filter alerts based on search and status selection
-    const filteredAlerts = useMemo(() => {
-        return filterOperationalAlerts(alerts, search, statusFilter);
-    }, [alerts, search, statusFilter]);
-    const activeAlerts = useMemo(() => alerts.filter(alert => alert.status === "Active"), [alerts]);
+    const handleResolveIncompleteClosure = async () => {
+        if (!closureAlert?.sessionId) return;
+        setResolvingClosure(true);
+        try {
+            await resolveIncompleteSessionClosure(closureAlert.sessionId, closureEvidence.trim());
+            toast.success("Encerramento confirmado e registrado na auditoria.");
+            setClosureAlert(null);
+            setClosureEvidence("");
+            setClosureConfirmed(false);
+            await fetchAlertsData();
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Não foi possível confirmar o encerramento da sessão.");
+        } finally {
+            setResolvingClosure(false);
+        }
+    };
+
+    const filteredAlerts = alerts;
+    const summaryValue = (value: number | undefined, isLoaded: boolean) => isLoaded
+        ? (value ?? 0).toLocaleString("pt-BR")
+        : loading ? "…" : "Indisponível";
+    const hasLoadedAnyData = hasLoadedMachines || hasLoadedAlerts || hasLoadedSummary;
 
     return (
         <SidebarProvider>
@@ -80,9 +148,9 @@ export default function Alerts() {
                                     <AlertCircle className="w-5 h-5" />
                                 </div>
                                 <div>
-                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas Offline</p>
+                                    <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas desconectadas</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {activeAlerts.filter(a => a.type === "TelemetryOffline").length}
+                                        {summaryValue(alertSummary?.disconnectedMachines, hasLoadedSummary)}
                                     </p>
                                 </div>
                             </div>
@@ -93,7 +161,7 @@ export default function Alerts() {
                                 <div>
                                     <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Outros alertas ativos</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {activeAlerts.filter(a => a.type !== "TelemetryOffline").length}
+                                        {summaryValue(alertSummary?.otherActiveAlerts, hasLoadedSummary)}
                                     </p>
                                 </div>
                             </div>
@@ -104,7 +172,7 @@ export default function Alerts() {
                                 <div>
                                     <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Máquinas com estoque baixo</p>
                                     <p className="text-2xl font-bold font-mono-data text-foreground mt-0.5">
-                                        {machines.filter(machine => machine.lowStock).length}
+                                        {summaryValue(machines.filter(machine => machine.lowStock).length, hasLoadedMachines)}
                                     </p>
                                 </div>
                             </div>
@@ -117,20 +185,20 @@ export default function Alerts() {
                                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                                     <Input 
                                         type="text"
-                                        placeholder="Buscar por máquina, localização ou motivo..."
+                                        placeholder="Buscar por máquina, cliente ou motivo..."
                                         className="pl-9 w-full"
                                         value={search}
-                                        onChange={(e) => setSearch(e.target.value)}
+                                        onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                                     />
                                 </div>
                                 <div className="w-full sm:w-48">
-                                    <Select value={statusFilter} onValueChange={value => setStatusFilter(value as OperationalAlertFilter)}>
+                                    <Select value={statusFilter} onValueChange={value => { setStatusFilter(value as OperationalAlertFilter); setPage(1); }}>
                                         <SelectTrigger>
                                             <SelectValue placeholder="Filtrar por Status" />
                                         </SelectTrigger>
                                         <SelectContent>
                                             <SelectItem value="all">Todos os Status</SelectItem>
-                                            <SelectItem value="offline">Apenas Offline</SelectItem>
+                                            <SelectItem value="offline">Apenas desconectadas</SelectItem>
                                             <SelectItem value="warning">Apenas Atenção</SelectItem>
                                             <SelectItem value="resolved">Histórico resolvido</SelectItem>
                                         </SelectContent>
@@ -153,20 +221,20 @@ export default function Alerts() {
                         </div>
 
                         {/* Alerts Notification List */}
-                        {loadError && alerts.length > 0 && (
+                        {loadError && hasLoadedAnyData && (
                             <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
-                                <span>Não foi possível atualizar os alertas. A lista exibida pode estar desatualizada.</span>
+                                <span>Alguns dados de alertas não puderam ser atualizados. As informações exibidas podem estar desatualizadas ou indisponíveis.</span>
                                 <Button variant="outline" size="sm" onClick={() => void fetchAlertsData()} disabled={loading}>
                                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                                     Tentar novamente
                                 </Button>
                             </div>
                         )}
-                        {loading && alerts.length === 0 ? (
+                        {loading && !hasLoadedAlerts ? (
                             <div className="flex items-center justify-center py-20 bg-card border rounded-lg">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando alertas...</p>
                             </div>
-                        ) : loadError && alerts.length === 0 ? (
+                        ) : alertsLoadError && !hasLoadedAlerts ? (
                             <div role="alert" className="flex flex-col items-center justify-center gap-3 py-20 bg-card border rounded-lg border-dashed text-center">
                                 <h3 className="text-base font-semibold text-foreground">Não foi possível carregar os alertas</h3>
                                 <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
@@ -225,16 +293,126 @@ export default function Alerts() {
                                         </div>
 
                                         <div className="sm:self-center flex items-center gap-2">
-                                            <StatusIndicator status={alert.type === "TelemetryOffline" ? "offline" : "warning"} />
+                                            {alert.status === "Resolved" ? (
+                                                <span className="text-xs rounded-full bg-muted px-2 py-1 text-muted-foreground">Resolvido</span>
+                                            ) : (
+                                                <StatusIndicator status={alert.type === "TelemetryOffline" ? "offline" : alert.type === "TelemetryUnmonitored" ? "unmonitored" : "warning"} />
+                                            )}
+                                            {alert.type === "LowStock" && alert.machineId && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => navigate(`/inventory?machineId=${encodeURIComponent(alert.machineId!)}`)}
+                                                >
+                                                    Ver estoque
+                                                </Button>
+                                            )}
+                                            {alert.type === "InventoryMappingMismatch" && alert.machineId && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => navigate(`/inventory?machineId=${encodeURIComponent(alert.machineId!)}`)}
+                                                >
+                                                    Conferir estoque
+                                                </Button>
+                                            )}
+                                            {["TelemetryOffline", "TelemetryWarning", "TelemetryUnmonitored", "TelemetryOwnerUnknown", "SessionFailure"].includes(alert.type) && alert.machineId && (
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => navigate(`/telemetry?machineId=${encodeURIComponent(alert.machineId!)}`)}
+                                                >
+                                                    Ver telemetria
+                                                </Button>
+                                            )}
+                                            {alert.type === "PaymentPending" && alert.transactionId && (
+                                                <Button variant="outline" size="sm" onClick={() => navigate(`/payments?transactionId=${encodeURIComponent(alert.transactionId!)}`)}>
+                                                    Ver pagamento
+                                                </Button>
+                                            )}
+                                            {alert.type === "PaymentPending" && user?.role === "PlatformAdmin" && (
+                                                <Button variant="outline" size="sm" onClick={() => navigate("/admin?tab=payments")}>
+                                                    Ver conciliação
+                                                </Button>
+                                            )}
+                                            {alert.type === "SessionFailure" && alert.status === "Active" && alert.sessionState === "ClosureIncomplete" && alert.sessionId && user?.role !== "Operator" && (
+                                                <Button variant="outline" size="sm" onClick={() => setClosureAlert(alert)}>
+                                                    Confirmar máquina ociosa
+                                                </Button>
+                                            )}
                                             {!alert.isRead && alert.status === "Active" && <Button variant="outline" size="sm" onClick={() => void handleMarkRead(alert)}>Marcar como lido</Button>}
                                         </div>
                                     </div>
                                 ))}
                             </div>
                         )}
+                        {hasLoadedAlerts && totalAlerts > 0 && (
+                            <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between" aria-label="Paginação de alertas">
+                                <p className="text-sm text-muted-foreground">
+                                    Exibindo {(loadedPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(loadedPage * ALERTS_PAGE_SIZE, totalAlerts)} de {totalAlerts} alertas
+                                </p>
+                                <div className="flex items-center gap-2">
+                                    <Button variant="outline" size="sm" onClick={() => setPage(current => Math.max(1, loadedPage - 1))} disabled={loading || loadedPage <= 1}>
+                                        Anterior
+                                    </Button>
+                                    <span className="text-sm text-muted-foreground">Página {loadedPage} de {Math.ceil(totalAlerts / ALERTS_PAGE_SIZE)}</span>
+                                    <Button variant="outline" size="sm" onClick={() => setPage(loadedPage + 1)} disabled={loading || loadedPage * ALERTS_PAGE_SIZE >= totalAlerts}>
+                                        Próxima
+                                    </Button>
+                                </div>
+                            </div>
+                        )}
                     </main>
                 </div>
             </div>
+            <Dialog open={closureAlert !== null} onOpenChange={open => {
+                if (!open && !resolvingClosure) {
+                    setClosureAlert(null);
+                    setClosureEvidence("");
+                    setClosureConfirmed(false);
+                }
+            }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Confirmar encerramento físico</DialogTitle>
+                        <DialogDescription>
+                            Inspecione a máquina antes de continuar. Só confirme se ela está ociosa e segura para receber uma nova sessão. Esta ação será registrada com seu usuário e uma referência de evidência.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <Label htmlFor="closure-evidence-reference">Referência do chamado ou registro</Label>
+                            <Input
+                                id="closure-evidence-reference"
+                                value={closureEvidence}
+                                onChange={event => setClosureEvidence(event.target.value)}
+                                placeholder="SUP-1234"
+                                maxLength={64}
+                                autoComplete="off"
+                            />
+                        </div>
+                        <div className="flex items-start gap-2">
+                            <Checkbox
+                                id="closure-machine-idle-confirmation"
+                                checked={closureConfirmed}
+                                onCheckedChange={checked => setClosureConfirmed(checked === true)}
+                            />
+                            <Label htmlFor="closure-machine-idle-confirmation" className="leading-5">
+                                Inspecionei a máquina e confirmei que não há sessão ou entrega em andamento.
+                            </Label>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setClosureAlert(null)} disabled={resolvingClosure}>Cancelar</Button>
+                        <Button
+                            onClick={() => void handleResolveIncompleteClosure()}
+                            disabled={resolvingClosure || !closureConfirmed || !/^[A-Za-z0-9._/:_-]{3,64}$/.test(closureEvidence.trim())}
+                        >
+                            {resolvingClosure ? "Salvando…" : "Registrar confirmação"}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </SidebarProvider>
     );
 }

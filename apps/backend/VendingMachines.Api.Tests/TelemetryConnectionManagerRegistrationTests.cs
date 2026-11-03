@@ -1,6 +1,8 @@
 using System.Net.WebSockets;
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using VendingMachines.Api.Services;
 using Xunit;
@@ -10,6 +12,21 @@ namespace VendingMachines.Api.Tests;
 public sealed class TelemetryConnectionManagerRegistrationTests
 {
     [Fact]
+    public void ConnectionOperationContractsResolveToTheSameSingletonManager()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<TelemetryPanelHub>();
+        services.AddTelemetryConnectionOperations();
+
+        using var provider = services.BuildServiceProvider();
+        var manager = provider.GetRequiredService<TelemetryConnectionManager>();
+
+        Assert.Same(manager, provider.GetRequiredService<ITelemetryCommandSender>());
+        Assert.Same(manager, provider.GetRequiredService<ITelemetryConnectionOperations>());
+    }
+
+    [Fact]
     public void LegacyDuplicateSerialIsRejectedWithoutDisconnectingTheActiveMachine()
     {
         using var manager = CreateManager(requireCredentials: false);
@@ -17,8 +34,8 @@ public sealed class TelemetryConnectionManagerRegistrationTests
         var previousSocket = new FakeWebSocket();
         var duplicateSocket = new FakeWebSocket();
         var companyId = Guid.NewGuid();
-        var previous = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", previousSocket });
-        var duplicate = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", duplicateSocket });
+        var previous = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", previousSocket, false });
+        var duplicate = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", duplicateSocket, false });
 
         Assert.True((bool)register!.Invoke(manager, new[] { previous })!);
         Assert.False((bool)register.Invoke(manager, new[] { duplicate })!);
@@ -30,6 +47,11 @@ public sealed class TelemetryConnectionManagerRegistrationTests
         Assert.False(duplicateCancellation.IsCancellationRequested);
         Assert.Same(previous, GetRegisteredConnection(manager, connectionType, "SERIAL-1"));
         Assert.True(manager.IsOnline(" SERIAL-1 "));
+        var connectionId = (string)connectionType.GetProperty("ConnectionId")!.GetValue(previous)!;
+        Assert.Equal(connectionId, manager.GetActiveMachineConnectionsForLease()["machine-1"]);
+
+        previousSocket.Dispose();
+        Assert.Empty(manager.GetActiveMachineConnectionsForLease());
     }
 
     [Fact]
@@ -40,8 +62,8 @@ public sealed class TelemetryConnectionManagerRegistrationTests
         var previousSocket = new FakeWebSocket();
         var currentSocket = new FakeWebSocket();
         var companyId = Guid.NewGuid();
-        var previous = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", previousSocket });
-        var current = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", currentSocket });
+        var previous = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", previousSocket, true });
+        var current = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", currentSocket, true });
 
         Assert.True((bool)register!.Invoke(manager, new[] { previous })!);
         Assert.True((bool)register.Invoke(manager, new[] { current })!);
@@ -51,9 +73,81 @@ public sealed class TelemetryConnectionManagerRegistrationTests
         Assert.True(previousCancellation.IsCancellationRequested);
         Assert.Same(current, GetRegisteredConnection(manager, connectionType, "SERIAL-1"));
         Assert.True(manager.IsOnline("SERIAL-1"));
+        var currentConnectionId = (string)connectionType.GetProperty("ConnectionId")!.GetValue(current)!;
+        Assert.Equal(currentConnectionId, manager.GetActiveMachineConnectionsForLease()["machine-1"]);
     }
 
-    private static TelemetryConnectionManager CreateManager(bool requireCredentials)
+    [Fact]
+    public void LeaseSnapshotOmitsMachineWithAmbiguousLocalSockets()
+    {
+        using var manager = CreateManager(requireCredentials: true);
+        var (register, _, constructor) = GetRegistrationMembers();
+        var companyId = Guid.NewGuid();
+        var first = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-1", new FakeWebSocket(), true });
+        var second = constructor.Invoke(new object[] { "machine-1", companyId, "SERIAL-2", new FakeWebSocket(), true });
+
+        Assert.True((bool)register!.Invoke(manager, new[] { first })!);
+        Assert.True((bool)register.Invoke(manager, new[] { second })!);
+
+        Assert.Empty(manager.GetActiveMachineConnectionsForLease());
+    }
+
+    [Fact]
+    public async Task ShutdownRejectsNewSessionStartsAndWaitsForAdmittedStartsToFinish()
+    {
+        using var lifetime = new ApiReadinessEndpointTests.TestApplicationLifetime();
+        using var manager = CreateManager(requireCredentials: false, lifetime);
+        using var admittedStart = manager.TryBeginSessionStart();
+        Assert.NotNull(admittedStart);
+
+        var stopping = Task.Run(lifetime.BeginStopping);
+        IDisposable? probe = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            probe = manager.TryBeginSessionStart();
+            if (probe == null) break;
+            probe.Dispose();
+            await Task.Delay(10);
+        }
+
+        Assert.Null(probe);
+        Assert.False(stopping.IsCompleted);
+
+        admittedStart.Dispose();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Null(manager.TryBeginSessionStart());
+    }
+
+    [Fact]
+    public async Task ShutdownWaitsForAdmittedWriteRequestsBeforeDrainingTelemetry()
+    {
+        using var lifetime = new ApiReadinessEndpointTests.TestApplicationLifetime();
+        var writeRequestGate = new ShutdownWriteRequestGate();
+        using var manager = CreateManager(requireCredentials: false, lifetime, writeRequestGate);
+        using var admittedWrite = writeRequestGate.TryBeginWriteRequest();
+        Assert.NotNull(admittedWrite);
+
+        var stopping = Task.Run(lifetime.BeginStopping);
+        IDisposable? probe = null;
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            probe = writeRequestGate.TryBeginWriteRequest();
+            if (probe == null) break;
+            probe.Dispose();
+            await Task.Delay(10);
+        }
+
+        Assert.Null(probe);
+        Assert.False(stopping.IsCompleted);
+
+        admittedWrite.Dispose();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    private static TelemetryConnectionManager CreateManager(
+        bool requireCredentials,
+        IHostApplicationLifetime? lifetime = null,
+        ShutdownWriteRequestGate? shutdownWriteRequestGate = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -62,7 +156,8 @@ public sealed class TelemetryConnectionManagerRegistrationTests
             })
             .Build();
         return new TelemetryConnectionManager(
-            null!, null!, NullLogger<TelemetryConnectionManager>.Instance, configuration);
+            null!, null!, NullLogger<TelemetryConnectionManager>.Instance, configuration, lifetime,
+            shutdownWriteRequestGate: shutdownWriteRequestGate);
     }
 
     private static (MethodInfo Register, Type ConnectionType, ConstructorInfo Constructor) GetRegistrationMembers()

@@ -18,7 +18,7 @@ export function ClientRanking({ clients }: { clients: Client[] }) {
                         Faturamento por cliente
                     </h2>
                     <p className="text-xs text-muted-foreground">
-                        Após estornos e antes da taxa da plataforma
+                        Após estornos, pré-taxa; faturamento pendente de conciliação excluído
                     </p>
                 </div>
                 <span className="text-label ml-auto whitespace-nowrap">30 dias</span>

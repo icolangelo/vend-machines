@@ -174,6 +174,13 @@ public sealed class OperationalAlertSyncServiceTests
         await db.SaveChangesAsync();
         await service.SyncAsync(CancellationToken.None);
 
+        var stillUnsupported = await db.OperationalAlerts.AsNoTracking().ToListAsync();
+        Assert.Contains(stillUnsupported, alert => alert.Type == "TelemetryOwnerUnknown" && alert.Status == "Active");
+
+        connectionState.CommandRoutingVersion = TelemetryConnectionManager.CurrentCommandRoutingVersion;
+        await db.SaveChangesAsync();
+        await service.SyncAsync(CancellationToken.None);
+
         var resolved = await db.OperationalAlerts.AsNoTracking().ToListAsync();
         Assert.Equal(5, resolved.Count);
         Assert.All(resolved, alert =>
@@ -181,5 +188,174 @@ public sealed class OperationalAlertSyncServiceTests
             Assert.Equal("Resolved", alert.Status);
             Assert.NotNull(alert.ResolvedAt);
         });
+    }
+
+    [Fact]
+    public async Task Sync_ResolvesIncompleteClosureAlertOnlyAfterAuditedClosureConfirmation()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var companyId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var machine = new Machine
+        {
+            Id = "closure-alert-machine",
+            Name = "Máquina com fechamento pendente",
+            SerialNumber = "closure-alert-machine",
+            CompanyId = companyId
+        };
+        var session = new MachineSession
+        {
+            Id = sessionId,
+            CompanyId = companyId,
+            MachineId = machine.Id,
+            State = MachineSessionStates.ClosureIncomplete,
+            ClosedAt = DateTime.UtcNow,
+            LastEventAt = DateTime.UtcNow
+        };
+        db.TelemetryEvents.Add(new TelemetryEvent
+        {
+            CompanyId = companyId,
+            MachineId = machine.Id,
+            SessionId = session.Id,
+            UserId = Guid.NewGuid(),
+            EventType = "session.closure_verified",
+            Detail = "Responsável confirmou que a máquina foi inspecionada e está ociosa.",
+            DataJson = "{\"evidenceReference\":\"vistoria-2026-001\"}",
+            CreatedAt = DateTime.UtcNow
+        });
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa A", Cnpj = "44444444000144" });
+        db.Machines.Add(machine);
+        db.MachineSessions.Add(session);
+        db.OperationalAlerts.Add(new OperationalAlert
+        {
+            CompanyId = companyId,
+            MachineId = machine.Id,
+            SessionId = session.Id,
+            DeduplicationKey = $"session:{session.Id}",
+            Type = "SessionFailure",
+            Severity = "critical",
+            Status = "Active",
+            Title = "Sessão precisa de análise",
+            Description = "A máquina aguarda confirmação física de fechamento."
+        });
+        await db.SaveChangesAsync();
+
+        var service = new OperationalAlertSyncService(db, NullLogger<OperationalAlertSyncService>.Instance);
+        await service.SyncAsync(CancellationToken.None);
+        var pendingAlert = await db.OperationalAlerts.SingleAsync(alert => alert.Type == "SessionFailure");
+        Assert.Equal("Active", pendingAlert.Status);
+
+        session.State = MachineSessionStates.ClosureVerified;
+        await db.SaveChangesAsync();
+        await service.SyncAsync(CancellationToken.None);
+
+        var resolvedAlert = await db.OperationalAlerts.SingleAsync(alert => alert.Type == "SessionFailure");
+        Assert.Equal("Resolved", resolvedAlert.Status);
+        Assert.NotNull(resolvedAlert.ResolvedAt);
+        Assert.Contains("vistoria-2026-001", resolvedAlert.Resolution, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Sync_UsesMonitoringActivationAsBaselineUntilFirstMachineContact()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var companyId = Guid.NewGuid();
+        var machine = new Machine
+        {
+            Id = "never-connected-machine",
+            Name = "Máquina sem primeiro contato",
+            SerialNumber = "never-connected-machine",
+            CompanyId = companyId
+        };
+        var connectionState = new MachineConnectionState
+        {
+            MachineId = machine.Id,
+            CompanyId = companyId,
+            MonitoringEnabled = true,
+            ActivatedAt = DateTime.UtcNow.AddMinutes(-1)
+        };
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa A", Cnpj = "33333333000133" });
+        db.Machines.Add(machine);
+        db.MachineConnectionStates.Add(connectionState);
+        await db.SaveChangesAsync();
+
+        var service = new OperationalAlertSyncService(db, NullLogger<OperationalAlertSyncService>.Instance);
+        await service.SyncAsync(CancellationToken.None);
+        Assert.Empty(await db.OperationalAlerts.ToListAsync());
+        Assert.Equal("warning", Assert.Single(new DatabaseDataService(db).GetMachines(companyId)).Status);
+
+        connectionState.ActivatedAt = DateTime.UtcNow.AddMinutes(-3);
+        await db.SaveChangesAsync();
+        await service.SyncAsync(CancellationToken.None);
+        var warningAlert = await db.OperationalAlerts.SingleAsync();
+        Assert.Equal("TelemetryWarning", warningAlert.Type);
+        Assert.Equal("Active", warningAlert.Status);
+
+        connectionState.ActivatedAt = DateTime.UtcNow.AddMinutes(-6);
+        await db.SaveChangesAsync();
+        await service.SyncAsync(CancellationToken.None);
+        var offlineAlert = await db.OperationalAlerts.SingleAsync(alert => alert.Type == "TelemetryOffline");
+        Assert.Equal("TelemetryOffline", offlineAlert.Type);
+        Assert.Equal("Active", offlineAlert.Status);
+        Assert.Equal("Resolved", (await db.OperationalAlerts.SingleAsync(alert => alert.Type == "TelemetryWarning")).Status);
+
+        connectionState.ActivatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        await service.SyncAsync(CancellationToken.None);
+        Assert.All(await db.OperationalAlerts.ToListAsync(), alert => Assert.Equal("Resolved", alert.Status));
+    }
+
+    [Fact]
+    public async Task Sync_AlertsForOldPendingPaymentWithoutProviderId()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var companyId = Guid.NewGuid();
+        var machine = new Machine
+        {
+            Id = "pending-no-provider-id",
+            Name = "Máquina A",
+            SerialNumber = "pending-no-provider-id",
+            CompanyId = companyId
+        };
+        var payment = new PaymentTransaction
+        {
+            CompanyId = companyId,
+            MachineId = machine.Id,
+            Amount = 12m,
+            Status = "Pending",
+            CreatedAt = DateTime.UtcNow.AddMinutes(-10)
+        };
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa A", Cnpj = "44444444000144" });
+        db.Machines.Add(machine);
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = machine.Id,
+            CompanyId = companyId,
+            MonitoringEnabled = true,
+            ActivatedAt = DateTime.UtcNow
+        });
+        db.PaymentTransactions.Add(payment);
+        await db.SaveChangesAsync();
+
+        var service = new OperationalAlertSyncService(db, NullLogger<OperationalAlertSyncService>.Instance);
+        await service.SyncAsync(CancellationToken.None);
+
+        var alert = await db.OperationalAlerts.SingleAsync();
+        Assert.Equal("PaymentPending", alert.Type);
+        Assert.Equal(payment.Id, alert.TransactionId);
+        Assert.Contains("ainda não tem identificador confirmado pelo provedor", alert.Description, StringComparison.Ordinal);
     }
 }

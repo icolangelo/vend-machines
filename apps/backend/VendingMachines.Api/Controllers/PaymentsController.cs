@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
 using VendingMachines.Api.Services;
@@ -22,8 +23,10 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/[controller]")]
-public class PaymentsController : ControllerBase
+public class PaymentsController : BaseApiController
 {
+    private const string ManualChargebackReimbursementConfirmedReason = "manual_chargeback_reimbursement_confirmed";
+
     private readonly AppDbContext _context;
     private readonly SessionOrchestrator _sessionOrchestrator;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -31,8 +34,19 @@ public class PaymentsController : ControllerBase
     private readonly IWebHostEnvironment _environment;
     private readonly IAuditLogService? _audit;
     private readonly IHttpClientFactory? _httpClientFactory;
+    private readonly WebhookInboxAdmissionService _webhookInboxAdmission;
+    private readonly LegacyTelemetryRequestRelay? _legacyTelemetryRelay;
 
-    public PaymentsController(AppDbContext context, SessionOrchestrator sessionOrchestrator, IServiceScopeFactory scopeFactory, IConfiguration configuration, IWebHostEnvironment environment, IAuditLogService? audit = null, IHttpClientFactory? httpClientFactory = null)
+    public PaymentsController(
+        AppDbContext context,
+        SessionOrchestrator sessionOrchestrator,
+        IServiceScopeFactory scopeFactory,
+        IConfiguration configuration,
+        IWebHostEnvironment environment,
+        IAuditLogService? audit = null,
+        IHttpClientFactory? httpClientFactory = null,
+        WebhookInboxAdmissionService? webhookInboxAdmission = null,
+        LegacyTelemetryRequestRelay? legacyTelemetryRelay = null)
     {
         _context = context;
         _sessionOrchestrator = sessionOrchestrator;
@@ -41,6 +55,11 @@ public class PaymentsController : ControllerBase
         _environment = environment;
         _audit = audit;
         _httpClientFactory = httpClientFactory;
+        _legacyTelemetryRelay = legacyTelemetryRelay;
+        _webhookInboxAdmission = webhookInboxAdmission ?? new WebhookInboxAdmissionService(
+            context,
+            configuration,
+            WebhookInboxAdmissionGate.Shared);
     }
 
     // ==========================================
@@ -56,19 +75,31 @@ public class PaymentsController : ControllerBase
             return StatusCode(403, new { message = "Apenas o administrador do sistema pode consultar a taxa global." });
         }
 
-        var settings = await _context.SystemSettings.FirstOrDefaultAsync();
-        if (settings == null)
+        var settingsRows = await _context.SystemSettings
+            .OrderBy(settings => settings.UpdatedAt)
+            .ThenBy(settings => settings.Id)
+            .Take(2)
+            .ToListAsync();
+        if (settingsRows.Count > 1)
+            return Conflict(new { message = "Há mais de uma configuração global de taxa; solicite a revisão dos dados antes de alterar o valor." });
+
+        if (settingsRows.Count == 0)
         {
-            settings = new SystemSettings
+            return Ok(new
             {
-                Id = Guid.NewGuid(),
                 ApplicationFeePercent = 5.0m,
-                UpdatedAt = DateTime.UtcNow
-            };
-            _context.SystemSettings.Add(settings);
-            await _context.SaveChangesAsync();
+                IsConfigured = false,
+                IsValid = false
+            });
         }
-        return Ok(settings);
+
+        var settings = settingsRows[0];
+        return Ok(new
+        {
+            settings.ApplicationFeePercent,
+            IsConfigured = true,
+            IsValid = settings.ApplicationFeePercent is > 0m and < 100m
+        });
     }
 
     [HttpPost("global-settings")]
@@ -80,17 +111,84 @@ public class PaymentsController : ControllerBase
             return StatusCode(403, new { message = "Apenas o administrador do sistema pode alterar a taxa global." });
         }
 
-        var settings = await _context.SystemSettings.FirstOrDefaultAsync();
+        if (request.ApplicationFeePercent is <= 0m or >= 100m ||
+            decimal.Round(request.ApplicationFeePercent, 2) != request.ApplicationFeePercent)
+        {
+            return BadRequest(new
+            {
+                message = "A taxa da plataforma deve estar entre 0,01% e 99,99%, com no máximo duas casas decimais."
+            });
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync();
+        var settingsRows = _context.Database.ProviderName == "Npgsql.EntityFrameworkCore.PostgreSQL"
+            ? await _context.SystemSettings
+                .FromSqlRaw("SELECT * FROM \"SystemSettings\" ORDER BY \"Id\" FOR UPDATE")
+                .ToListAsync()
+            : await _context.SystemSettings
+                .OrderBy(settings => settings.UpdatedAt)
+                .ThenBy(settings => settings.Id)
+                .Take(2)
+                .ToListAsync();
+        if (settingsRows.Count > 1)
+            return Conflict(new { message = "Há mais de uma configuração global de taxa; solicite a revisão dos dados antes de alterar o valor." });
+
+        var settings = settingsRows.SingleOrDefault();
+        var expectedFeeHeader = Request.Headers["X-Expected-Platform-Fee"];
+        if (expectedFeeHeader.Count > 0)
+        {
+            var expected = expectedFeeHeader.ToString();
+            var matches = expected == "missing"
+                ? settings == null
+                : decimal.TryParse(expected, System.Globalization.NumberStyles.AllowDecimalPoint | System.Globalization.NumberStyles.AllowLeadingSign,
+                    System.Globalization.CultureInfo.InvariantCulture, out var expectedFee) &&
+                    settings != null && settings.ApplicationFeePercent == expectedFee;
+            if (!matches)
+                return Conflict(new { message = "A taxa global foi alterada. Atualize e confira o valor antes de salvar novamente." });
+        }
+        var previousApplicationFeePercent = settings?.ApplicationFeePercent;
         if (settings == null)
         {
             settings = new SystemSettings { Id = Guid.NewGuid() };
             _context.SystemSettings.Add(settings);
         }
+        else if (settings.ApplicationFeePercent == request.ApplicationFeePercent)
+        {
+            await transaction.CommitAsync();
+            return Ok(new { message = "A taxa da plataforma já está configurada com esse valor.", settings });
+        }
 
         settings.ApplicationFeePercent = request.ApplicationFeePercent;
         settings.UpdatedAt = DateTime.UtcNow;
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException error) when (previousApplicationFeePercent == null &&
+            error.InnerException is PostgresException postgres &&
+            postgres.SqlState == PostgresErrorCodes.UniqueViolation &&
+            postgres.ConstraintName == "IX_SystemSettings_IsSingleton")
+        {
+            await transaction.RollbackAsync();
+            _context.Entry(settings).State = EntityState.Detached;
+            return Conflict(new { message = "A taxa global foi alterada. Atualize e confira o valor antes de salvar novamente." });
+        }
+        if (_audit is not null)
+        {
+            await _audit.RecordRequiredAsync(
+                "payments.platform_fee_updated",
+                "SystemSettings",
+                settings.Id.ToString(),
+                metadata: new
+                {
+                    previousApplicationFeePercent,
+                    newApplicationFeePercent = settings.ApplicationFeePercent
+                });
+        }
+
+        await transaction.CommitAsync();
+
         return Ok(new { message = "Taxa da plataforma atualizada com sucesso.", settings });
     }
 
@@ -99,10 +197,10 @@ public class PaymentsController : ControllerBase
     // ==========================================
 
     [HttpGet("integration")]
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     public async Task<IActionResult> GetIntegration()
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -123,10 +221,10 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("oauth/config")]
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     public IActionResult GetOauthConfig()
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -157,8 +255,7 @@ public class PaymentsController : ControllerBase
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     public async Task<IActionResult> OAuthCallback([FromBody] OAuthCallbackRequest request)
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -214,7 +311,7 @@ public class PaymentsController : ControllerBase
         {
             try
             {
-                using var httpClient = new HttpClient();
+                using var httpClient = CreateMercadoPagoHttpClient();
                 var parameters = new Dictionary<string, string>
                 {
                     { "client_secret", clientSecret },
@@ -314,8 +411,7 @@ public class PaymentsController : ControllerBase
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     public async Task<IActionResult> DisconnectIntegration()
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -342,8 +438,7 @@ public class PaymentsController : ControllerBase
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     public async Task<IActionResult> ToggleIntegration([FromBody] ToggleIntegrationRequest request)
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -371,9 +466,6 @@ public class PaymentsController : ControllerBase
 
     private MercadoPagoIntegrationDto MapToDto(MercadoPagoIntegration integration)
     {
-        var decryptedAccessToken = EncryptionService.Decrypt(integration.AccessToken);
-        var decryptedClientSecret = EncryptionService.Decrypt(integration.ClientSecret);
-
         return new MercadoPagoIntegrationDto
         {
             Id = integration.Id,
@@ -389,30 +481,21 @@ public class PaymentsController : ControllerBase
             BusinessPhone = integration.BusinessPhone,
             PublicKey = integration.PublicKey,
             ClientId = integration.ClientId,
+            HasAccessToken = !string.IsNullOrWhiteSpace(integration.AccessToken),
             HasRefreshToken = !string.IsNullOrWhiteSpace(integration.RefreshToken),
+            HasClientSecret = !string.IsNullOrWhiteSpace(integration.ClientSecret),
             AccessTokenExpiresAt = integration.AccessTokenExpiresAt,
             MercadoPagoUserId = integration.MercadoPagoUserId,
             MercadoPagoNickname = integration.MercadoPagoNickname,
             MercadoPagoSiteId = integration.MercadoPagoSiteId,
             LastTokenValidationAt = integration.LastTokenValidationAt,
             LastTokenValidationStatus = SanitizeTokenValidationStatus(integration.LastTokenValidationStatus),
-            TokenFingerprint = GetTokenFingerprint(decryptedAccessToken),
             IsActive = integration.IsActive,
             CreatedAt = integration.CreatedAt,
             UpdatedAt = integration.UpdatedAt,
-            AccessToken = MaskValue(decryptedAccessToken),
-            ClientSecret = MaskValue(decryptedClientSecret)
+            AccessToken = string.Empty,
+            ClientSecret = string.Empty
         };
-    }
-
-    private static string MaskValue(string value, int visibleStart = 8, int visibleEnd = 4)
-    {
-        if (string.IsNullOrEmpty(value)) return string.Empty;
-        if (value.Length <= visibleStart + visibleEnd)
-        {
-            return new string('•', value.Length);
-        }
-        return value[..visibleStart] + new string('•', 12) + value[^visibleEnd..];
     }
 
     public class ToggleIntegrationRequest
@@ -456,8 +539,7 @@ public class PaymentsController : ControllerBase
             return BadRequest(new { message = "A máquina selecionada não está vinculada a nenhuma empresa." });
         }
 
-        var currentCompanyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(currentCompanyIdStr) || !Guid.TryParse(currentCompanyIdStr, out var currentCompanyId))
+        if (!TryGetEffectiveCompanyId(out var currentCompanyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -476,9 +558,14 @@ public class PaymentsController : ControllerBase
         }
 
         // Taxa da plataforma
-        var settings = await _context.SystemSettings.FirstOrDefaultAsync();
-        decimal feePercent = settings?.ApplicationFeePercent ?? 5.0m;
-        decimal appFee = Math.Round(request.Amount * (feePercent / 100m), 2);
+        var feePercent = await PlatformFeeSettingsReader.ReadValidFeePercentAsync(_context);
+        if (!feePercent.HasValue)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { message = "A cobrança não foi criada porque a taxa global da plataforma está indisponível." });
+        }
+
+        decimal appFee = Math.Round(request.Amount * (feePercent.Value / 100m), 2);
         if (appFee <= 0)
         {
             return BadRequest(new { message = "A taxa da plataforma precisa ser maior que R$ 0,00 para gerar uma cobrança Pix." });
@@ -537,7 +624,6 @@ public class PaymentsController : ControllerBase
         try
         {
             var decryptedToken = await EnsureValidAccessTokenAsync(integration);
-            var tokenFingerprint = GetTokenFingerprint(decryptedToken);
             if (decryptedToken.Contains("mock") || decryptedToken.Length < 15)
             {
                 const string mockCredentialsMessage = "As credenciais salvas são de simulação ou inválidas para uma cobrança real.";
@@ -547,7 +633,7 @@ public class PaymentsController : ControllerBase
                 return BadRequest(new { message = mockCredentialsMessage, transactionId = tx.Id });
             }
 
-            using var httpClient = _httpClientFactory?.CreateClient("MercadoPago") ?? new HttpClient();
+            using var httpClient = CreateMercadoPagoHttpClient();
             httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
             httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", tx.Id.ToString());
             bool applicationFeeApplied = tx.ApplicationFee > 0;
@@ -555,7 +641,7 @@ public class PaymentsController : ControllerBase
             await LogTelemetryAsync(
                 tx.Id,
                 "Info",
-                $"Usando token OAuth salvo na integração {integration.Id} da empresa {integration.CompanyId}. Fingerprint do token: {tokenFingerprint}. Integração atualizada em: {integration.UpdatedAt:O}."
+                "Token OAuth da integração selecionada foi utilizado para solicitar a cobrança Pix."
             );
 
             MercadoPagoUserProfile tokenOwner;
@@ -579,7 +665,7 @@ public class PaymentsController : ControllerBase
                 integration.LastTokenValidationAt = DateTime.UtcNow;
                 integration.LastTokenValidationStatus = $"Token OAuth divergente. Esperado: {integration.MercadoPagoUserId}. Atual: {tokenOwner.UserId}.";
                 await _context.SaveChangesAsync();
-                await LogTelemetryAsync(tx.Id, "Error", $"Token OAuth divergente. Integração esperava seller {integration.MercadoPagoUserId}, mas /users/me retornou {tokenOwner.UserId}.");
+                await LogTelemetryAsync(tx.Id, "Error", "Token OAuth não pertence à conta Mercado Pago configurada para esta empresa.");
                 return BadRequest(new { message = "O token OAuth salvo na integração não pertence à conta Mercado Pago esperada para esta empresa.", transactionId = tx.Id });
             }
 
@@ -687,7 +773,7 @@ public class PaymentsController : ControllerBase
                 tx.QrCodeBase64 = transactionData.GetProperty("qr_code_base64").GetString() ?? "";
 
                 await _context.SaveChangesAsync();
-                await LogTelemetryAsync(tx.Id, "Info", $"QR Code Pix gerado com sucesso pelo Mercado Pago. Payment ID: {tx.MercadoPagoPaymentId}");
+                await LogTelemetryAsync(tx.Id, "Info", "QR Code Pix gerado com sucesso pelo provedor.");
 
                 return Ok(new
                 {
@@ -745,6 +831,7 @@ public class PaymentsController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("/webhooks/mercadopago")]
+    [RequestSizeLimit(16 * 1024)]
     public async Task<IActionResult> WebhookMercadoPago([FromBody] JsonElement webhookBody)
     {
         var paymentId = ReadJsonString(webhookBody, "data", "id");
@@ -842,13 +929,37 @@ public class PaymentsController : ControllerBase
             authenticationMode = "hmac_verified";
         }
 
+        if (await IsPaymentOwnedByLegacySocketAsync(paymentId, HttpContext.RequestAborted))
+        {
+            var relayResult = _legacyTelemetryRelay?.IsConfigured == true
+                ? await _legacyTelemetryRelay.TryForwardWebhookAsync(
+                    HttpContext,
+                    webhookBody.GetRawText(),
+                    HttpContext.RequestAborted)
+                : null;
+            if (relayResult is null)
+            {
+                Response.Headers["Retry-After"] = "30";
+                return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                    new { message = "O pagamento pertence a uma máquina ainda atendida pela API anterior." });
+            }
+
+            if (relayResult.StatusCode is >= 200 and < 300)
+                return Ok(new { accepted = true, routedToLegacyOwner = true });
+
+            Response.Headers["Retry-After"] = "30";
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { message = "Não foi possível encaminhar a notificação ao processo que mantém a máquina conectada." });
+        }
+
         // Legacy IPN/QR notifications can omit x-signature. They are treated only as a trigger;
         // the worker independently fetches the canonical payment state from Mercado Pago.
         var eventIdentity = !string.IsNullOrWhiteSpace(xRequestId)
             ? $"{xRequestId}:{paymentId}"
             : $"{paymentId}:{eventType}:{eventAction}:{webhookBody.GetRawText()}";
         var eventKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(eventIdentity))).ToLowerInvariant();
-        _context.WebhookInboxMessages.Add(new WebhookInboxMessage
+        var inboxMessage = new WebhookInboxMessage
         {
             Id = Guid.NewGuid(),
             EventKey = eventKey,
@@ -859,25 +970,46 @@ public class PaymentsController : ControllerBase
             AuthenticationMode = authenticationMode,
             ReceivedAt = DateTime.UtcNow,
             Status = "Pending"
-        });
+        };
 
         try
         {
-            await _context.SaveChangesAsync(HttpContext.RequestAborted);
+            var duplicate = await _webhookInboxAdmission.PersistAsync(inboxMessage, HttpContext.RequestAborted);
+            if (duplicate)
+                return Ok(new { accepted = true, duplicate = true });
+        }
+        catch (WebhookInboxFullException)
+        {
+            Response.Headers["Retry-After"] = "30";
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { message = "A fila de notificações está temporariamente cheia. Tente novamente." });
         }
         catch (DbUpdateException)
         {
-            _context.ChangeTracker.Clear();
-            if (await _context.WebhookInboxMessages.AnyAsync(message => message.EventKey == eventKey, HttpContext.RequestAborted))
-            {
-                return Ok(new { accepted = true, duplicate = true });
-            }
-
             return StatusCode(StatusCodes.Status503ServiceUnavailable,
                 new { message = "Não foi possível persistir a notificação. Tente novamente." });
         }
 
         return Ok(new { accepted = true });
+    }
+
+    private Task<bool> IsPaymentOwnedByLegacySocketAsync(string paymentId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var connectionFreshnessCutoff = now - MachineConnectionFreshness.Window;
+        return _context.PaymentTransactions.AsNoTracking()
+            .Where(transaction => transaction.MercadoPagoPaymentId == paymentId)
+            .AnyAsync(transaction => _context.MachineSessions.AsNoTracking().Any(session =>
+                session.TransactionId == transaction.Id && session.ClosedAt == null &&
+                _context.MachineConnectionStates.AsNoTracking().Any(state =>
+                    state.MachineId == session.MachineId && state.IsOnline &&
+                    state.LastSeenAt >= connectionFreshnessCutoff &&
+                    (state.OwnerNodeId == null || state.OwnerNodeId == "" ||
+                     state.ConnectionId == null || state.ConnectionId == "" ||
+                     state.OwnerConnectionId != state.ConnectionId ||
+                     state.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion ||
+                     state.OwnerLeaseExpiresAt == null || state.OwnerLeaseExpiresAt <= now))),
+                cancellationToken);
     }
 
     private static string? ReadJsonString(JsonElement element, params string[] path)
@@ -912,8 +1044,7 @@ public class PaymentsController : ControllerBase
             return NotFound();
         }
 
-        var companyIdValue = User.FindFirst("company_id")?.Value;
-        if (!Guid.TryParse(companyIdValue, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -955,10 +1086,9 @@ public class PaymentsController : ControllerBase
     // ==========================================
 
     [HttpGet("transactions")]
-    public async Task<IActionResult> GetTransactions([FromQuery] string? machineId = null)
+    public async Task<IActionResult> GetTransactions([FromQuery] string? machineId = null, [FromQuery] string? transactionId = null)
     {
-        var companyIdStr = User.FindFirst("company_id")?.Value;
-        if (string.IsNullOrEmpty(companyIdStr) || !Guid.TryParse(companyIdStr, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
@@ -966,6 +1096,13 @@ public class PaymentsController : ControllerBase
         var query = _context.PaymentTransactions
             .AsNoTracking()
             .Where(t => t.CompanyId == companyId);
+
+        if (!string.IsNullOrWhiteSpace(transactionId))
+        {
+            if (!Guid.TryParse(transactionId, out var parsedTransactionId))
+                return BadRequest(new { message = "Identificador de transação inválido." });
+            query = query.Where(transaction => transaction.Id == parsedTransactionId);
+        }
 
         if (!string.IsNullOrEmpty(machineId))
         {
@@ -996,32 +1133,115 @@ public class PaymentsController : ControllerBase
         return Ok(list);
     }
 
-    [HttpGet("transactions/{id}/logs")]
-    public async Task<IActionResult> GetTransactionLogs(Guid id)
+    [HttpGet("transactions/history")]
+    public async Task<IActionResult> GetTransactionHistory(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 25,
+        [FromQuery] string? machineId = null,
+        [FromQuery] string? transactionId = null,
+        [FromQuery] string? status = null,
+        CancellationToken cancellationToken = default)
     {
-        var companyIdValue = User.FindFirst("company_id")?.Value;
-        if (!Guid.TryParse(companyIdValue, out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
+            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _context.PaymentTransactions.AsNoTracking().Where(t => t.CompanyId == companyId);
+
+        if (!string.IsNullOrWhiteSpace(transactionId))
+        {
+            if (!Guid.TryParse(transactionId, out var parsedTransactionId))
+                return BadRequest(new { message = "Identificador de transação inválido." });
+            query = query.Where(transaction => transaction.Id == parsedTransactionId);
+        }
+        if (!string.IsNullOrWhiteSpace(machineId))
+            query = query.Where(transaction => transaction.MachineId == machineId);
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(transaction => transaction.Status == status);
+
+        var total = await query.CountAsync(cancellationToken);
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
+        page = Math.Min(page, totalPages);
+        var items = await query
+            .OrderByDescending(transaction => transaction.CreatedAt)
+            .ThenByDescending(transaction => transaction.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.MachineId,
+                Machine = transaction.Machine == null || transaction.Machine.CompanyId != companyId
+                    ? null
+                    : new { transaction.Machine.Id, transaction.Machine.Name, transaction.Machine.SerialNumber },
+                transaction.Amount,
+                transaction.ApplicationFee,
+                transaction.Status,
+                transaction.MercadoPagoPaymentId,
+                transaction.MercadoPagoStatus,
+                transaction.MercadoPagoStatusDetail,
+                transaction.CreatedAt,
+                transaction.CompletedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { items, total, page, pageSize, totalPages });
+    }
+
+    [HttpGet("transactions/{id}/logs")]
+    public async Task<IActionResult> GetTransactionLogs(
+        Guid id,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
 
         var transactionExists = await _context.PaymentTransactions
-            .AnyAsync(t => t.Id == id && t.CompanyId == companyId);
+            .AnyAsync(t => t.Id == id && t.CompanyId == companyId, cancellationToken);
         if (!transactionExists)
         {
             return NotFound(new { message = "Transação não encontrada." });
         }
 
-        var logs = await _context.TransactionTelemetryLogs
-            .Where(l => l.TransactionId == id)
-            .OrderBy(l => l.Timestamp)
-            .ToListAsync();
-
-        foreach (var log in logs)
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _context.TransactionTelemetryLogs.AsNoTracking()
+            .Where(log => log.TransactionId == id);
+        var total = await query.CountAsync(cancellationToken);
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
+        page = Math.Min(page, totalPages);
+        var rows = await query
+            .OrderByDescending(log => log.Timestamp)
+            .ThenByDescending(log => log.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(log => new
+            {
+                log.Id,
+                log.TransactionId,
+                log.Timestamp,
+                log.LogType,
+                log.Message
+            })
+            .ToListAsync(cancellationToken);
+        var logs = rows.Select(log => new TransactionTelemetryLog
         {
-            log.Message = SanitizeTelemetryMessage(log.Message);
-        }
+            Id = log.Id,
+            TransactionId = log.TransactionId,
+            Timestamp = log.Timestamp,
+            LogType = log.LogType,
+            Message = PaymentLogRedactor.RedactMessage(log.Message)
+        }).ToList();
 
+        Response.Headers["X-Total-Count"] = total.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Response.Headers["X-Page"] = page.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Response.Headers["X-Page-Size"] = pageSize.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Response.Headers["X-Total-Pages"] = totalPages.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return Ok(logs);
     }
 
@@ -1076,7 +1296,7 @@ public class PaymentsController : ControllerBase
             l.TransactionId,
             l.Timestamp,
             l.LogType,
-            Message = SanitizeTelemetryMessage(l.Message),
+            Message = PaymentLogRedactor.RedactMessage(l.Message),
             l.TransactionAmount,
             l.MachineName,
             l.CompanyName
@@ -1201,6 +1421,7 @@ public class PaymentsController : ControllerBase
                 MachineName = transaction.Machine != null ? transaction.Machine.Name : "Máquina removida",
                 transaction.Amount,
                 transaction.Status,
+                transaction.ReconciliationReason,
                 transaction.MercadoPagoStatus,
                 transaction.MercadoPagoStatusDetail,
                 transaction.MercadoPagoPaymentId,
@@ -1224,6 +1445,234 @@ public class PaymentsController : ControllerBase
         });
     }
 
+    [HttpPost("admin/reconciliation-queue/{id:guid}/resolve")]
+    [Authorize(Roles = AppRoles.PlatformAdmin)]
+    public async Task<IActionResult> ResolvePaymentReconciliation(
+        Guid id,
+        [FromBody] PaymentReconciliationResolutionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (!User.IsInRole(AppRoles.PlatformAdmin))
+            return StatusCode(403, new { message = "Acesso restrito ao Administrador Geral." });
+
+        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorUserId))
+            return StatusCode(403, new { message = "Não foi possível identificar o operador para registrar a auditoria." });
+
+        var evidenceReference = request.EvidenceReference.Trim();
+        if (!IsEvidenceReferenceValid(evidenceReference))
+        {
+            return BadRequest(new
+            {
+                message = "Informe uma referência de evidência com 3 a 64 caracteres: letras, números, ponto, hífen ou sublinhado."
+            });
+        }
+
+        var transaction = await _context.PaymentTransactions.AsNoTracking()
+            .FirstOrDefaultAsync(payment => payment.Id == id, cancellationToken);
+        if (transaction is null) return NotFound(new { message = "Transação não encontrada." });
+        if (transaction.Status != "ReconciliationRequired")
+            return Conflict(new { message = "Somente transações que exigem conciliação podem ser resolvidas por este fluxo." });
+        if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId) ||
+            transaction.MercadoPagoPaymentId.StartsWith("mock_", StringComparison.OrdinalIgnoreCase))
+        {
+            return Conflict(new { message = "A resolução manual exige uma transação associada a um pagamento real do provedor." });
+        }
+        if (!string.Equals(transaction.MercadoPagoStatus, request.ExpectedProviderStatus, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(transaction.MercadoPagoStatusDetail, request.ExpectedProviderStatusDetail, StringComparison.OrdinalIgnoreCase) ||
+            transaction.ReconciliationReason != request.ExpectedReconciliationReason ||
+            transaction.LastReconciliationAt != request.ExpectedLastReconciliationAt)
+        {
+            return Conflict(new { message = "O estado da transação mudou. Atualize a fila e confira novamente a evidência." });
+        }
+
+        var sales = await _context.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == transaction.Id &&
+                           sale.CompanyId == transaction.CompanyId &&
+                           sale.MachineId == transaction.MachineId)
+            .OrderBy(sale => sale.Id)
+            .Select(sale => new { sale.Id, sale.GrossAmount })
+            .ToListAsync(cancellationToken);
+        if (sales.Count > 1)
+        {
+            return Conflict(new
+            {
+                message = "A transação possui mais de uma linha de venda; a conciliação automática foi recusada para evitar alocação incorreta do estorno."
+            });
+        }
+
+        var saleGrossAmount = sales.SingleOrDefault()?.GrossAmount;
+        if (!TryMapManualResolution(transaction, request, saleGrossAmount, out var resolution, out var validationError))
+            return BadRequest(new { message = validationError });
+
+        var now = DateTime.UtcNow;
+        await using var databaseTransaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        var updated = await _context.PaymentTransactions
+            .Where(payment => payment.Id == id &&
+                              payment.Status == "ReconciliationRequired" &&
+                              payment.MercadoPagoStatus == request.ExpectedProviderStatus &&
+                              payment.MercadoPagoStatusDetail == request.ExpectedProviderStatusDetail &&
+                              payment.ReconciliationReason == request.ExpectedReconciliationReason &&
+                              payment.LastReconciliationAt == request.ExpectedLastReconciliationAt)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(payment => payment.Status, resolution.TransactionStatus)
+                .SetProperty(payment => payment.ReconciliationReason, resolution.ReconciliationReason)
+                .SetProperty(payment => payment.CompletedAt, payment => payment.CompletedAt ?? now)
+                .SetProperty(payment => payment.LastReconciliationAt, now), cancellationToken);
+        if (updated == 0)
+        {
+            await databaseTransaction.RollbackAsync(cancellationToken);
+            return Conflict(new { message = "A transação mudou durante a resolução. Atualize a fila e confira novamente." });
+        }
+
+        if (sales.Count == 1)
+        {
+            var saleId = sales[0].Id;
+            var saleUpdated = await _context.SaleRecords
+                .Where(sale => sale.Id == saleId &&
+                               sale.TransactionId == transaction.Id &&
+                               sale.CompanyId == transaction.CompanyId &&
+                               sale.MachineId == transaction.MachineId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(sale => sale.FinancialStatus, resolution.SaleFinancialStatus)
+                    .SetProperty(sale => sale.RefundedAmount, sale => resolution.RefundedAmount ?? sale.GrossAmount), cancellationToken);
+            if (saleUpdated != 1)
+            {
+                await databaseTransaction.RollbackAsync(cancellationToken);
+                return Conflict(new { message = "A linha de venda mudou durante a resolução. Atualize a fila e tente novamente." });
+            }
+        }
+
+        _context.AuditLogs.Add(new AuditLog
+        {
+            CompanyId = transaction.CompanyId,
+            ActorUserId = actorUserId,
+            Action = "payments.reconciliation_resolved",
+            ResourceType = "PaymentTransaction",
+            ResourceId = transaction.Id.ToString(),
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+            UserAgent = Truncate(HttpContext.Request.Headers.UserAgent.ToString(), 512),
+            MetadataJson = AuditMetadataRedactor.SerializeRedacted(new
+            {
+                previousStatus = transaction.Status,
+                resolvedStatus = resolution.TransactionStatus,
+                resolution = request.Resolution.Trim(),
+                providerStatus = transaction.MercadoPagoStatus,
+                providerStatusDetail = transaction.MercadoPagoStatusDetail,
+                previousReason = transaction.ReconciliationReason,
+                refundedAmount = resolution.RefundedAmount ?? transaction.Amount,
+                evidenceReference
+            }),
+            CreatedAt = now
+        });
+        await _context.SaveChangesAsync(cancellationToken);
+        await databaseTransaction.CommitAsync(cancellationToken);
+
+        return Ok(new
+        {
+            id = transaction.Id,
+            status = resolution.TransactionStatus,
+            message = "Conciliação registrada com evidência e auditoria. Nenhuma chamada financeira foi enviada ao provedor."
+        });
+    }
+
+    private static bool IsEvidenceReferenceValid(string value) =>
+        value.Length is >= 3 and <= 64 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '-' or '_');
+
+    private static bool TryMapManualResolution(
+        PaymentTransaction transaction,
+        PaymentReconciliationResolutionRequest request,
+        decimal? saleGrossAmount,
+        out ManualFinancialResolution resolution,
+        out string error)
+    {
+        var resolutionCode = request.Resolution.Trim().ToLowerInvariant();
+        var providerStatus = transaction.MercadoPagoStatus?.ToLowerInvariant();
+        var providerDetail = transaction.MercadoPagoStatusDetail?.ToLowerInvariant();
+        var refundedAmount = request.ConfirmedRefundedAmount;
+
+        if (providerStatus == "approved" && resolutionCode == "approved")
+        {
+            if (providerDetail == "partially_refunded" &&
+                refundedAmount is > 0m &&
+                refundedAmount < transaction.Amount &&
+                (!saleGrossAmount.HasValue || refundedAmount < saleGrossAmount.Value))
+            {
+                resolution = new ManualFinancialResolution("Approved", "PartiallyRefunded", refundedAmount.Value);
+                error = string.Empty;
+                return true;
+            }
+
+            if (providerDetail == "accredited" && (!refundedAmount.HasValue || refundedAmount == 0m))
+            {
+                resolution = new ManualFinancialResolution("Approved", "Settled", 0m);
+                error = string.Empty;
+                return true;
+            }
+
+            resolution = default!;
+            error = "Para confirmar um pagamento aprovado, o detalhe precisa ser accredited ou partially_refunded com valor confirmado válido.";
+            return false;
+        }
+
+        if (providerStatus == "rejected" && resolutionCode == "rejected" && (!refundedAmount.HasValue || refundedAmount == 0m))
+        {
+            resolution = new ManualFinancialResolution("Rejected", "Unpaid", 0m);
+            error = string.Empty;
+            return true;
+        }
+
+        if (providerStatus == "cancelled" && resolutionCode == "cancelled" && (!refundedAmount.HasValue || refundedAmount == 0m))
+        {
+            resolution = new ManualFinancialResolution("Cancelled", "Unpaid", 0m);
+            error = string.Empty;
+            return true;
+        }
+
+        if (providerStatus == "refunded" && resolutionCode == "refunded" && (!refundedAmount.HasValue || refundedAmount == 0m))
+        {
+                resolution = new ManualFinancialResolution("Refunded", "Refunded", null);
+            error = string.Empty;
+            return true;
+        }
+
+        if (providerStatus == "charged_back" && providerDetail == "settled" &&
+            resolutionCode == "chargeback_settled" && (!refundedAmount.HasValue || refundedAmount == 0m))
+        {
+            resolution = new ManualFinancialResolution("Chargeback", "Chargeback", null);
+            error = string.Empty;
+            return true;
+        }
+
+        if (providerStatus == "charged_back" && providerDetail == "reimbursed" &&
+            resolutionCode == "chargeback_reimbursed" &&
+            refundedAmount is >= 0m &&
+            refundedAmount <= transaction.Amount &&
+            (!saleGrossAmount.HasValue || refundedAmount <= saleGrossAmount.Value))
+        {
+            resolution = new ManualFinancialResolution(
+                "Approved",
+                "Settled",
+                refundedAmount.Value,
+                ManualChargebackReimbursementConfirmedReason);
+            error = string.Empty;
+            return true;
+        }
+
+        resolution = default!;
+        error = "A resolução deve corresponder ao estado canônico e ao detalhe atuais do provedor.";
+        return false;
+    }
+
+    private sealed record ManualFinancialResolution(
+        string TransactionStatus,
+        string SaleFinancialStatus,
+        decimal? RefundedAmount,
+        string? ReconciliationReason = null);
+
+    private static string? Truncate(string? value, int maxLength) =>
+        string.IsNullOrEmpty(value) ? value : value.Length <= maxLength ? value : value[..maxLength];
+
     [HttpPost("admin/webhook-inbox/{id:guid}/retry")]
     [Authorize(Roles = AppRoles.PlatformAdmin)]
     public async Task<IActionResult> RetryWebhook(Guid id, CancellationToken cancellationToken = default)
@@ -1233,16 +1682,15 @@ public class PaymentsController : ControllerBase
             return StatusCode(403, new { message = "Acesso restrito ao Administrador Geral." });
         }
 
-        var now = DateTime.UtcNow;
-        var affected = await _context.WebhookInboxMessages
-            .Where(message => message.Id == id && message.Status == "Failed")
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(message => message.Status, "Pending")
-                .SetProperty(message => message.Attempts, 0)
-                .SetProperty(message => message.NextAttemptAt, now)
-                .SetProperty(message => message.ProcessingStartedAt, (DateTime?)null)
-                .SetProperty(message => message.ProcessedAt, (DateTime?)null)
-                .SetProperty(message => message.LastError, (string?)null), cancellationToken);
+        int affected;
+        try
+        {
+            affected = await _webhookInboxAdmission.RequeueFailedAsync(id, cancellationToken);
+        }
+        catch (WebhookInboxFullException)
+        {
+            return Conflict(new { message = "A fila de notificações está no limite; aguarde o processamento antes de reprocessar." });
+        }
 
         if (affected == 0)
         {
@@ -1269,55 +1717,6 @@ public class PaymentsController : ControllerBase
     // MÉTODOS AUXILIARES DE TELEMETRIA E REEMBOLSO
     // ==========================================
 
-    private async Task<bool> RefundTransactionAsync(AppDbContext db, PaymentTransaction tx)
-    {
-        var integration = await db.MercadoPagoIntegrations
-            .FirstOrDefaultAsync(i => i.CompanyId == tx.CompanyId && i.IsActive);
-
-        if (integration == null || string.IsNullOrEmpty(tx.MercadoPagoPaymentId) || tx.MercadoPagoPaymentId.Contains("mock"))
-        {
-            await Task.Delay(1500);
-            return true;
-        }
-
-        try
-        {
-            var decryptedToken = await EnsureValidAccessTokenAsync(integration, db);
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", decryptedToken);
-
-            httpClient.DefaultRequestHeaders.Add("X-Idempotency-Key", $"refund-{tx.Id}");
-
-            var body = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync(
-                $"https://api.mercadopago.com/v1/payments/{tx.MercadoPagoPaymentId}/refunds", body);
-
-            if (response.IsSuccessStatusCode)
-            {
-                Console.WriteLine($"[REFUND] Estorno aprovado pelo MP. PaymentId: {tx.MercadoPagoPaymentId}.");
-                await LogTelemetryAsync(tx.Id, "Info",
-                    $"Estorno processado com sucesso na API do Mercado Pago. PaymentId: {tx.MercadoPagoPaymentId}.");
-                return true;
-            }
-            else
-            {
-                Console.Error.WriteLine($"[REFUND] Falha no estorno MP: HTTP {(int)response.StatusCode}.");
-                await LogTelemetryAsync(tx.Id, "Error",
-                    $"Falha ao solicitar estorno na API do Mercado Pago: HTTP {(int)response.StatusCode}. " +
-                    $"PaymentId: {tx.MercadoPagoPaymentId}.");
-                return false;
-            }
-        }
-        catch (Exception)
-        {
-            Console.Error.WriteLine("[REFUND] Erro HTTP ao reembolsar.");
-            await LogTelemetryAsync(tx.Id, "Error",
-                "Erro interno ao tentar estorno no Mercado Pago.");
-            return false;
-        }
-    }
-    
     private async Task LogTelemetryAsync(Guid transactionId, string type, string message)
     {
         try
@@ -1331,31 +1730,13 @@ public class PaymentsController : ControllerBase
                 TransactionId = transactionId,
                 Timestamp = DateTime.UtcNow,
                 LogType = type,
-                Message = message
+                Message = PaymentLogRedactor.RedactMessage(message)
             };
 
             db.TransactionTelemetryLogs.Add(log);
             await db.SaveChangesAsync();
         }
         catch { }
-    }
-
-    private static string SanitizeTelemetryMessage(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message)) return string.Empty;
-
-        string[] sensitivePrefixes =
-        [
-            "Erro retornado pelo Mercado Pago:",
-            "Falha na integração real do Mercado Pago:",
-            "Falha ao solicitar estorno na API do Mercado Pago:",
-            "Erro interno ao tentar estorno no Mercado Pago:",
-            "Falha ao validar o dono do token OAuth em /users/me:"
-        ];
-
-        return sensitivePrefixes.Any(prefix => message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            ? "Falha na integração de pagamento. Detalhes sensíveis foram omitidos."
-            : message;
     }
 
     private static string? SanitizeWebhookInboxError(string? error) => string.IsNullOrWhiteSpace(error)
@@ -1384,21 +1765,10 @@ public class PaymentsController : ControllerBase
             : status;
     }
 
-    private static string GetTokenFingerprint(string token)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return "empty";
-        }
-
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token));
-        return Convert.ToHexString(hash)[..12];
-    }
-
     private async Task<MercadoPagoUserProfile> LogMercadoPagoTokenOwnerAsync(HttpClient httpClient, Guid transactionId)
     {
         var profile = await GetMercadoPagoUserProfileAsync(httpClient);
-        await LogTelemetryAsync(transactionId, "Info", $"Token OAuth validado no Mercado Pago. Seller/User ID: {profile.UserId}. Nickname: {profile.Nickname}. Site: {profile.SiteId}.");
+        await LogTelemetryAsync(transactionId, "Info", "Conta associada ao token OAuth validada pelo provedor.");
         return profile;
     }
 
@@ -1422,7 +1792,7 @@ public class PaymentsController : ControllerBase
         var clientId = _configuration["MercadoPago:ClientId"] ?? integration.ClientId;
         var clientSecret = _configuration["MercadoPago:ClientSecret"] ?? EncryptionService.Decrypt(integration.ClientSecret);
 
-        using var httpClient = new HttpClient();
+        using var httpClient = CreateMercadoPagoHttpClient();
         var parameters = new Dictionary<string, string>
         {
             { "client_secret", clientSecret },
@@ -1452,7 +1822,7 @@ public class PaymentsController : ControllerBase
         integration.AccessTokenExpiresAt = DateTime.UtcNow.AddSeconds(expiresIn);
         integration.UpdatedAt = DateTime.UtcNow;
 
-        using var profileHttp = new HttpClient();
+        using var profileHttp = CreateMercadoPagoHttpClient();
         profileHttp.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", newAccessToken);
         var profile = await GetMercadoPagoUserProfileAsync(profileHttp);
         integration.MercadoPagoUserId = profile.UserId;
@@ -1467,7 +1837,7 @@ public class PaymentsController : ControllerBase
 
     private async Task<MercadoPagoUserProfile> GetMercadoPagoUserProfileAsync(string accessToken)
     {
-        using var httpClient = new HttpClient();
+        using var httpClient = CreateMercadoPagoHttpClient();
         httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
         return await GetMercadoPagoUserProfileAsync(httpClient);
     }
@@ -1502,6 +1872,12 @@ public class PaymentsController : ControllerBase
         var signature = SignOAuthState(encodedPayload);
         return $"{encodedPayload}.{signature}";
     }
+
+    private HttpClient CreateMercadoPagoHttpClient() =>
+        _httpClientFactory?.CreateClient("MercadoPago") ?? new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(20)
+        };
 
     private bool ValidateOAuthState(string? state, Guid expectedCompanyId, out string error)
     {

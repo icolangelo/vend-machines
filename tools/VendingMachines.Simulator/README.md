@@ -29,7 +29,7 @@ Para testar o rollout gradual de credenciais em homologação, defina a variáve
 
 ## Fluxo
 
-O simulador identifica a máquina, mantém heartbeat e reconecta automaticamente. O painel web continua responsável por iniciar a sessão. Antes de iniciá-la, prepare um cenário no terminal:
+O simulador identifica a máquina, mantém heartbeat e reconecta automaticamente. Em falhas repetidas, usa espera exponencial com variação aleatória de 20% para evitar que várias instâncias tentem reconectar juntas; uma conexão que permanece ativa por pelo menos 30 segundos reinicia a sequência de tentativas. Esse comportamento torna o simulador mais adequado para ensaios de reinício e reconexão, mas não comprova a política de retry do firmware físico. O painel web continua responsável por iniciar a sessão. Antes de iniciá-la, prepare um cenário no terminal:
 
 ```text
 scenario sale-success 2 2200

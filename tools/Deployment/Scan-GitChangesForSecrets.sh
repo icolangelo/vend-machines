@@ -6,19 +6,15 @@ event_name="${GITHUB_EVENT_NAME:-push}"
 head_sha="${SECRET_SCAN_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
 base_sha="${SECRET_SCAN_BASE_SHA:-}"
 before_sha="${SECRET_SCAN_BEFORE_SHA:-}"
+default_branch="${SECRET_SCAN_DEFAULT_BRANCH:-}"
 
-if [[ "$event_name" == "pull_request" ]]; then
-  if [[ -z "$base_sha" || -z "$head_sha" ]]; then
-    echo "SECRET_SCAN_BASE_SHA e SECRET_SCAN_HEAD_SHA são obrigatórios em pull requests." >&2
-    exit 2
-  fi
-  log_range="$base_sha..$head_sha"
-elif [[ -n "$before_sha" && ! "$before_sha" =~ ^0+$ ]]; then
-  log_range="$before_sha..$head_sha"
-else
-  parent_sha="$(git -C "$repo_root" rev-parse "${head_sha}^")"
-  log_range="$parent_sha..$head_sha"
-fi
+log_range="$(python3 "$repo_root/tools/Deployment/Determine-SecretScanRange.py" \
+  --repo-root "$repo_root" \
+  --event "$event_name" \
+  --head "$head_sha" \
+  --base "$base_sha" \
+  --before "$before_sha" \
+  --default-branch "$default_branch")"
 
 docker run --rm \
   --volume "$repo_root:/path" \

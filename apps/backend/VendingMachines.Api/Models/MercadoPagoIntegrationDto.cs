@@ -21,18 +21,21 @@ public class MercadoPagoIntegrationDto
     public string BusinessPhone { get; set; } = string.Empty;
 
     // Mercado Pago Credentials (Masked)
+    // These legacy string fields remain for response compatibility and are always empty.
     public string AccessToken { get; set; } = string.Empty;
+    public bool HasAccessToken { get; set; }
     public bool HasRefreshToken { get; set; }
     public DateTime? AccessTokenExpiresAt { get; set; }
     public string PublicKey { get; set; } = string.Empty;
     public string ClientId { get; set; } = string.Empty;
+    // Never return any part of a client secret, even in masked form.
     public string ClientSecret { get; set; } = string.Empty;
+    public bool HasClientSecret { get; set; }
     public string MercadoPagoUserId { get; set; } = string.Empty;
     public string MercadoPagoNickname { get; set; } = string.Empty;
     public string MercadoPagoSiteId { get; set; } = string.Empty;
     public DateTime? LastTokenValidationAt { get; set; }
     public string LastTokenValidationStatus { get; set; } = string.Empty;
-    public string TokenFingerprint { get; set; } = string.Empty;
 
     public bool IsActive { get; set; }
     public DateTime CreatedAt { get; set; }

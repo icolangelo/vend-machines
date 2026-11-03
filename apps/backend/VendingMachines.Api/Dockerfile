@@ -1,5 +1,5 @@
 # Estágio de compilação (Build Stage)
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 WORKDIR /src
 
 # Copiar o arquivo de projeto e restaurar as dependências
@@ -8,11 +8,16 @@ RUN dotnet restore "VendingMachines.Api.csproj"
 
 # Copiar todos os outros arquivos e compilar a aplicação
 COPY . .
-RUN dotnet publish "VendingMachines.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
+# Configuração específica de ambiente e segredos vêm do runtime, nunca da imagem.
+RUN dotnet publish "VendingMachines.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false \
+    && rm -f /app/publish/appsettings.*.json
 
 # Estágio final de execução (Runtime Stage)
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS final
 WORKDIR /app
+ARG APP_REVISION=unknown
+ENV APP_REVISION=${APP_REVISION}
+ENV VendingMachines__RejectDevelopmentEnvironment=true
 EXPOSE 8080
 COPY --from=build /app/publish .
 

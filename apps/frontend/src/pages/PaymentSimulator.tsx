@@ -70,8 +70,9 @@ export default function PaymentSimulator() {
         if (!transaction?.transactionId || !pollingActive) return;
 
         const interval = setInterval(() => {
-            getTransactionLogs(transaction.transactionId)
-                .then(logs => {
+            getTransactionLogs(transaction.transactionId, 1, 20)
+                .then(result => {
+                    const logs = Array.isArray(result) ? result : result.items;
                     setTelemetryLogs(logs);
                     
                     // Se o log indicar conclusão ou erro de estorno, interrompe o polling

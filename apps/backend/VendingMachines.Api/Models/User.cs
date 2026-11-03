@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel.DataAnnotations;
 using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Models;
@@ -20,6 +21,8 @@ public class User
     public string NormalizedCpf { get; set; } = string.Empty;
     public bool AcceptedPrivacyPolicy { get; set; } = false;
     public DateTime? PrivacyPolicyAcceptedAt { get; set; }
+    [MaxLength(32)]
+    public string? PrivacyPolicyVersion { get; set; }
     public bool RequiresEmailVerification { get; set; }
     public DateTime? EmailVerifiedAt { get; set; }
     public string? EmailVerificationTokenHash { get; set; }

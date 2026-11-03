@@ -10,10 +10,37 @@ namespace VendingMachines.Api.Tests;
 public sealed class PostgresTelemetryPanelEventBusTests
 {
     [Fact]
+    public async Task ListenerReportsDatabaseFailureAndStopsCleanly()
+    {
+        await using var source = NpgsqlDataSource.Create(
+            "Host=127.0.0.1;Port=1;Database=unavailable;Username=synthetic;Password=synthetic;Timeout=1;SSL Mode=Disable");
+        var health = new BackgroundWorkerHealthRegistry();
+        var bus = new PostgresTelemetryPanelEventBus(source, NullLogger<PostgresTelemetryPanelEventBus>.Instance);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var listenerTask = bus.ListenAsync(_ => { }, timeout.Token, health);
+
+        await WaitForWorkerStatusAsync(health, "Degraded", timeout.Token);
+        var degraded = Assert.Single(health.GetSnapshots(), worker =>
+            worker.Name == BackgroundWorkerNames.TelemetryPanelEventRelay);
+        Assert.True(degraded.ConsecutiveFailures > 0);
+        Assert.NotNull(degraded.LastErrorType);
+
+        timeout.Cancel();
+        await listenerTask;
+        Assert.Equal("Stopped", Assert.Single(health.GetSnapshots(), worker =>
+            worker.Name == BackgroundWorkerNames.TelemetryPanelEventRelay).Status);
+    }
+
+    [Fact]
     public async Task LegacyReconnectClearsStaleOwnerAndNewReconnectKeepsMatchingOwnerWhenPostgresIsConfigured()
     {
         var connectionString = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
-        if (string.IsNullOrWhiteSpace(connectionString)) return;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("VENDMACHINES_REQUIRE_TEST_POSTGRES"), "true", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("O teste de propriedade legada exige VENDMACHINES_TEST_POSTGRES no CI.");
+            return;
+        }
 
         var schema = $"telemetry_owner_{Guid.NewGuid():N}";
         var adminBuilder = new NpgsqlConnectionStringBuilder(connectionString);
@@ -97,21 +124,40 @@ public sealed class PostgresTelemetryPanelEventBusTests
     public async Task PublishAsyncDeliversCompanyScopedNotificationToOtherListenerWhenPostgresIsConfigured()
     {
         var connectionString = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
-        if (string.IsNullOrWhiteSpace(connectionString)) return;
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("VENDMACHINES_REQUIRE_TEST_POSTGRES"), "true", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("O teste de eventos entre instâncias exige VENDMACHINES_TEST_POSTGRES no CI.");
+            return;
+        }
 
         await using var source = NpgsqlDataSource.Create(connectionString);
         await using var listenerSource = NpgsqlDataSource.Create(connectionString);
         var received = Channel.CreateUnbounded<string>();
+        var health = new BackgroundWorkerHealthRegistry();
         var bus = new PostgresTelemetryPanelEventBus(source, NullLogger<PostgresTelemetryPanelEventBus>.Instance);
         var listenerBus = new PostgresTelemetryPanelEventBus(listenerSource, NullLogger<PostgresTelemetryPanelEventBus>.Instance);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var listenerTask = listenerBus.ListenAsync(payload => received.Writer.TryWrite(payload), timeout.Token);
-        await Task.Delay(200, timeout.Token);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var listenerTask = listenerBus.ListenAsync(payload => received.Writer.TryWrite(payload), timeout.Token, health);
+        await WaitForWorkerStatusAsync(health, "Healthy", timeout.Token);
         var companyId = Guid.NewGuid();
         await bus.PublishAsync(companyId, "machine-1", "{\"type\":\"sale.updated\"}", "publisher-node", CancellationToken.None);
 
+        string serialized;
+        try
+        {
+            serialized = await received.Reader.ReadAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            var worker = Assert.Single(health.GetSnapshots(), item =>
+                item.Name == BackgroundWorkerNames.TelemetryPanelEventRelay);
+            throw new Xunit.Sdk.XunitException(
+                $"O relay não recebeu a notificação PostgreSQL. Estado={worker.Status}; falhas={worker.ConsecutiveFailures}; erro={worker.LastErrorType ?? "nenhum"}.");
+        }
+
         var message = JsonSerializer.Deserialize<TelemetryPanelHub.PanelNotification>(
-            await received.Reader.ReadAsync(timeout.Token), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            serialized, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         Assert.NotNull(message);
         Assert.Equal(companyId, message.CompanyId);
@@ -131,6 +177,26 @@ public sealed class PostgresTelemetryPanelEventBusTests
         Assert.Contains("refresh.required", oversized.PayloadJson, StringComparison.Ordinal);
         timeout.Cancel();
         await listenerTask;
+        Assert.Equal("Stopped", Assert.Single(health.GetSnapshots(), worker =>
+            worker.Name == BackgroundWorkerNames.TelemetryPanelEventRelay).Status);
+    }
+
+    private static async Task WaitForWorkerStatusAsync(
+        BackgroundWorkerHealthRegistry health,
+        string expectedStatus,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var worker = Assert.Single(health.GetSnapshots(), item =>
+                item.Name == BackgroundWorkerNames.TelemetryPanelEventRelay);
+            if (worker.Status == expectedStatus)
+                return;
+
+            await Task.Delay(20, cancellationToken);
+        }
+
+        throw new TimeoutException($"Worker não alcançou o estado esperado: {expectedStatus}.");
     }
 
     private static async Task<(bool IsOnline, string? ConnectionId, string? OwnerNodeId, string? OwnerConnectionId)> ReadStateAsync(NpgsqlConnection connection)

@@ -44,6 +44,9 @@ public sealed class AuditLogsController : ControllerBase
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
+        foreach (var item in items)
+            item.MetadataJson = AuditMetadataRedactor.RedactJson(item.MetadataJson);
+
         return Ok(new
         {
             items,

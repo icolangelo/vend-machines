@@ -2,9 +2,20 @@ using System.Collections.Concurrent;
 
 namespace VendingMachines.Api.Services;
 
+public static class BackgroundWorkerStatus
+{
+    public const string Healthy = "Healthy";
+
+    public static bool IsHealthy(string? status) =>
+        string.Equals(status, Healthy, StringComparison.Ordinal);
+}
+
 public static class BackgroundWorkerNames
 {
     public const string Telemetry = "telemetry-inbox";
+    public const string TelemetryConnectionLease = "telemetry-connection-lease";
+    public const string TelemetryPanelEventRelay = "telemetry-panel-event-relay";
+    public const string TelemetryCommandDispatch = "telemetry-command-dispatch";
     public static string TelemetryInboxConsumer(int number) => $"telemetry-inbox-consumer-{number}";
     public const string MercadoPagoWebhook = "mercado-pago-webhook";
     public const string MercadoPagoReconciliation = "mercado-pago-reconciliation";
@@ -15,6 +26,9 @@ public static class BackgroundWorkerNames
     public static readonly IReadOnlyList<string> All = new[]
     {
         Telemetry,
+        TelemetryConnectionLease,
+        TelemetryPanelEventRelay,
+        TelemetryCommandDispatch,
         TelemetryInboxConsumer(1), TelemetryInboxConsumer(2),
         TelemetryInboxConsumer(3), TelemetryInboxConsumer(4),
         MercadoPagoWebhook,
@@ -40,10 +54,15 @@ public sealed class BackgroundWorkerHealthRegistry
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(2);
     private readonly ConcurrentDictionary<string, WorkerState> _workers = new(StringComparer.Ordinal);
 
-    public BackgroundWorkerHealthRegistry()
+    public BackgroundWorkerHealthRegistry(bool includeTelemetryPanelEventRelay = true)
     {
         foreach (var name in BackgroundWorkerNames.All)
+        {
+            if (!includeTelemetryPanelEventRelay && name == BackgroundWorkerNames.TelemetryPanelEventRelay)
+                continue;
+
             _workers.TryAdd(name, new WorkerState());
+        }
     }
 
     public void ReportStarted(string name)
@@ -111,7 +130,7 @@ public sealed class BackgroundWorkerHealthRegistry
                         : state.StartedAt is null ? "NotStarted"
                         : state.LastHeartbeatAt is null || now - state.LastHeartbeatAt > StaleAfter ? "Stale"
                         : state.ConsecutiveFailures > 0 ? "Degraded"
-                        : "Healthy";
+                        : BackgroundWorkerStatus.Healthy;
                     return new BackgroundWorkerHealthSnapshot(
                         pair.Key,
                         status,

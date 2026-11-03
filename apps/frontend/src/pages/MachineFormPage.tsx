@@ -2,7 +2,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen, KeyRound, Copy, ShieldAlert } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -27,7 +27,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
     getMachine,
     createMachine,
@@ -95,7 +95,8 @@ const machineFormSchema = z.object({
     minimumSalesTarget30d: z.number().int().min(1, "Informe uma meta maior que zero").max(10000000, "A meta excede o limite permitido").nullable().optional(),
 });
 
-type MachineFormValues = z.infer<typeof machineFormSchema>;
+type MachineFormInput = z.input<typeof machineFormSchema>;
+type MachineFormValues = z.output<typeof machineFormSchema>;
 
 export default function MachineFormPage() {
     const navigate = useNavigate();
@@ -105,14 +106,28 @@ export default function MachineFormPage() {
     const canManageMachine = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
     const [locations, setLocations] = useState<Location[]>([]);
+    const [locationsLoading, setLocationsLoading] = useState(true);
+    const [locationsLoaded, setLocationsLoaded] = useState(false);
+    const [locationsLoadError, setLocationsLoadError] = useState(false);
+    const [integrationLoadError, setIntegrationLoadError] = useState(false);
+    const [integrationLoading, setIntegrationLoading] = useState(true);
+    const [mdbConnectionLoading, setMdbConnectionLoading] = useState(isEditMode);
+    const [mdbConnectionLoadError, setMdbConnectionLoadError] = useState(false);
+    const [machineLoading, setMachineLoading] = useState(isEditMode);
+    const [machineLoaded, setMachineLoaded] = useState(!isEditMode);
+    const [machineLoadError, setMachineLoadError] = useState(false);
+    const [machineNotFound, setMachineNotFound] = useState(false);
+    const [machineLocationName, setMachineLocationName] = useState("");
     const [mdbConnection, setMdbConnection] = useState<TelemetryConnection | null>(null);
     const [mdbBusy, setMdbBusy] = useState(false);
     const [credentialBusy, setCredentialBusy] = useState(false);
     const [deviceCredential, setDeviceCredential] = useState<string | null>(null);
 
-    const form = useForm<MachineFormValues>({
+    const form = useForm<MachineFormInput, unknown, MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
         defaultValues: {
+            serialNumber: "",
+            modelo: "",
             useGsm: false,
             useWifi: false,
             useEthernet: false,
@@ -129,76 +144,126 @@ export default function MachineFormPage() {
         },
     });
 
-    const { watch, setValue } = form;
+    const { watch, setValue, reset } = form;
+    const getValues = form.getValues;
     const useGsm = watch("useGsm");
     const useWifi = watch("useWifi");
     const useEthernet = watch("useEthernet");
 
-    useEffect(() => {
-        // Buscar se integração está ativa
-        getIntegration().then(data => {
+    const loadIntegration = useCallback(async () => {
+        setIntegrationLoading(true);
+        setIntegrationLoadError(false);
+        try {
+            const data = await getIntegration();
             setIsMpIntegrationActive(data.isActive);
-        }).catch(err => {
-            console.error("Erro ao buscar integracao para a maquina:", err);
-        });
+        } catch {
+            setIntegrationLoadError(true);
+        } finally {
+            setIntegrationLoading(false);
+        }
+    }, []);
 
-        getLocations().then(data => {
+    const loadLocations = useCallback(async () => {
+        setLocationsLoading(true);
+        setLocationsLoadError(false);
+        try {
+            const data = await getLocations();
             setLocations(data);
-            if (!isEditMode && data.length > 0) {
-                setValue("locationId", data[0].id);
-            }
-        }).catch(err => {
-            console.error("Erro ao buscar localizações para a máquina:", err);
-            toast.error("Erro ao carregar localizações.");
-        });
+            setLocationsLoaded(true);
+            if (!isEditMode && data.length > 0) setValue("locationId", data[0].id);
+        } catch {
+            setLocationsLoadError(true);
+        } finally {
+            setLocationsLoading(false);
+        }
     }, [isEditMode, setValue]);
 
-    useEffect(() => {
-        if (isEditMode && id) {
-            getMachine(id).then(machine => {
-                if (machine) {
-                    form.reset({
-                        id: machine.id,
-                        serialNumber: machine.serialNumber,
-                        modelo: machine.name,
-                        locationId: machine.locationId || locations.find(location => location.name === machine.clientName)?.id || "",
-                        useWifi: true,
-                        ativo: machine.isActive !== false,
-                        isDhcpEnabled: true,
-                        useHttps: true,
-                        ftpServerPort: 21,
-                        ftpDirectoryPath: "/evadts/",
-                        evaBaudRateOption: "0",
-                        mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
-                        autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
-                        minimumSalesTarget30d: machine.minimumSalesTarget30d ?? undefined,
-                    });
-                }
-            }).catch(err => {
-                console.error("Erro ao buscar detalhes da máquina:", err);
+    const loadMachine = useCallback(async () => {
+        if (!isEditMode || !id) return;
+        setMachineLoading(true);
+        setMachineLoaded(false);
+        setMachineLoadError(false);
+        setMachineNotFound(false);
+        try {
+            const machine = await getMachine(id);
+            if (!machine) {
+                setMachineNotFound(true);
+                return;
+            }
+            setMachineLocationName(machine.clientName);
+            reset({
+                id: machine.id,
+                serialNumber: machine.serialNumber,
+                modelo: machine.name,
+                locationId: machine.locationId || "",
+                useWifi: true,
+                ativo: machine.isActive !== false,
+                isDhcpEnabled: true,
+                useHttps: true,
+                ftpServerPort: 21,
+                ftpDirectoryPath: "/evadts/",
+                evaBaudRateOption: "0",
+                mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
+                autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
+                minimumSalesTarget30d: machine.minimumSalesTarget30d ?? undefined,
             });
+            setMachineLoaded(true);
+        } catch {
+            setMachineLoadError(true);
+        } finally {
+            setMachineLoading(false);
         }
-    }, [id, isEditMode, form, locations]);
+    }, [id, isEditMode, reset]);
 
     useEffect(() => {
+        void loadIntegration();
+        void loadLocations();
+    }, [loadIntegration, loadLocations]);
+
+    useEffect(() => { void loadMachine(); }, [loadMachine]);
+
+    useEffect(() => {
+        if (!isEditMode || !machineLoaded || !locationsLoaded || getValues("locationId")) return;
+        const legacyLocation = locations.find(location => location.name === machineLocationName);
+        if (legacyLocation) setValue("locationId", legacyLocation.id);
+    }, [getValues, isEditMode, locations, locationsLoaded, machineLoaded, machineLocationName, setValue]);
+
+    const loadMdbConnection = useCallback(async () => {
         if (!isEditMode || !id) return;
-        getTelemetryConnections()
-            .then(items => setMdbConnection(items.find(item => item.machineId === id) ?? null))
-            .catch(() => setMdbConnection(null));
+        setMdbConnectionLoading(true);
+        setMdbConnectionLoadError(false);
+        try {
+            const items = await getTelemetryConnections();
+            setMdbConnection(items.find(item => item.machineId === id) ?? null);
+        } catch {
+            setMdbConnectionLoadError(true);
+        } finally {
+            setMdbConnectionLoading(false);
+        }
     }, [id, isEditMode]);
 
+    useEffect(() => { void loadMdbConnection(); }, [loadMdbConnection]);
+
+    const canSaveMachine = canManageMachine &&
+        locationsLoaded && !locationsLoading && !locationsLoadError && locations.length > 0 &&
+        (!isEditMode || (machineLoaded && !machineLoading && !machineLoadError && !machineNotFound));
+
     function onSubmit(data: MachineFormValues) {
-        if (!canManageMachine) return;
+        if (!canSaveMachine) return;
         console.log("Form Submitted:", data);
         
         const selectedLocation = locations.find(location => location.id === data.locationId);
+        if (!selectedLocation) {
+            toast.error("Selecione uma localização válida antes de salvar a máquina.");
+            return;
+        }
         const machineData = {
             name: data.modelo,
             serialNumber: data.serialNumber,
             isActive: data.ativo,
             locationId: data.locationId,
-            location: selectedLocation?.name || "Localização principal",
-            clientName: selectedLocation?.name || "",
+            location: selectedLocation.name,
+            clientName: selectedLocation.name,
             mercadoPagoEnabled: data.mercadoPagoEnabled,
             autoOpenSessionEnabled: data.autoOpenSessionEnabled,
             minimumSalesTarget30d: data.minimumSalesTarget30d ?? null,
@@ -220,9 +285,7 @@ export default function MachineFormPage() {
     }
 
     async function refreshMdbConnection() {
-        if (!id) return;
-        const items = await getTelemetryConnections();
-        setMdbConnection(items.find(item => item.machineId === id) ?? null);
+        await loadMdbConnection();
     }
 
     async function handleMdbStatusRequest() {
@@ -322,12 +385,41 @@ export default function MachineFormPage() {
                                     </p>
                                 </div>
                             </div>
-                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2" disabled={!canManageMachine}>
+                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2" disabled={!canSaveMachine}>
                                 <Save className="w-4 h-4" />
                                 Salvar Equipamento
                             </Button>
                         </div>
 
+                        {locationsLoading && <p role="status" className="rounded-md border bg-card p-3 text-sm text-muted-foreground">Carregando localizações...</p>}
+                        {locationsLoadError && (
+                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                <span>Não foi possível carregar as localizações. A máquina não poderá ser salva até que uma localização válida seja carregada.</span>
+                                <Button variant="outline" onClick={() => void loadLocations()} disabled={locationsLoading}>Tentar novamente</Button>
+                            </div>
+                        )}
+                        {locationsLoaded && locations.length === 0 && !locationsLoadError && (
+                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                                <span>Cadastre uma localização antes de associar e salvar esta máquina.</span>
+                                <Button variant="outline" onClick={() => navigate("/locations")}>Cadastrar localização</Button>
+                            </div>
+                        )}
+
+                        {isEditMode && machineLoading ? (
+                            <div role="status" className="flex min-h-60 items-center justify-center rounded-lg border bg-card p-6 text-muted-foreground">
+                                Carregando os dados da máquina...
+                            </div>
+                        ) : isEditMode && machineLoadError ? (
+                            <div role="alert" className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Não foi possível carregar os dados da máquina. O formulário de edição está bloqueado para evitar sobrescrever informações.</p>
+                                <Button variant="outline" onClick={() => void loadMachine()} disabled={machineLoading}>Tentar novamente</Button>
+                            </div>
+                        ) : isEditMode && machineNotFound ? (
+                            <div role="alert" className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Máquina não encontrada. Nenhuma alteração pode ser salva.</p>
+                                <Button variant="outline" onClick={() => navigate("/machines")}>Voltar para máquinas</Button>
+                            </div>
+                        ) : (
                         <div className="bg-card border rounded-lg shadow-xs">
                             <Form {...form}>
                                 <form onSubmit={form.handleSubmit(onSubmit)} className="p-6">
@@ -474,7 +566,14 @@ export default function MachineFormPage() {
                                             {/* CONFIGURAÇÃO DE PAGAMENTO */}
                                             <div className="p-4 border rounded-md bg-muted/10 mt-6">
                                                 <h3 className="text-sm font-semibold mb-4 text-foreground">Configuração de Pagamento</h3>
-                                                {isMpIntegrationActive ? (
+                                                {integrationLoading ? (
+                                                    <p role="status" className="text-sm text-muted-foreground">Verificando integração do Mercado Pago...</p>
+                                                ) : integrationLoadError ? (
+                                                    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                                        <span>Não foi possível confirmar se a integração do Mercado Pago está ativa.</span>
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => void loadIntegration()} disabled={integrationLoading}>Tentar novamente</Button>
+                                                    </div>
+                                                ) : isMpIntegrationActive ? (
                                                     <FormField control={form.control} name="mercadoPagoEnabled" render={({ field }) => (
                                                         <FormItem className="flex flex-row items-center space-x-3 space-y-0">
                                                             <FormControl>
@@ -665,25 +764,46 @@ export default function MachineFormPage() {
 
                                                 {isEditMode && (
                                                     <div className="p-4 border rounded-md bg-background space-y-3">
+                                                        {mdbConnectionLoadError && (
+                                                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                                                <span>{mdbConnection ? "Não foi possível atualizar a conexão MDB. O último estado carregado permanece visível." : "Não foi possível consultar a conexão MDB; o estado da máquina é desconhecido."}</span>
+                                                                <Button type="button" variant="outline" size="sm" onClick={() => void loadMdbConnection()} disabled={mdbConnectionLoading}>Tentar novamente</Button>
+                                                            </div>
+                                                        )}
+                                                        {mdbConnectionLoading && !mdbConnection && <p role="status" className="text-sm text-muted-foreground">Consultando a conexão MDB...</p>}
                                                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                                                             <div className="flex gap-3">
                                                                 <Activity className="w-5 h-5 mt-0.5 text-muted-foreground" />
                                                                 <div>
                                                                     <div className="flex items-center gap-2 flex-wrap">
                                                                         <span className="text-sm font-semibold">
-                                                                            {getMdbStatusDetail(mdbConnection?.mdbStatus).label}
+                                                                            {mdbConnection
+                                                                                ? getMdbStatusDetail(mdbConnection.mdbStatus).label
+                                                                                : mdbConnectionLoadError
+                                                                                    ? "Falha ao consultar conexão MDB"
+                                                                                    : mdbConnectionLoading
+                                                                                        ? "Consultando conexão MDB"
+                                                                                        : "Máquina sem conexão de telemetria"}
                                                                         </span>
                                                                         <Badge variant={mdbConnection?.mdbStatusFresh ? "default" : "outline"}>
-                                                                            {mdbConnection?.mdbStatusFresh ? "Atual" : "Desatualizado"}
+                                                                            {mdbConnection
+                                                                                ? mdbConnection.mdbStatusFresh ? "Atual" : "Desatualizado"
+                                                                                : mdbConnectionLoadError ? "Indisponível" : mdbConnectionLoading ? "Consultando" : "Sem conexão"}
                                                                         </Badge>
                                                                     </div>
                                                                     <p className="text-xs text-muted-foreground mt-1">
-                                                                        {getMdbStatusDetail(mdbConnection?.mdbStatus).description}
+                                                                        {mdbConnection
+                                                                            ? getMdbStatusDetail(mdbConnection.mdbStatus).description
+                                                                            : mdbConnectionLoadError
+                                                                                ? "Não foi possível obter o estado de conexão e MDB da máquina."
+                                                                                : mdbConnectionLoading
+                                                                                    ? "Aguarde a resposta da API."
+                                                                                    : "Nenhuma conexão de telemetria ativa foi encontrada para esta máquina."}
                                                                     </p>
                                                                     <p className="text-xs text-muted-foreground mt-1">
                                                                         Última atualização: {mdbConnection?.mdbStatusUpdatedAt
                                                                             ? new Date(mdbConnection.mdbStatusUpdatedAt).toLocaleString("pt-BR")
-                                                                            : "—"}
+                                                                            : mdbConnectionLoadError ? "Não consultada" : "—"}
                                                                     </p>
                                                                 </div>
                                                             </div>
@@ -789,6 +909,7 @@ export default function MachineFormPage() {
                                 </form>
                             </Form>
                         </div>
+                        )}
                     </main>
                 </div>
             </div>

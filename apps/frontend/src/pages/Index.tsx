@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getMachines, getLocations, getTopProducts, getBottomProducts, getDashboardStats, type DashboardStats } from "@/lib/api";
 import type { Location, Machine, Product } from "@/data/mockData";
 import { DollarSign, ShoppingCart, Box, Zap, LogOut, RefreshCw } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { Button } from "@/components/ui/button";
 
 export default function Index() {
@@ -55,7 +55,7 @@ export default function Index() {
     }, [loadDashboard, refreshVersion]);
 
     const kpis = useMemo(() => {
-        if (loading || !stats) {
+        if (!stats) {
             return { totalRevenue: 0, totalSales: 0, avgStock: 0, uptime: 0 };
         }
         const monitoredMachines = machinesList.filter((machine) => machine.status !== "unmonitored" && machine.status !== "inactive");
@@ -72,7 +72,7 @@ export default function Index() {
             avgStock: avgSt,
             uptime: upt
         };
-    }, [machinesList, stats, loading]);
+    }, [machinesList, stats]);
 
     const handleLogout = () => {
         logout();
@@ -90,6 +90,15 @@ export default function Index() {
                             <span className="text-xs text-muted-foreground">
                                 Última atualização: {lastUpdatedAt ? lastUpdatedAt.toLocaleTimeString("pt-BR") : "—"}
                             </span>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setRefreshVersion(version => version + 1)}
+                                disabled={loading}
+                                aria-label="Atualizar painel"
+                            >
+                                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                            </Button>
                             <button
                                 onClick={handleLogout}
                                 className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"
@@ -132,7 +141,7 @@ export default function Index() {
                                         title="Receita após estornos 30d"
                                         value={`R$ ${kpis.totalRevenue.toLocaleString("pt-BR")}`}
                                         icon={DollarSign}
-                                        subtitle="antes da taxa da plataforma"
+                                        subtitle="pré-taxa; pendências de conciliação e contestações excluídas"
                                     />
                                     <KpiCard
                                         title="Unidades entregues 30d"
@@ -152,7 +161,7 @@ export default function Index() {
                                         value={`${kpis.uptime}%`}
                                         icon={Zap}
                                         variant={kpis.uptime < 90 ? "destructive" : "success"}
-                                        subtitle="máquinas online"
+                                        subtitle="máquinas conectadas"
                                     />
                                 </div>
 

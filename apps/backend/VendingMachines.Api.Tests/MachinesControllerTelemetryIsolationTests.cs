@@ -27,7 +27,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
         var location = new Location { CompanyId = company.Id, Name = "Unidade" };
         var machine = new Machine
         {
-            Id = "machine-a", Name = "Máquina", SerialNumber = "SERIAL-A", CompanyId = company.Id,
+            Id = "machine-a", Name = "Máquina", SerialNumber = "SERIAL-A", NormalizedSerialNumber = "SERIAL-A", CompanyId = company.Id,
             LocationId = location.Id, AutoOpenSessionEnabled = false
         };
         var foreignState = new MachineConnectionState
@@ -41,7 +41,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
         db.MachineConnectionStates.Add(foreignState);
         await db.SaveChangesAsync();
 
-        var result = Update(db, company.Id, machine, autoOpen: true);
+        var result = await Update(db, company.Id, machine, autoOpen: true);
 
         Assert.IsType<BadRequestObjectResult>(result);
         db.ChangeTracker.Clear();
@@ -66,7 +66,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
         var location = new Location { CompanyId = company.Id, Name = "Unidade" };
         var machine = new Machine
         {
-            Id = "machine-a", Name = "Máquina", SerialNumber = "SERIAL-A", CompanyId = company.Id,
+            Id = "machine-a", Name = "Máquina", SerialNumber = "SERIAL-A", NormalizedSerialNumber = "SERIAL-A", CompanyId = company.Id,
             LocationId = location.Id, AutoOpenSessionEnabled = true
         };
         var foreignState = new MachineConnectionState
@@ -80,7 +80,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
         db.MachineConnectionStates.Add(foreignState);
         await db.SaveChangesAsync();
 
-        var result = Update(db, company.Id, machine, autoOpen: false);
+        var result = await Update(db, company.Id, machine, autoOpen: false);
 
         Assert.IsType<NoContentResult>(result);
         db.ChangeTracker.Clear();
@@ -92,7 +92,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
         Assert.Single(await db.TelemetryEvents.ToListAsync());
     }
 
-    private static ActionResult Update(AppDbContext db, Guid companyId, Machine existing, bool autoOpen)
+    private static async Task<IActionResult> Update(AppDbContext db, Guid companyId, Machine existing, bool autoOpen)
     {
         var controller = new MachinesController(new DatabaseDataService(db), db, connections: null!)
         {
@@ -106,7 +106,7 @@ public sealed class MachinesControllerTelemetryIsolationTests
             }
         };
 
-        return controller.Update(existing.Id, new Machine
+        return await controller.Update(existing.Id, new Machine
         {
             Id = existing.Id,
             Name = existing.Name,
@@ -114,6 +114,6 @@ public sealed class MachinesControllerTelemetryIsolationTests
             CompanyId = companyId,
             LocationId = existing.LocationId,
             AutoOpenSessionEnabled = autoOpen
-        });
+        }, CancellationToken.None);
     }
 }

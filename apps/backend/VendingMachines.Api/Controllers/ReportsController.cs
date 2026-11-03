@@ -54,30 +54,75 @@ public sealed class ReportsController(AppDbContext db) : BaseApiController
         if (!TryGetDateRange(from, to, out var start, out var endExclusive, out var error))
             return BadRequest(new { message = error });
 
-        var report = await LoadSalesAsync(companyId, start, endExclusive, machineId, locationId, productId, cancellationToken);
-        var csv = new StringBuilder();
-        csv.AppendLine("Id;Data UTC;Maquina;Cliente;Localizacao;Compartimento;Produto;Quantidade;Valor bruto;Estorno;Receita apos estornos antes da taxa;Taxa plataforma;Liquido original apos taxa;Situacao financeira");
-        foreach (var row in report.Items)
-        {
-            csv.Append(Csv(row.Id.ToString()))
-                .Append(';').Append(Csv(row.SoldAt.ToString("O", CultureInfo.InvariantCulture)))
-                .Append(';').Append(Csv(row.MachineName))
-                .Append(';').Append(Csv(row.ClientName))
-                .Append(';').Append(Csv(row.Location))
-                .Append(';').Append(row.ItemNumber.ToString(CultureInfo.InvariantCulture))
-                .Append(';').Append(Csv(row.ProductName))
-                .Append(';').Append(row.Quantity.ToString(CultureInfo.InvariantCulture))
-                .Append(';').Append(Decimal(row.GrossAmount))
-                .Append(';').Append(Decimal(row.RefundedAmount))
-                .Append(';').Append(Decimal(row.NetRevenue))
-                .Append(';').Append(Decimal(row.ApplicationFee))
-                .Append(';').Append(Decimal(row.NetAfterPlatformFee))
-                .Append(';').Append(Csv(FinancialStatusLabel(row.FinancialStatus)))
-                .AppendLine();
-        }
+        Response.ContentType = "text/csv; charset=utf-8";
+        Response.Headers["Content-Disposition"] = $"attachment; filename=vendas-{DateOnly.FromDateTime(start):yyyyMMdd}-{DateOnly.FromDateTime(endExclusive.AddDays(-1)):yyyyMMdd}.csv";
+        Response.Headers["Cache-Control"] = "no-store";
 
-        var fileName = $"vendas-{DateOnly.FromDateTime(start):yyyyMMdd}-{DateOnly.FromDateTime(endExclusive.AddDays(-1)):yyyyMMdd}.csv";
-        return File(new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).GetBytes(csv.ToString()), "text/csv; charset=utf-8", fileName);
+        await using var writer = new StreamWriter(Response.Body, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), 4096, leaveOpen: true);
+        await writer.WriteAsync("Id venda;ID pagamento Mercado Pago;Data UTC;Maquina;Cliente;Localizacao;Compartimento;Produto;Quantidade;Valor bruto;Estorno;Receita apos estornos antes da taxa;Taxa plataforma;Liquido original apos taxa;Situacao financeira\r\n".AsMemory(), cancellationToken);
+
+        var asOfUtc = DateTime.UtcNow;
+        var sales =
+            from sale in db.SaleRecords.AsNoTracking()
+            where sale.CompanyId == companyId && sale.SoldAt >= start && sale.SoldAt < endExclusive && sale.SoldAt <= asOfUtc
+            join paymentCandidate in db.PaymentTransactions.AsNoTracking().Where(transaction => transaction.CompanyId == companyId)
+                on sale.TransactionId equals paymentCandidate.Id into paymentMatches
+            from payment in paymentMatches.DefaultIfEmpty()
+            join machineCandidate in db.Machines.AsNoTracking().Where(machine => machine.CompanyId == companyId)
+                on sale.MachineId equals machineCandidate.Id into machineMatches
+            from machine in machineMatches.DefaultIfEmpty()
+            join locationCandidate in db.Locations.AsNoTracking().Where(location => location.CompanyId == companyId)
+                on machine.LocationId equals (Guid?)locationCandidate.Id into locationMatches
+            from location in locationMatches.DefaultIfEmpty()
+            select new { sale, payment, machine, location };
+
+        if (!string.IsNullOrWhiteSpace(machineId))
+            sales = sales.Where(row => row.sale.MachineId == machineId.Trim());
+        if (locationId.HasValue)
+            sales = sales.Where(row => row.sale.LocationIdSnapshot == locationId.Value ||
+                (row.sale.LocationIdSnapshot == null && row.machine != null && row.machine.LocationId == locationId.Value));
+        if (!string.IsNullOrWhiteSpace(productId))
+            sales = sales.Where(row => row.sale.ProductId == productId.Trim());
+
+        var rowsWritten = 0;
+        await foreach (var row in sales.OrderByDescending(row => row.sale.SoldAt).ThenByDescending(row => row.sale.Id)
+            .AsAsyncEnumerable().WithCancellation(cancellationToken))
+        {
+            var financialStatus = row.sale.FinancialStatus;
+            decimal? netRevenue = financialStatus is "ReconciliationRequired" or "Disputed" or "Unpaid"
+                ? null
+                : row.sale.GrossAmount - row.sale.RefundedAmount;
+            var cells = new[]
+            {
+                Csv(row.sale.Id.ToString()),
+                CsvAsText(row.payment?.MercadoPagoPaymentId ?? string.Empty),
+                Csv(row.sale.SoldAt.ToString("O", CultureInfo.InvariantCulture)),
+                Csv(row.machine?.Name ?? "Máquina removida"),
+                Csv(row.sale.LocationNameSnapshot ?? row.machine?.ClientName ?? string.Empty),
+                Csv(row.sale.LocationNameSnapshot ?? row.location?.Name ?? row.machine?.Location ?? string.Empty),
+                row.sale.ItemNumber.ToString(CultureInfo.InvariantCulture),
+                Csv(row.sale.ProductNameSnapshot ?? "Produto sem mapeamento"),
+                row.sale.Quantity.ToString(CultureInfo.InvariantCulture),
+                Decimal(row.sale.GrossAmount),
+                Decimal(row.sale.RefundedAmount),
+                netRevenue.HasValue
+                    ? Decimal(netRevenue.Value)
+                    : Csv(financialStatus switch
+                    {
+                        "Disputed" => "Em contestação",
+                        "Unpaid" => "Sem pagamento confirmado",
+                        _ => "Pendente de conciliação"
+                    }),
+                Decimal(row.sale.ApplicationFee),
+                Decimal(row.sale.NetAmount),
+                Csv(FinancialStatusLabel(financialStatus))
+            };
+            await writer.WriteAsync($"{string.Join(";", cells)}\r\n".AsMemory(), cancellationToken);
+            if (++rowsWritten % 128 == 0)
+                await writer.FlushAsync(cancellationToken);
+        }
+        await writer.FlushAsync(cancellationToken);
+        return new EmptyResult();
     }
 
     private async Task<SalesReportResult> LoadSalesAsync(
@@ -89,46 +134,62 @@ public sealed class ReportsController(AppDbContext db) : BaseApiController
         string? productId,
         CancellationToken cancellationToken)
     {
+        var asOfUtc = DateTime.UtcNow;
         var query = db.SaleRecords.AsNoTracking()
-            .Where(sale => sale.CompanyId == companyId && sale.SoldAt >= start && sale.SoldAt < endExclusive);
+            .Where(sale => sale.CompanyId == companyId && sale.SoldAt >= start &&
+                           sale.SoldAt < endExclusive && sale.SoldAt <= asOfUtc);
         if (!string.IsNullOrWhiteSpace(machineId))
             query = query.Where(sale => sale.MachineId == machineId.Trim());
         if (locationId.HasValue)
-            query = query.Where(sale => db.Machines.Any(machine =>
-                machine.Id == sale.MachineId && machine.CompanyId == companyId && machine.LocationId == locationId.Value));
+            query = query.Where(sale => sale.LocationIdSnapshot == locationId.Value ||
+                (sale.LocationIdSnapshot == null && db.Machines.Any(machine =>
+                    machine.Id == sale.MachineId && machine.CompanyId == companyId && machine.LocationId == locationId.Value)));
         if (!string.IsNullOrWhiteSpace(productId))
             query = query.Where(sale => sale.ProductId == productId.Trim());
 
-        query = query.OrderByDescending(sale => sale.SoldAt);
+        query = query.OrderByDescending(sale => sale.SoldAt)
+            .ThenByDescending(sale => sale.Id);
         var total = await query.CountAsync(cancellationToken);
         var sales = await query.Take(MaximumRows).ToListAsync(cancellationToken);
         var machineIds = sales.Select(sale => sale.MachineId).Distinct().ToArray();
+        var transactionIds = sales.Select(sale => sale.TransactionId).Distinct().ToArray();
+        var providerPaymentIds = await db.PaymentTransactions.AsNoTracking()
+            .Where(transaction => transaction.CompanyId == companyId && transactionIds.Contains(transaction.Id))
+            .ToDictionaryAsync(transaction => transaction.Id, transaction => transaction.MercadoPagoPaymentId, cancellationToken);
         var machines = await db.Machines.AsNoTracking()
             .Where(machine => machine.CompanyId == companyId && machineIds.Contains(machine.Id))
             .ToDictionaryAsync(machine => machine.Id, cancellationToken);
-        var locationIds = machines.Values.Where(machine => machine.LocationId.HasValue).Select(machine => machine.LocationId!.Value).Distinct().ToArray();
+        var locationIds = sales.Select(sale => sale.LocationIdSnapshot)
+            .Where(locationId => locationId.HasValue)
+            .Select(locationId => locationId!.Value)
+            .Concat(machines.Values.Where(machine => machine.LocationId.HasValue).Select(machine => machine.LocationId!.Value))
+            .Distinct().ToArray();
         var locations = await db.Locations.AsNoTracking()
             .Where(location => location.CompanyId == companyId && locationIds.Contains(location.Id))
             .ToDictionaryAsync(location => location.Id, cancellationToken);
         var items = sales.Select(sale =>
         {
             machines.TryGetValue(sale.MachineId, out var machine);
-            var locationName = machine?.Location ?? string.Empty;
-            if (machine?.LocationId is Guid locationId && locations.TryGetValue(locationId, out var location))
+            var locationName = sale.LocationNameSnapshot ?? machine?.Location ?? string.Empty;
+            if (sale.LocationNameSnapshot == null && machine?.LocationId is Guid locationId && locations.TryGetValue(locationId, out var location))
                 locationName = location.Name;
+            providerPaymentIds.TryGetValue(sale.TransactionId, out var providerPaymentId);
             return new SalesReportRow(
                 sale.Id,
+                providerPaymentId,
                 sale.SoldAt,
                 sale.MachineId,
                 machine?.Name ?? "Máquina removida",
-                machine?.ClientName ?? string.Empty,
+                sale.LocationNameSnapshot ?? machine?.ClientName ?? string.Empty,
                 locationName,
                 sale.ItemNumber,
                 sale.ProductNameSnapshot ?? "Produto sem mapeamento",
                 sale.Quantity,
                 sale.GrossAmount,
                 sale.RefundedAmount,
-                sale.GrossAmount - sale.RefundedAmount,
+                sale.FinancialStatus is "ReconciliationRequired" or "Disputed" or "Unpaid"
+                    ? null
+                    : sale.GrossAmount - sale.RefundedAmount,
                 sale.ApplicationFee,
                 sale.NetAmount,
                 sale.FinancialStatus);
@@ -145,6 +206,12 @@ public sealed class ReportsController(AppDbContext db) : BaseApiController
         {
             start = endExclusive = default;
             error = "A data inicial deve ser anterior ou igual à data final.";
+            return false;
+        }
+        if (endDate == DateOnly.MaxValue)
+        {
+            start = endExclusive = default;
+            error = "A data final informada não é válida para este relatório.";
             return false;
         }
         if (endDate.DayNumber - startDate.DayNumber > 365)
@@ -170,6 +237,9 @@ public sealed class ReportsController(AppDbContext db) : BaseApiController
         return $"\"{safe.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
     }
 
+    private static string CsvAsText(string value) =>
+        value.Length == 0 ? Csv(value) : Csv($"'{value}");
+
     private static string Decimal(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
 
     private static string FinancialStatusLabel(string status) => status switch
@@ -180,11 +250,12 @@ public sealed class ReportsController(AppDbContext db) : BaseApiController
         "Disputed" => "Em contestação",
         "Chargeback" => "Contestada pelo emissor",
         "ReconciliationRequired" => "Conciliação necessária",
+        "Unpaid" => "Sem pagamento confirmado",
         _ => "Desconhecida"
     };
 
     private sealed record SalesReportResult(List<SalesReportRow> Items, int Total, bool Truncated);
-    private sealed record SalesReportRow(Guid Id, DateTime SoldAt, string MachineId, string MachineName, string ClientName, string Location,
+    private sealed record SalesReportRow(Guid Id, string? MercadoPagoPaymentId, DateTime SoldAt, string MachineId, string MachineName, string ClientName, string Location,
         int ItemNumber, string ProductName, int Quantity, decimal GrossAmount, decimal RefundedAmount,
-        decimal NetRevenue, decimal ApplicationFee, decimal NetAfterPlatformFee, string FinancialStatus);
+        decimal? NetRevenue, decimal ApplicationFee, decimal NetAfterPlatformFee, string FinancialStatus);
 }

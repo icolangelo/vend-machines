@@ -43,8 +43,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "TelemetryCommandDispatches");
+            throw new InvalidOperationException(
+                "TelemetryCommandDispatches contém comandos e resultados MDB duráveis; não reverta a migration. Reverta somente o binário e preserve a fila para reconciliação segura.");
         }
     }
 }

@@ -18,7 +18,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/utils";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 
 export default function Machines() {
     const navigate = useNavigate();
@@ -175,7 +175,7 @@ export default function Machines() {
                                 value={`${uptime}%`}
                                 icon={Zap}
                                 variant={uptime < 90 ? "destructive" : "success"}
-                                subtitle="máquinas online"
+                                subtitle="máquinas conectadas"
                             />
                             <KpiCard
                                 title="Total de Máquinas"
@@ -184,7 +184,7 @@ export default function Machines() {
                                 subtitle="cadastradas"
                             />
                             <KpiCard
-                                title="Status Offline ou Atenção"
+                                title="Desconectadas ou em atenção"
                                 value={attentionCount.toString()}
                                 icon={AlertTriangle}
                                 variant={attentionCount > 0 ? "destructive" : "success"}

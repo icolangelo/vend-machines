@@ -449,8 +449,8 @@ Resposta esperada:
 
 ```json
 {
-  "access_token": "APP_USR-xxxxxxxxxxxxxxxxxxxxxxxx",
-  "public_key": "APP_USR-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "access_token": "ACCESS_TOKEN_DE_EXEMPLO",
+  "public_key": "PUBLIC_KEY_DE_EXEMPLO",
   "refresh_token": "TG-xxxxxxxxxxxxxxxxxxxxxxxx",
   "live_mode": true,
   "user_id": 123456789,

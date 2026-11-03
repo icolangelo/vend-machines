@@ -5,7 +5,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/contexts/AuthContext";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { CookieConsent } from "@/components/CookieConsent";
@@ -20,6 +20,7 @@ const Integrations = lazy(() => import("./pages/Integrations.tsx"));
 const MachineFormPage = lazy(() => import("./pages/MachineFormPage.tsx"));
 const Telemetry = lazy(() => import("./pages/Telemetry.tsx"));
 const Reports = lazy(() => import("./pages/Reports.tsx"));
+const Payments = lazy(() => import("./pages/Payments.tsx"));
 const Alerts = lazy(() => import("./pages/Alerts.tsx"));
 const Admin = lazy(() => import("./pages/Admin.tsx"));
 const Users = lazy(() => import("./pages/Users.tsx"));
@@ -46,6 +47,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
     const { loading: authLoading, token } = useAuth();
     const [processing, setProcessing] = useState(false);
     const processedCodeRef = useRef<string | null>(null);
+    const hasOauthCallback = new URLSearchParams(window.location.search).has("code");
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -64,7 +66,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
                         title: "Integração Conectada",
                         description: "Sua conta do Mercado Pago foi integrada com sucesso!"
                     });
-                    
+
                     const url = new URL(window.location.href);
                     url.search = "";
                     window.history.replaceState({}, document.title, url.toString());
@@ -87,7 +89,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
         }
     }, [authLoading, navigate, toast, token]);
 
-    if (processing) {
+    if (processing || (hasOauthCallback && !!token)) {
         return (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex flex-col items-center justify-center gap-3 z-50 text-white">
                 <RefreshCw className="w-10 h-10 text-sky-400 animate-spin" />
@@ -132,12 +134,13 @@ const App = () => {
                                     <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
                                     <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
                                     <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-                                    <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
+                                    <Route path="/integrations" element={<ProtectedRoute allowedRoles={["Admin", "PlatformAdmin"]}><Integrations /></ProtectedRoute>} />
                                     <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
                                     <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+                                    <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
                                     <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
-                                    <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
-                                    <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
+                                    <Route path="/admin" element={<ProtectedRoute allowedRoles={["PlatformAdmin"]}><Admin /></ProtectedRoute>} />
+                                    <Route path="/users" element={<ProtectedRoute allowedRoles={["Admin"]}><Users /></ProtectedRoute>} />
                                     <Route path="/invite" element={<InviteAcceptance />} />
                                     <Route path="/reset-password" element={<ResetPassword />} />
                                     <Route path="/verify-email" element={<VerifyEmail />} />

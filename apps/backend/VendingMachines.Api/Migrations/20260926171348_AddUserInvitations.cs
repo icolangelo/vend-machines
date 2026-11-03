@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -51,8 +51,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "UserInvitations");
+            throw new System.InvalidOperationException(
+                "Esta migration contém convites e estados de aceite. Reverta somente o binário e preserve UserInvitations.");
         }
     }
 }

@@ -9,6 +9,8 @@ export const API_BASE_URL = rawApiUrl.endsWith("/") ? rawApiUrl.slice(0, -1) : r
 
 const REFRESH_EARLY_MS = 60_000;
 const REFRESH_CONFLICT_RETRIES = 3;
+const AUTH_SESSION_SYNC_CHANNEL = "vend-machines-auth-session";
+const AUTH_SESSION_SYNC_STORAGE_KEY = "vend-machines-auth-session-event";
 
 export interface AuthUser {
   id: string;
@@ -29,9 +31,12 @@ export type AuthStateReason = "updated" | "expired" | "logout";
 type AuthStateListener = (session: AuthSession | null, reason: AuthStateReason) => void;
 
 let currentSession: AuthSession | null = null;
+let sessionGeneration = 0;
 let refreshPromise: Promise<AuthSession | null> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<AuthStateListener>();
+let authSessionChannel: BroadcastChannel | null = null;
+let storageSyncListenerAttached = false;
 
 export class SessionExpiredError extends Error {
   constructor() {
@@ -40,7 +45,15 @@ export class SessionExpiredError extends Error {
   }
 }
 
+export class SessionChangedError extends Error {
+  constructor() {
+    super("A sessão mudou durante a operação. Confira o resultado antes de tentar novamente.");
+    this.name = "SessionChangedError";
+  }
+}
+
 export function subscribeToAuthState(listener: AuthStateListener): () => void {
+  ensureCrossTabSessionSync();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -52,12 +65,16 @@ export function getCurrentAuthUser(): AuthUser | null {
 }
 
 export function setAuthSession(session: AuthSession): void {
+  sessionGeneration += 1;
   applySession(session, "updated");
+  publishCrossTabSession({ type: "session", session });
 }
 
 export function clearAuthSession(reason: AuthStateReason = "logout"): void {
+  sessionGeneration += 1;
   applySession(null, reason);
   clearLegacyAuthStorage();
+  publishCrossTabSession({ type: "logout" });
 }
 
 export function clearLegacyAuthStorage(): void {
@@ -112,40 +129,56 @@ export async function acceptInvitationSession(payload: {
 }
 
 export async function logoutSession(): Promise<void> {
+  const logoutGeneration = sessionGeneration;
   try {
     await fetch(`${API_BASE_URL}/auth/logout`, {
       method: "POST",
       credentials: "include",
     });
   } finally {
-    clearAuthSession("logout");
+    if (logoutGeneration === sessionGeneration) clearAuthSession("logout");
   }
 }
 
 export async function authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const requestGeneration = sessionGeneration;
+  const requestUserId = currentSession?.user.id;
+  const impersonatedCompanyId = readImpersonatedCompanyId();
   const session = await ensureFreshSession();
+  if (requestGeneration !== sessionGeneration) throw new SessionChangedError();
+  if (requestUserId && session && requestUserId !== session.user.id) throw new SessionChangedError();
   if (!session) {
     throw new SessionExpiredError();
   }
 
   const tokenUsed = session?.token ?? null;
-  const response = await sendAuthenticatedRequest(url, options, tokenUsed);
+  const response = await sendAuthenticatedRequest(url, options, tokenUsed, impersonatedCompanyId);
+
+  if (requestGeneration !== sessionGeneration) throw new SessionChangedError();
 
   if (response.status !== 401 || !tokenUsed) {
     return response;
   }
 
+  if (currentSession?.token && currentSession.token !== tokenUsed) {
+    const retry = await sendAuthenticatedRequest(url, options, currentSession.token, impersonatedCompanyId);
+    if (requestGeneration !== sessionGeneration) throw new SessionChangedError();
+    return retry;
+  }
   if (currentSession?.token === tokenUsed) {
     clearRefreshTimer();
-    currentSession = null;
   }
 
   const renewed = await refreshAccessToken(true);
+  if (requestGeneration !== sessionGeneration) throw new SessionChangedError();
+  if (requestUserId && renewed && requestUserId !== renewed.user.id) throw new SessionChangedError();
   if (!renewed) {
     throw new SessionExpiredError();
   }
 
-  return sendAuthenticatedRequest(url, options, renewed.token);
+  const retry = await sendAuthenticatedRequest(url, options, renewed.token, impersonatedCompanyId);
+  if (requestGeneration !== sessionGeneration) throw new SessionChangedError();
+  return retry;
 }
 
 async function postAuthSession(path: string, body: unknown): Promise<AuthSession> {
@@ -162,7 +195,9 @@ async function postAuthSession(path: string, body: unknown): Promise<AuthSession
   }
 
   const session = (await response.json()) as AuthSession;
+  sessionGeneration += 1;
   applySession(session, "updated");
+  publishCrossTabSession({ type: "session", session });
   return session;
 }
 
@@ -185,6 +220,8 @@ async function refreshAccessToken(notifyExpiration: boolean): Promise<AuthSessio
 }
 
 async function performRefresh(notifyExpiration: boolean): Promise<AuthSession | null> {
+  const refreshGeneration = sessionGeneration;
+  const refreshUserId = currentSession?.user.id;
   for (let attempt = 0; attempt <= REFRESH_CONFLICT_RETRIES; attempt += 1) {
     let response: Response;
     try {
@@ -193,14 +230,18 @@ async function performRefresh(notifyExpiration: boolean): Promise<AuthSession | 
         credentials: "include",
       });
     } catch (error) {
+      if (refreshGeneration !== sessionGeneration) return null;
       if (notifyExpiration) {
         throw error;
       }
       return null;
     }
 
+    if (refreshGeneration !== sessionGeneration) return null;
     if (response.ok) {
       const session = (await response.json()) as AuthSession;
+      if (refreshGeneration !== sessionGeneration) return null;
+      if (refreshUserId && refreshUserId !== session.user.id) throw new SessionChangedError();
       applySession(session, "updated");
       return session;
     }
@@ -212,6 +253,7 @@ async function performRefresh(notifyExpiration: boolean): Promise<AuthSession | 
 
     if (response.status === 401) {
       applySession(null, notifyExpiration ? "expired" : "logout");
+      publishCrossTabSession({ type: "logout" });
       return null;
     }
 
@@ -226,15 +268,15 @@ function sendAuthenticatedRequest(
   url: string,
   options: RequestInit,
   token: string | null,
+  impersonatedCompanyId: string | null,
 ): Promise<Response> {
   const headers = new Headers(options.headers || {});
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const impersonated = readImpersonatedCompanyId();
-  if (impersonated) {
-    headers.set("X-Impersonate-Company-Id", impersonated);
+  if (impersonatedCompanyId) {
+    headers.set("X-Impersonate-Company-Id", impersonatedCompanyId);
   }
 
   return fetch(url, {
@@ -248,6 +290,73 @@ function applySession(session: AuthSession | null, reason: AuthStateReason): voi
   currentSession = session;
   scheduleRefresh(session);
   listeners.forEach((listener) => listener(session, reason));
+}
+
+function ensureCrossTabSessionSync(): void {
+  if (typeof window === "undefined") return;
+
+  if (!storageSyncListenerAttached) {
+    window.addEventListener("storage", event => {
+      if (event.key !== AUTH_SESSION_SYNC_STORAGE_KEY || !event.newValue) return;
+      applyExternalSessionChange({ type: "invalidate" });
+    });
+    storageSyncListenerAttached = true;
+  }
+
+  if (!authSessionChannel && typeof BroadcastChannel !== "undefined") {
+    try {
+      authSessionChannel = new BroadcastChannel(AUTH_SESSION_SYNC_CHANNEL);
+      authSessionChannel.addEventListener("message", event => applyExternalSessionChange(event.data));
+      (authSessionChannel as BroadcastChannel & { unref?: () => void }).unref?.();
+    } catch {
+      authSessionChannel = null;
+    }
+  }
+}
+
+function publishCrossTabSession(message: { type: "session"; session: AuthSession } | { type: "logout" }): void {
+  ensureCrossTabSessionSync();
+  if (authSessionChannel) {
+    try {
+      authSessionChannel.postMessage(message);
+      return;
+    } catch {
+      // Fall back to invalidating other tabs if the browser cannot clone the session payload.
+    }
+  }
+
+  try {
+    localStorage.setItem(AUTH_SESSION_SYNC_STORAGE_KEY, JSON.stringify({ type: "invalidate", nonce: `${Date.now()}-${Math.random()}` }));
+    localStorage.removeItem(AUTH_SESSION_SYNC_STORAGE_KEY);
+  } catch {
+    // Cross-tab synchronization is best effort when browser storage is disabled.
+  }
+}
+
+function applyExternalSessionChange(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const message = value as { type?: unknown; session?: unknown };
+  if (message.type === "session" && isAuthSession(message.session)) {
+    sessionGeneration += 1;
+    applySession(message.session, "updated");
+    return;
+  }
+
+  if (message.type === "logout" || message.type === "invalidate") {
+    sessionGeneration += 1;
+    clearLegacyAuthStorage();
+    applySession(null, "logout");
+  }
+}
+
+function isAuthSession(value: unknown): value is AuthSession {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Partial<AuthSession>;
+  const user = session.user as Partial<AuthUser> | null | undefined;
+  return typeof session.token === "string" && session.token.length > 0 &&
+    typeof session.expiresAt === "string" && Date.parse(session.expiresAt) > Date.now() &&
+    !!user && typeof user.id === "string" && typeof user.name === "string" &&
+    typeof user.email === "string" && typeof user.role === "string";
 }
 
 function scheduleRefresh(session: AuthSession | null): void {

@@ -6,6 +6,7 @@ const telemetryEventLabels: Record<string, string> = {
     "session.opening": "Abertura de sessão solicitada",
     "session.closing_without_selection": "Sessão encerrada sem seleção",
     "session.closure_incomplete": "Encerramento da sessão incompleto",
+    "session.closure_verified": "Encerramento físico confirmado por responsável",
     "session.auto_open_failed": "Abertura automática da sessão falhou",
     "command.failed": "Comando não confirmado pela máquina",
     "pool.begin_session": "Máquina iniciou a sessão",

@@ -238,20 +238,8 @@ WHERE "LocationId" IS NULL
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropForeignKey(
-                name: "FK_Machines_Locations_LocationId",
-                table: "Machines");
-
-            migrationBuilder.DropTable(
-                name: "Locations");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Machines_LocationId",
-                table: "Machines");
-
-            migrationBuilder.DropColumn(
-                name: "LocationId",
-                table: "Machines");
+            throw new System.InvalidOperationException(
+                "Esta migration contém vínculos de máquinas a clientes/localizações. Reverta somente o binário e preserve Locations e LocationId.");
         }
     }
 }

@@ -2,6 +2,7 @@
 """Fail closed unless required production settings exist as runtime variables."""
 
 import json
+import ipaddress
 import re
 import sys
 from urllib.parse import urlsplit
@@ -44,7 +45,55 @@ def enabled(key: str, default: bool) -> bool:
     value = runtime_values.get(key)
     if value is None or not value.strip():
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized not in {"true", "false"}:
+        reject(f"{key} precisa ser true ou false para corresponder ao parser de configuração do ASP.NET Core.")
+    return normalized == "true"
+
+
+boolean_settings = (
+    "UseSqlite",
+    "Encryption__WriteLegacyFormat",
+    "Encryption__RequireLegacyData",
+    "AccountEmail__Enabled",
+    "ForwardedHeaders__Enabled",
+    "Telemetry__RequireDeviceCredentials",
+    "MdbStatus__EnforceOnManualStart",
+)
+for key in boolean_settings:
+    value = runtime_values.get(key)
+    if value is not None and value.strip() and value.strip().lower() not in {"true", "false"}:
+        reject(f"{key} precisa ser true ou false para corresponder ao parser de configuração do ASP.NET Core.")
+
+
+integer_settings = {
+    "Auth__AccessTokenMinutes": (1, 2_147_483_647),
+    "Auth__RefreshTokenDays": (1, 2_147_483_647),
+    "Auth__RefreshReuseGraceSeconds": (0, 2_147_483_647),
+    "ForwardedHeaders__ForwardLimit": (1, 5),
+    "Telemetry__ApplicationStoppingDrainTimeoutSeconds": (1, 43),
+    "Telemetry__MaxPendingInboundMessages": (100, 100_000),
+    "Payments__MaxOutstandingWebhookMessages": (100, 100_000),
+    "MdbStatus__PollIntervalSeconds": (5, 3600),
+    "MdbStatus__StaleAfterSeconds": (10, 3600),
+    "MdbStatus__ResponseTimeoutSeconds": (1, 30),
+    "MdbStatus__AutoOpenCooldownSeconds": (1, 3600),
+    "MdbStatus__PollJitterSeconds": (0, 60),
+    "MdbStatus__BatchSize": (1, 200),
+}
+for key, (minimum, maximum) in integer_settings.items():
+    value = runtime_values.get(key)
+    if value is None or not value.strip():
+        continue
+    normalized = value.strip()
+    if not re.fullmatch(r"[+-]?\d+", normalized):
+        reject(f"{key} precisa ser um número inteiro.")
+    try:
+        parsed = int(normalized, 10)
+    except ValueError:
+        reject(f"{key} precisa ser um número inteiro.")
+    if parsed < minimum or parsed > maximum:
+        reject(f"{key} precisa estar entre {minimum} e {maximum}.")
 
 
 def is_placeholder(value: str) -> bool:
@@ -62,10 +111,13 @@ def is_masked(value: str) -> bool:
 
 
 required = [
+    "ASPNETCORE_ENVIRONMENT",
     "ConnectionStrings__DefaultConnection",
     "Jwt__Key",
     "Encryption__Key",
     "MercadoPago__ClientSecret",
+    "MercadoPago__ClientId",
+    "MercadoPago__WebhookUrl",
     "MercadoPago__WebhookSecret",
 ]
 write_legacy = enabled("Encryption__WriteLegacyFormat", True)
@@ -76,6 +128,12 @@ if write_legacy or require_legacy:
 missing = [key for key in required if not runtime_values.get(key, "").strip()]
 if missing:
     reject("Variáveis de runtime obrigatórias ausentes ou sem valor: " + ", ".join(missing))
+
+if runtime_values["ASPNETCORE_ENVIRONMENT"].strip().lower() != "production":
+    reject("ASPNETCORE_ENVIRONMENT precisa ser Production na aplicação de produção.")
+dotnet_environment = runtime_values.get("DOTNET_ENVIRONMENT", "").strip()
+if dotnet_environment and dotnet_environment.lower() != "production":
+    reject("DOTNET_ENVIRONMENT precisa ser Production quando estiver configurado na aplicação de produção.")
 
 invalid = [key for key in required if is_placeholder(runtime_values[key])]
 if invalid:
@@ -109,6 +167,59 @@ if not connection_parameter("Username", "User ID", "UserId"):
 ssl_mode = connection_parameter("SSL Mode", "SslMode").lower()
 if ssl_mode not in {"require", "verifyca", "verifyfull"}:
     reject("ConnectionStrings__DefaultConnection precisa exigir TLS com SSL Mode=Require, VerifyCA ou VerifyFull.")
+
+webhook = urlsplit(runtime_values["MercadoPago__WebhookUrl"].strip())
+webhook_host = (webhook.hostname or "").lower()
+try:
+    webhook_address = ipaddress.ip_address(webhook_host)
+except ValueError:
+    webhook_address = None
+if (webhook.scheme != "https" or not webhook_host or webhook.path in {"", "/"} or
+        webhook.username or webhook.password or webhook.query or webhook.fragment or
+        webhook_host == "localhost" or webhook_host.endswith(".localhost") or
+        (webhook_address is not None and (webhook_address.is_loopback or webhook_address.is_unspecified)) or
+        any(marker in webhook_host for marker in ("example", "placeholder", "change_me", "your_", "replace_with"))):
+    reject("MercadoPago__WebhookUrl precisa ser HTTPS, específico do ambiente e sem credenciais, query ou fragmento.")
+
+
+def indexed_origins(prefix: str) -> list[tuple[int, str]]:
+    pattern = re.compile(rf"^{re.escape(prefix)}__(\d+)$", re.IGNORECASE)
+    indexed = []
+    for key, value in runtime_values.items():
+        match = pattern.fullmatch(key)
+        if match:
+            indexed.append((int(match.group(1)), value.strip()))
+    return sorted(indexed)
+
+
+def validate_https_origin(key: str, origin: str) -> None:
+    parsed = urlsplit(origin)
+    host = (parsed.hostname or "").lower()
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if (parsed.scheme != "https" or not host or parsed.path not in {"", "/"} or
+            parsed.username or parsed.password or parsed.query or parsed.fragment or
+            host == "localhost" or host.endswith(".localhost") or
+            (address is not None and (address.is_loopback or address.is_unspecified)) or
+            any(marker in host for marker in ("example", "placeholder", "change_me", "your_", "replace_with"))):
+        reject(f"{key} precisa conter somente origens HTTPS reais, sem caminho, credenciais ou placeholders.")
+
+
+cors_origins = indexed_origins("Cors__AllowedOrigins")
+if not cors_origins:
+    reject("Configure pelo menos Cors__AllowedOrigins__0 como variável de runtime HTTPS.")
+if [index for index, _ in cors_origins] != list(range(len(cors_origins))):
+    reject("Os índices Cors__AllowedOrigins devem ser contínuos a partir de zero.")
+for index, origin in cors_origins:
+    validate_https_origin(f"Cors__AllowedOrigins__{index}", origin)
+
+websocket_origins = indexed_origins("WebSockets__AllowedOrigins")
+if [index for index, _ in websocket_origins] != list(range(len(websocket_origins))):
+    reject("Os índices WebSockets__AllowedOrigins devem ser contínuos a partir de zero.")
+for index, origin in websocket_origins:
+    validate_https_origin(f"WebSockets__AllowedOrigins__{index}", origin)
 
 if write_legacy and runtime_values["Encryption__Key"] != runtime_values["Encryption__LegacyKey"]:
     reject("Encryption__Key e Encryption__LegacyKey devem corresponder enquanto WriteLegacyFormat estiver habilitada.")

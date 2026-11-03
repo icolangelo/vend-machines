@@ -76,21 +76,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
-            {
-                migrationBuilder.Sql("""
-                    DROP TRIGGER IF EXISTS "TR_Users_DisableUserForPendingCompany" ON "Users";
-                    DROP FUNCTION IF EXISTS "DisableUserForPendingCompany"();
-                    """);
-            }
-            else if (migrationBuilder.ActiveProvider == "Microsoft.EntityFrameworkCore.Sqlite")
-            {
-                migrationBuilder.Sql("DROP TRIGGER IF EXISTS \"TR_Users_DisableUserForPendingCompany\";");
-            }
-
-            migrationBuilder.DropColumn(
-                name: "ActivationStatus",
-                table: "Companies");
+            throw new System.InvalidOperationException(
+                "Esta migration contém aprovação de empresas e a regra que impede ativação indevida de usuários. Reverta somente o binário e preserve estado, trigger e função.");
         }
     }
 }

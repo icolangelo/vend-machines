@@ -75,11 +75,15 @@ test("imagem de produção serve login, assets imutáveis, rotas SPA e CSP", asy
     const builtBundle = builtJavaScript.join("\n");
     expect(builtBundle).toContain("https://api.vendmachine.com.br/api");
     expect(builtBundle).not.toContain("VITE_IS_TEST_ENVIRONMENT");
-    const authClientSource = [...scriptSources.entries()]
-        .find(([pathname]) => /\/authClient-[^/]+\.js$/.test(pathname))?.[1];
-    expect(authClientSource).toBeDefined();
-    expect(authClientSource).toContain("https://api.vendmachine.com.br/api");
-    expect(authClientSource).not.toMatch(/(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)(?::\d+)?/i);
+    expect(builtBundle).not.toContain("test-session-closure");
+    expect(builtBundle).not.toContain("vm-test-closure-alert-evidence");
+    expect(builtBundle).not.toContain("Encerramento físico pendente");
+    const apiConfigurationBundles = [...scriptSources.values()]
+        .filter(source => source.includes("https://api.vendmachine.com.br/api"));
+    expect(apiConfigurationBundles.length).toBeGreaterThan(0);
+    for (const source of apiConfigurationBundles) {
+        expect(source).not.toMatch(/(?:https?:\/\/)?(?:localhost|127\.0\.0\.1)(?::\d+)?/i);
+    }
 
     const missingAsset = await request.get(new URL("/assets/not-a-real-bundle.js", appBaseUrl).toString());
     expect(missingAsset.status()).toBe(404);

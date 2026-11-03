@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -87,11 +87,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "AlertReadReceipts");
-
-            migrationBuilder.DropTable(
-                name: "OperationalAlerts");
+            throw new System.InvalidOperationException(
+                "Esta migration contém alertas operacionais e recibos de leitura. Reverta somente o binário e preserve o histórico.");
         }
     }
 }

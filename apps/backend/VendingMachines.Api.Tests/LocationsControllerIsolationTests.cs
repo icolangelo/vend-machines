@@ -48,6 +48,39 @@ public sealed class LocationsControllerIsolationTests
                 Revenue30d = 900m,
                 TotalSales30d = 90
             });
+        var sessionAId = Guid.NewGuid();
+        var transactionAId = Guid.NewGuid();
+        var sessionBId = Guid.NewGuid();
+        var transactionBId = Guid.NewGuid();
+        db.MachineSessions.AddRange(
+            new MachineSession { Id = sessionAId, CompanyId = companyA.Id, MachineId = "machine-a" },
+            new MachineSession { Id = sessionBId, CompanyId = companyB.Id, MachineId = "machine-b" });
+        db.PaymentTransactions.AddRange(
+            new PaymentTransaction { Id = transactionAId, CompanyId = companyA.Id, MachineId = "machine-a", Amount = 12m },
+            new PaymentTransaction { Id = transactionBId, CompanyId = companyB.Id, MachineId = "machine-b", Amount = 900m });
+        db.SaleRecords.AddRange(
+            new SaleRecord
+            {
+                CompanyId = companyA.Id,
+                MachineId = "machine-a",
+                SessionId = sessionAId,
+                TransactionId = transactionAId,
+                ItemNumber = 1,
+                Quantity = 3,
+                GrossAmount = 12m,
+                SoldAt = DateTime.UtcNow
+            },
+            new SaleRecord
+            {
+                CompanyId = companyB.Id,
+                MachineId = "machine-b",
+                SessionId = sessionBId,
+                TransactionId = transactionBId,
+                ItemNumber = 1,
+                Quantity = 90,
+                GrossAmount = 900m,
+                SoldAt = DateTime.UtcNow
+            });
         await db.SaveChangesAsync();
 
         var controller = new LocationsController(db, new DatabaseDataService(db));

@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function InviteAcceptance() {
     const [searchParams] = useSearchParams();
@@ -43,7 +44,7 @@ export default function InviteAcceptance() {
             toast.success("Convite aceito. Sua conta está pronta.");
             navigate("/dashboard", { replace: true });
         } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Não foi possível aceitar o convite.");
+            toast.error(getErrorMessage(error, "Não foi possível aceitar o convite. Tente novamente."));
         } finally {
             setSubmitting(false);
         }

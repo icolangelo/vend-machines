@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -82,23 +82,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropForeignKey(
-                name: "FK_Machines_Companies_CompanyId",
-                table: "Machines");
-
-            migrationBuilder.DropTable(
-                name: "Users");
-
-            migrationBuilder.DropTable(
-                name: "Companies");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Machines_CompanyId",
-                table: "Machines");
-
-            migrationBuilder.DropColumn(
-                name: "CompanyId",
-                table: "Machines");
+            throw new System.InvalidOperationException(
+                "Esta migration contém empresas, usuários e seus vínculos com máquinas. Reverta somente o binário e preserve a identidade e os dados comerciais.");
         }
     }
 }

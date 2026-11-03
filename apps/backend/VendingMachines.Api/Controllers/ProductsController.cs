@@ -144,6 +144,37 @@ public class ProductsController : BaseApiController
     }
 
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpDelete("types/{id}")]
+    public async Task<IActionResult> DeleteProductType(string id, CancellationToken cancellationToken)
+    {
+        if (!TryGetEffectiveCompanyId(out var companyId))
+            return BadRequest(new { message = "Usuário sem empresa." });
+
+        var productType = await _db.ProductTypes.FirstOrDefaultAsync(
+            candidate => candidate.Id == id && candidate.CompanyId == companyId,
+            cancellationToken);
+        if (productType == null)
+            return NotFound(new { message = "Tipo de produto não encontrado nesta empresa." });
+
+        var usedByProducts = await _db.Products.AsNoTracking().AnyAsync(
+            product => product.TypeId == id,
+            cancellationToken);
+        if (usedByProducts)
+            return Conflict(new { message = "Este tipo está associado a produtos. Altere os produtos antes de excluí-lo." });
+
+        var hasOverrides = await _db.ProductTypes.AsNoTracking().AnyAsync(
+            candidate => candidate.OriginalId == id,
+            cancellationToken);
+        if (hasOverrides)
+            return Conflict(new { message = "Este tipo possui substituições vinculadas e não pode ser excluído." });
+
+        _db.ProductTypes.Remove(productType);
+        await _db.SaveChangesAsync(cancellationToken);
+        await RecordAuditAsync("product_type.deleted", "ProductType", productType.Id, companyId, cancellationToken);
+        return NoContent();
+    }
+
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteProduct(string id, CancellationToken cancellationToken)
     {
@@ -168,6 +199,12 @@ public class ProductsController : BaseApiController
         var hasInventoryHistory = await _db.InventoryMovements.AnyAsync(movement => movement.ProductId == id, cancellationToken);
         if (hasInventoryHistory)
             return Conflict(new { message = "Este produto possui histórico de estoque e não pode ser excluído." });
+
+        var referencedBySessionSnapshot = await _db.MachineSessions.AsNoTracking().AnyAsync(
+            session => session.CompanyId == companyId && session.SelectedProductIdSnapshot == id,
+            cancellationToken);
+        if (referencedBySessionSnapshot)
+            return Conflict(new { message = "Este produto está registrado no histórico de sessões MDB e não pode ser excluído." });
 
         _db.Products.Remove(product);
         await _db.SaveChangesAsync(cancellationToken);

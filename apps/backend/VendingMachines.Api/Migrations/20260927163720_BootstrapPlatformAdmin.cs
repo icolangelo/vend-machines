@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -26,21 +26,30 @@ namespace VendingMachines.Api.Migrations
                     END;
                     $bootstrap$;
 
-                    WITH promoted AS (
-                        UPDATE "Users"
-                        SET "Role" = 'PlatformAdmin',
-                            "CredentialVersion" = "CredentialVersion" + 1
+                    WITH bootstrap_account AS MATERIALIZED (
+                        SELECT "Id", "CompanyId", "Role" AS "PreviousRole"
+                        FROM "Users"
                         WHERE "NormalizedEmail" = 'dev.ivan@gmail.com'
                           AND "IsActive" = TRUE
-                          AND "Role" <> 'PlatformAdmin'
-                        RETURNING "Id", "CompanyId"
+                    ), promoted AS (
+                        UPDATE "Users" AS user_account
+                        SET "Role" = 'PlatformAdmin',
+                            "CredentialVersion" = user_account."CredentialVersion" + 1
+                        FROM bootstrap_account
+                        WHERE user_account."Id" = bootstrap_account."Id"
+                          AND user_account."Role" <> 'PlatformAdmin'
+                        RETURNING user_account."Id"
                     )
                     INSERT INTO "AuditLogs"
                         ("Id", "CompanyId", "ActorUserId", "Action", "ResourceType", "ResourceId", "MetadataJson", "CreatedAt")
                     SELECT gen_random_uuid(), "CompanyId", NULL,
-                           'auth.platform_admin_bootstrap_promoted', 'User', "Id"::text,
-                           '{"source":"migration"}', CURRENT_TIMESTAMP
-                    FROM promoted;
+                           'auth.platform_admin_bootstrap_completed', 'User', "Id"::text,
+                           jsonb_build_object(
+                               'source', 'migration',
+                               'roleChanged', ("PreviousRole" <> 'PlatformAdmin')
+                           )::text,
+                           CURRENT_TIMESTAMP
+                    FROM bootstrap_account;
                     """);
             }
             else if (migrationBuilder.ActiveProvider == "Microsoft.EntityFrameworkCore.Sqlite")
@@ -57,24 +66,29 @@ namespace VendingMachines.Api.Migrations
                     DROP TABLE "__BootstrapPlatformAdminGuard";
 
                     CREATE TEMP TABLE "__BootstrapPlatformAdmin" AS
-                    SELECT "Id", "CompanyId"
+                    SELECT "Id", "CompanyId", "Role" AS "PreviousRole"
                     FROM "Users"
                     WHERE "NormalizedEmail" = 'dev.ivan@gmail.com'
-                      AND "IsActive" = 1
-                      AND "Role" <> 'PlatformAdmin';
+                      AND "IsActive" = 1;
 
                     UPDATE "Users"
                     SET "Role" = 'PlatformAdmin',
                         "CredentialVersion" = "CredentialVersion" + 1
-                    WHERE "Id" IN (SELECT "Id" FROM "__BootstrapPlatformAdmin");
+                    WHERE "Id" IN (
+                        SELECT "Id" FROM "__BootstrapPlatformAdmin" WHERE "PreviousRole" <> 'PlatformAdmin'
+                    );
 
                     INSERT INTO "AuditLogs"
                         ("Id", "CompanyId", "ActorUserId", "Action", "ResourceType", "ResourceId", "MetadataJson", "CreatedAt")
                     SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' ||
                            lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' ||
                            lower(hex(randomblob(6))), "CompanyId", NULL,
-                           'auth.platform_admin_bootstrap_promoted', 'User', "Id",
-                           '{"source":"migration"}', CURRENT_TIMESTAMP
+                           'auth.platform_admin_bootstrap_completed', 'User', "Id",
+                           CASE WHEN "PreviousRole" = 'PlatformAdmin'
+                                THEN '{"source":"migration","roleChanged":false}'
+                                ELSE '{"source":"migration","roleChanged":true}'
+                           END,
+                           CURRENT_TIMESTAMP
                     FROM "__BootstrapPlatformAdmin";
 
                     DROP TABLE "__BootstrapPlatformAdmin";
@@ -89,8 +103,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            // Intencionalmente sem reversão automática: uma concessão de papel
-            // pode ter sido usada ou alterada após a migration. Revise manualmente.
+            throw new System.InvalidOperationException(
+                "Esta migration promove a conta reservada, atualiza a versão da credencial quando necessário e grava auditoria. O Down agora falha fechado para preservar o papel e a evidência; correções devem seguir procedimento manual auditado.");
         }
     }
 }

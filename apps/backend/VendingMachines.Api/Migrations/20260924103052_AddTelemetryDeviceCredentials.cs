@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -34,17 +34,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "TelemetryCredentialCreatedAt",
-                table: "Machines");
-
-            migrationBuilder.DropColumn(
-                name: "TelemetryCredentialHash",
-                table: "Machines");
-
-            migrationBuilder.DropColumn(
-                name: "TelemetryCredentialRevokedAt",
-                table: "Machines");
+            throw new System.InvalidOperationException(
+                "Esta migration contém credenciais e revogações de dispositivos. Reverta somente o binário e preserve os hashes e timestamps.");
         }
     }
 }

@@ -59,17 +59,19 @@ public sealed class CatalogMutationAuditTests
         {
             Code = "AGUA-1", Name = "Água mineral", TypeId = productType.Id, Cost = 4m
         });
+        Assert.IsType<ConflictObjectResult>(await controller.DeleteProductType(productType.Id, CancellationToken.None));
         await controller.DeleteProduct(product.Id, CancellationToken.None);
+        Assert.IsType<NoContentResult>(await controller.DeleteProductType(productType.Id, CancellationToken.None));
 
         Assert.Equal(
             new[]
             {
                 "product_type.created", "product_type.updated",
-                "product.created", "product.updated", "product.deleted"
+                "product.created", "product.updated", "product.deleted", "product_type.deleted"
             },
             audit.Entries.Select(entry => entry.Action));
         Assert.All(audit.Entries, entry => Assert.Equal(companyId, entry.CompanyId));
-        Assert.Equal(new[] { "ProductType", "ProductType", "Product", "Product", "Product" },
+        Assert.Equal(new[] { "ProductType", "ProductType", "Product", "Product", "Product", "ProductType" },
             audit.Entries.Select(entry => entry.ResourceType));
         Assert.All(audit.Entries, entry => Assert.Null(entry.Metadata));
     }

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -21,9 +21,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "OwnerNodeId",
-                table: "MachineConnectionStates");
+            throw new System.InvalidOperationException(
+                "Esta migration contém propriedade persistida da conexão MDB. Reverta somente o binário e preserve OwnerNodeId.");
         }
     }
 }

@@ -66,13 +66,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_PaymentTransactions_Status_LastReconciliationAt_CreatedAt",
-                table: "PaymentTransactions");
-
-            migrationBuilder.DropColumn(
-                name: "LastReconciliationAt",
-                table: "PaymentTransactions");
+            throw new InvalidOperationException(
+                "Esta migration contém estado de reconciliação de pagamentos. Reverta somente o binário e preserve LastReconciliationAt e o índice.");
         }
     }
 }

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
+using System.Net;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -9,6 +10,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using VendingMachines.Api.Controllers;
 using VendingMachines.Api.Data;
+using VendingMachines.Api.Models;
+using VendingMachines.Api.Services;
 using Xunit;
 
 namespace VendingMachines.Api.Tests;
@@ -53,6 +56,65 @@ public sealed class MercadoPagoWebhookControllerTests
         Assert.Equal("hmac_verified", inboxMessage.AuthenticationMode);
         Assert.Equal("Pending", inboxMessage.Status);
         Assert.Equal("123456789", inboxMessage.PaymentId);
+    }
+
+    [Fact]
+    public async Task Webhook_ForLegacyOwnedPayment_ForwardsToSocketOwnerInsteadOfCandidateInbox()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa" };
+        var machine = new Machine
+        {
+            Id = "legacy-webhook-machine",
+            Name = "Máquina legada",
+            SerialNumber = "legacy-webhook-serial",
+            NormalizedSerialNumber = "LEGACY-WEBHOOK-SERIAL",
+            CompanyId = company.Id
+        };
+        var transaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(),
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            Amount = 10m,
+            Status = "Pending",
+            MercadoPagoPaymentId = "123456789"
+        };
+        scenario.Db.Companies.Add(company);
+        scenario.Db.Machines.Add(machine);
+        scenario.Db.PaymentTransactions.Add(transaction);
+        scenario.Db.MachineSessions.Add(new MachineSession
+        {
+            Id = Guid.NewGuid(),
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            TransactionId = transaction.Id,
+            State = "PaymentPending"
+        });
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            IsOnline = true,
+            LastSeenAt = DateTime.UtcNow,
+            ConnectionId = "legacy-connection"
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var handler = new WebhookCaptureHandler();
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+        var requestId = "legacy-payment-request";
+        var signature = CreateSignature("123456789", requestId, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+        var controller = CreateController(scenario.Db, signature, requestId, legacyTelemetryRelay: relay).Controller;
+
+        var result = Assert.IsType<OkObjectResult>(await controller.WebhookMercadoPago(ParseBody()));
+
+        Assert.Contains("routedToLegacyOwner", JsonSerializer.Serialize(result.Value));
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal("http://legacy-api.internal/webhooks/mercadopago", handler.RequestUri?.ToString());
+        Assert.Empty(await scenario.Db.WebhookInboxMessages.ToListAsync());
     }
 
     [Fact]
@@ -169,7 +231,8 @@ public sealed class MercadoPagoWebhookControllerTests
         AppDbContext db,
         string? signature,
         string requestId,
-        bool configureSecret = true)
+        bool configureSecret = true,
+        LegacyTelemetryRequestRelay? legacyTelemetryRelay = null)
     {
         var configurationValues = new Dictionary<string, string?>();
         if (configureSecret) configurationValues["MercadoPago:WebhookSecret"] = WebhookSecret;
@@ -181,7 +244,8 @@ public sealed class MercadoPagoWebhookControllerTests
             sessionOrchestrator: null!,
             scopeFactory: null!,
             configuration,
-            environment: null!);
+            environment: null!,
+            legacyTelemetryRelay: legacyTelemetryRelay);
         var context = new DefaultHttpContext();
         context.Request.Headers["x-request-id"] = requestId;
         if (signature is not null)
@@ -212,6 +276,29 @@ public sealed class MercadoPagoWebhookControllerTests
         {
             await Db.DisposeAsync();
             await connection.DisposeAsync();
+        }
+    }
+
+    private static IConfiguration CreateConfiguration(params (string Key, string Value)[] entries) =>
+        new ConfigurationBuilder()
+            .AddInMemoryCollection(entries.ToDictionary(entry => entry.Key, entry => (string?)entry.Value))
+            .Build();
+
+    private sealed class FixedHttpClientFactory(HttpClient client) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => client;
+    }
+
+    private sealed class WebhookCaptureHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public Uri? RequestUri { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            RequestUri = request.RequestUri;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
         }
     }
 }

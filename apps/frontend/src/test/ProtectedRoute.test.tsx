@@ -7,7 +7,7 @@ const auth = vi.hoisted(() => ({
     state: { token: "test-token" as string | null, user: { role: "Admin" }, loading: false },
 }));
 
-vi.mock("@/contexts/AuthContext", () => ({
+vi.mock("@/contexts/useAuth", () => ({
     useAuth: () => auth.state,
 }));
 
@@ -43,6 +43,22 @@ describe("ProtectedRoute role restrictions", () => {
                         </ProtectedRoute>
                     }
                 />
+                <Route
+                    path="/admin"
+                    element={
+                        <ProtectedRoute allowedRoles={["PlatformAdmin"]}>
+                            <div>Administração autorizada</div>
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/users"
+                    element={
+                        <ProtectedRoute allowedRoles={["Admin"]}>
+                            <div>Gestão de usuários autorizada</div>
+                        </ProtectedRoute>
+                    }
+                />
                 <Route path="/dashboard" element={<div>Painel</div>} />
                 <Route path="/" element={<div>Login</div>} />
             </Routes>
@@ -73,5 +89,39 @@ describe("ProtectedRoute role restrictions", () => {
 
         expect(screen.getByText("Painel")).toBeInTheDocument();
         expect(screen.queryByText("Formulário da máquina")).not.toBeInTheDocument();
+    });
+
+    it.each(["/admin", "/users"])("redirects Operator from %s", (path) => {
+        auth.state.user = { role: "Operator" };
+
+        renderRestrictedRoute(path);
+
+        expect(screen.getByText("Painel")).toBeInTheDocument();
+        expect(screen.queryByText("Administração autorizada")).not.toBeInTheDocument();
+        expect(screen.queryByText("Gestão de usuários autorizada")).not.toBeInTheDocument();
+    });
+
+    it("allows Admin to manage company users but not platform administration", () => {
+        auth.state.user = { role: "Admin" };
+
+        const { unmount } = renderRestrictedRoute("/users");
+        expect(screen.getByText("Gestão de usuários autorizada")).toBeInTheDocument();
+        unmount();
+
+        renderRestrictedRoute("/admin");
+        expect(screen.getByText("Painel")).toBeInTheDocument();
+        expect(screen.queryByText("Administração autorizada")).not.toBeInTheDocument();
+    });
+
+    it("allows PlatformAdmin to access platform administration only", () => {
+        auth.state.user = { role: "PlatformAdmin" };
+
+        const { unmount } = renderRestrictedRoute("/admin");
+        expect(screen.getByText("Administração autorizada")).toBeInTheDocument();
+        unmount();
+
+        renderRestrictedRoute("/users");
+        expect(screen.getByText("Painel")).toBeInTheDocument();
+        expect(screen.queryByText("Gestão de usuários autorizada")).not.toBeInTheDocument();
     });
 });

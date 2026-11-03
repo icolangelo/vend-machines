@@ -20,10 +20,6 @@ namespace VendingMachines.Api.Controllers;
 [Route("api/[controller]")]
 public class AuthController : ControllerBase
 {
-    // Mantido apenas para impedir que o cadastro público reutilize a identidade
-    // reservada do administrador inicial.
-    private const string ReservedPlatformAdminEmail = "dev.ivan@gmail.com";
-
     private readonly AppDbContext _context;
     private readonly AuthTokenService _tokenService;
     private readonly RefreshSessionService _refreshSessions;
@@ -54,6 +50,7 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("login")]
+    [AllowAnonymous]
     [EnableRateLimiting("auth")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
@@ -104,6 +101,7 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("register")]
+    [AllowAnonymous]
     [EnableRateLimiting("auth")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
@@ -126,11 +124,6 @@ public class AuthController : ControllerBase
             return BadRequest(new { message = "Você precisa aceitar a Política de Privacidade para se cadastrar." });
         }
 
-        if (string.Equals(request.Email.Trim(), ReservedPlatformAdminEmail, StringComparison.OrdinalIgnoreCase))
-        {
-            return BadRequest(new { message = "Este e-mail é reservado para a administração da plataforma." });
-        }
-
         var normalizedEmail = RegistrationIdentity.NormalizeEmail(request.Email);
         if (normalizedEmail.Length > 320 ||
             !MailAddress.TryCreate(normalizedEmail, out var parsedEmail) ||
@@ -150,19 +143,19 @@ public class AuthController : ControllerBase
         // Validar e-mail único
         if (await _context.Users.AnyAsync(u => u.NormalizedEmail == normalizedEmail))
         {
-            return Conflict(new { message = "Este e-mail já está sendo utilizado por outro usuário." });
+            return Conflict(new { message = "E-mail, CPF ou CNPJ já cadastrado." });
         }
 
         // Validar CPF único
         if (await _context.Users.AnyAsync(u => u.NormalizedCpf == normalizedCpf))
         {
-            return Conflict(new { message = "Este CPF já está cadastrado no sistema." });
+            return Conflict(new { message = "E-mail, CPF ou CNPJ já cadastrado." });
         }
 
         // Validar CNPJ único
         if (await _context.Companies.AnyAsync(c => c.NormalizedCnpj == normalizedCnpj))
         {
-            return Conflict(new { message = "Este CNPJ já está cadastrado no sistema." });
+            return Conflict(new { message = "E-mail, CPF ou CNPJ já cadastrado." });
         }
 
         using var transaction = await _context.Database.BeginTransactionAsync();
@@ -194,6 +187,7 @@ public class AuthController : ControllerBase
                 CreatedAt = DateTime.UtcNow,
                 AcceptedPrivacyPolicy = true,
                 PrivacyPolicyAcceptedAt = DateTime.UtcNow,
+                PrivacyPolicyVersion = PrivacyPolicyVersions.Current,
                 RequiresEmailVerification = true
             };
 
@@ -450,10 +444,10 @@ public class AuthController : ControllerBase
             NormalizedCpf = cpf,
             Role = invitation.Role,
             CompanyId = invitation.CompanyId,
-            Company = invitation.Company,
             CreatedAt = now,
             AcceptedPrivacyPolicy = true,
-            PrivacyPolicyAcceptedAt = now
+            PrivacyPolicyAcceptedAt = now,
+            PrivacyPolicyVersion = PrivacyPolicyVersions.Current
         };
         user.PasswordHash = new PasswordHasher<User>().HashPassword(user, request.Password);
         _context.Users.Add(user);
@@ -585,6 +579,7 @@ public class AuthController : ControllerBase
 
     [AllowAnonymous]
     [HttpPost("logout")]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> Logout(CancellationToken cancellationToken)
     {
         var refreshToken = _cookieService.Read(Request);

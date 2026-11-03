@@ -45,8 +45,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "AuditLogs");
+            throw new System.InvalidOperationException(
+                "Esta migration contém o histórico de auditoria. Reverta somente o binário e preserve AuditLogs.");
         }
     }
 }

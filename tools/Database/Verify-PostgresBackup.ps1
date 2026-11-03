@@ -4,6 +4,14 @@ param(
     [string]$BackupPath,
 
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+    [string]$ExpectedSha256,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^\d{14}_[A-Za-z0-9]+$')]
+    [string]$ExpectedLatestMigrationId,
+
+    [Parameter(Mandatory = $true)]
     [string]$PostgresImage,
 
     [ValidateRange(10, 600)]
@@ -18,10 +26,14 @@ if ($backupItem.PSIsContainer -or $backupItem.Length -le 0) {
     throw "Informe um arquivo de backup PostgreSQL customizado não vazio."
 }
 $resolvedBackupPath = $backupItem.FullName
+$actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedBackupPath).Hash
+if (-not [string]::Equals($actualSha256, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "O SHA-256 do backup diverge do valor registrado; restauração cancelada."
+}
 
 $containerName = "vendmachines-restore-check-$([Guid]::NewGuid().ToString('N'))"
 $temporaryPassword = "restore-check-$([Guid]::NewGuid().ToString('N'))"
-$containerStarted = $false
+$containerMayExist = $false
 
 function Invoke-DockerChecked {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
@@ -33,14 +45,37 @@ function Invoke-DockerChecked {
     return $output
 }
 
+function Remove-TemporaryPostgresContainer {
+    & docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Não foi possível confirmar a remoção do container temporário de restauração: Docker está indisponível. Nome: $containerName."
+    }
+
+    $matchingContainers = @(& docker ps --all --filter "name=^/$containerName$" --format "{{.Names}}" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Não foi possível verificar o container temporário de restauração. Nome: $containerName."
+    }
+
+    if ($matchingContainers -contains $containerName) {
+        & docker rm --force $containerName *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao remover o container temporário de restauração. Nome: $containerName."
+        }
+    }
+
+    $remainingContainers = @(& docker ps --all --filter "name=^/$containerName$" --format "{{.Names}}" 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $remainingContainers -contains $containerName) {
+        throw "A remoção do container temporário de restauração não pôde ser confirmada. Nome: $containerName."
+    }
+}
+
 try {
+    $containerMayExist = $true
     Invoke-DockerChecked @(
         "run", "--rm", "--detach", "--network", "none", "--name", $containerName,
         "--env", "POSTGRES_PASSWORD=$temporaryPassword",
         $PostgresImage
     ) | Out-Null
-    $containerStarted = $true
-
     $ready = $false
     $consecutiveReadyChecks = 0
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
@@ -88,13 +123,18 @@ try {
         throw "A restauração terminou sem migrations registradas no banco restaurado."
     }
 
-    Write-Host "Restauração validada em PostgreSQL isolado; migrations encontradas: $migrationCount."
+    $latestMigrationId = (Invoke-DockerChecked @(
+        "exec", $containerName, "psql", "--tuples-only", "--no-align", "-U", "postgres",
+        "-d", "backup_restore_check", "-c", 'SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 1;'
+    ) | Out-String).Trim()
+    if (-not [string]::Equals($latestMigrationId, $ExpectedLatestMigrationId, [StringComparison]::Ordinal)) {
+        throw "A última migration restaurada ($latestMigrationId) diverge da versão esperada ($ExpectedLatestMigrationId)."
+    }
+
+    Write-Host "Restauração validada em PostgreSQL isolado; migrations encontradas: $migrationCount; última migration: $latestMigrationId."
 }
 finally {
-    if ($containerStarted) {
-        & docker stop $containerName *> $null
-        if ($LASTEXITCODE -ne 0) {
-            & docker rm --force $containerName *> $null
-        }
+    if ($containerMayExist) {
+        Remove-TemporaryPostgresContainer
     }
 }

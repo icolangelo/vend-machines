@@ -111,4 +111,31 @@ public sealed class DbInitializerTests
         dispatchTable.CommandText = "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'TelemetryCommandDispatches'";
         Assert.Equal(1L, (long)(await dispatchTable.ExecuteScalarAsync())!);
     }
+
+    [Fact]
+    public async Task StartupDoesNotPromoteAnAccountByEmail()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var user = new User
+        {
+            Name = "Conta sem privilégio automático",
+            Email = "dev.ivan@gmail.com",
+            NormalizedEmail = "dev.ivan@gmail.com",
+            Role = "Admin",
+            IsActive = true
+        };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        DbInitializer.Initialize(db, seedDemoData: false);
+
+        Assert.Equal("Admin", (await db.Users.SingleAsync()).Role);
+    }
 }

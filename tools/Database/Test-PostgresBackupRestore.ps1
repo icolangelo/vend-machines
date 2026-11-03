@@ -50,7 +50,8 @@ try {
     }
 
     Invoke-DockerChecked @("exec", $containerName, "createdb", "-U", "postgres", "backup_source") | Out-Null
-    $fixtureSql = 'CREATE TABLE "__EFMigrationsHistory" ("MigrationId" character varying(150) PRIMARY KEY, "ProductVersion" character varying(32) NOT NULL); INSERT INTO "__EFMigrationsHistory" VALUES (''synthetic-migration'',''10.0.12''); CREATE TABLE "Users" ("Id" uuid PRIMARY KEY, "Email" text NOT NULL); INSERT INTO "Users" VALUES (gen_random_uuid(),''synthetic@example.invalid'');'
+    $expectedMigrationId = "20261025193143_AddPaymentReconciliationReason"
+    $fixtureSql = "CREATE TABLE `"__EFMigrationsHistory`" (`"MigrationId`" character varying(150) PRIMARY KEY, `"ProductVersion`" character varying(32) NOT NULL); INSERT INTO `"__EFMigrationsHistory`" VALUES ('$expectedMigrationId','10.0.12'); CREATE TABLE `"Users`" (`"Id`" uuid PRIMARY KEY, `"Email`" text NOT NULL); INSERT INTO `"Users`" VALUES (gen_random_uuid(),'synthetic@example.invalid');"
     Invoke-DockerChecked @(
         "exec", $containerName, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
         "-d", "backup_source", "-c", $fixtureSql
@@ -61,9 +62,44 @@ try {
     ) | Out-Null
     Invoke-DockerChecked @("cp", "${containerName}:/tmp/synthetic.dump", $backupPath) | Out-Null
 
+    $expectedSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $backupPath).Hash
     & (Join-Path $PSScriptRoot "Verify-PostgresBackup.ps1") `
         -BackupPath $backupPath `
+        -ExpectedSha256 $expectedSha256 `
+        -ExpectedLatestMigrationId $expectedMigrationId `
         -PostgresImage $PostgresImage
+
+    $mismatchRejected = $false
+    try {
+        & (Join-Path $PSScriptRoot "Verify-PostgresBackup.ps1") `
+            -BackupPath $backupPath `
+            -ExpectedSha256 ("0" * 64) `
+            -ExpectedLatestMigrationId $expectedMigrationId `
+            -PostgresImage $PostgresImage
+    }
+    catch {
+        $mismatchRejected = $_.Exception.Message -like "*SHA-256 do backup diverge*"
+    }
+    if (-not $mismatchRejected) {
+        throw "O verificador não rejeitou o backup com checksum divergente."
+    }
+    Write-Host "Checksum divergente rejeitado antes de iniciar a restauração."
+
+    $wrongMigrationRejected = $false
+    try {
+        & (Join-Path $PSScriptRoot "Verify-PostgresBackup.ps1") `
+            -BackupPath $backupPath `
+            -ExpectedSha256 $expectedSha256 `
+            -ExpectedLatestMigrationId "20261025185728_AddTelemetryCommandResolution" `
+            -PostgresImage $PostgresImage
+    }
+    catch {
+        $wrongMigrationRejected = $_.Exception.Message -like "*diverge da versão esperada*"
+    }
+    if (-not $wrongMigrationRejected) {
+        throw "O verificador não rejeitou o backup com versão de migration inesperada."
+    }
+    Write-Host "Versão de migration divergente rejeitada após a restauração isolada."
 }
 finally {
     if ($containerStarted) {

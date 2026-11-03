@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -21,9 +21,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "IsActive",
-                table: "Machines");
+            throw new System.InvalidOperationException(
+                "Esta migration contém o estado de ativação operacional das máquinas. Reverta somente o binário e preserve os bloqueios de máquina.");
         }
     }
 }

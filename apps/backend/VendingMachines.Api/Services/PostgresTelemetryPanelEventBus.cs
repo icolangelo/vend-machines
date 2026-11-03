@@ -50,35 +50,73 @@ public sealed class PostgresTelemetryPanelEventBus
 
     public async Task ListenAsync(
         Action<string> onNotification,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        BackgroundWorkerHealthRegistry? health = null)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        var workerName = BackgroundWorkerNames.TelemetryPanelEventRelay;
+        health?.ReportStarted(workerName);
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var heartbeatTask = health is null
+            ? Task.CompletedTask
+            : KeepHealthHeartbeatAsync(health, workerName, heartbeatCancellation.Token);
+
+        try
         {
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
-                connection.Notification += (_, notification) =>
+                try
                 {
-                    if (notification.Channel == Channel)
-                        onNotification(notification.Payload);
-                };
+                    await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+                    connection.Notification += (_, notification) =>
+                    {
+                        if (notification.Channel == Channel)
+                            onNotification(notification.Payload);
+                    };
 
-                await using (var listen = connection.CreateCommand())
-                {
-                    listen.CommandText = "LISTEN vend_telemetry_panel";
-                    await listen.ExecuteNonQueryAsync(cancellationToken);
+                    await using (var listen = connection.CreateCommand())
+                    {
+                        listen.CommandText = "LISTEN vend_telemetry_panel";
+                        await listen.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
+                    health?.ReportSuccess(workerName);
+                    while (!cancellationToken.IsCancellationRequested)
+                        await connection.WaitAsync(cancellationToken);
                 }
-
-                while (!cancellationToken.IsCancellationRequested)
-                    await connection.WaitAsync(cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Listener PostgreSQL de eventos do painel perdeu a conexão; nova tentativa em 3 segundos.");
-                await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    health?.ReportFailure(workerName, ex);
+                    _logger.LogError(ex, "Listener PostgreSQL de eventos do painel perdeu a conexão; nova tentativa em 3 segundos.");
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+                }
             }
         }
+        finally
+        {
+            heartbeatCancellation.Cancel();
+            try
+            {
+                await heartbeatTask;
+            }
+            catch (OperationCanceledException) when (heartbeatCancellation.IsCancellationRequested) { }
+
+            health?.ReportStopped(workerName);
+        }
+    }
+
+    private static async Task KeepHealthHeartbeatAsync(
+        BackgroundWorkerHealthRegistry health,
+        string workerName,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        while (await timer.WaitForNextTickAsync(cancellationToken))
+            health.ReportHeartbeat(workerName);
     }
 }
 
@@ -86,15 +124,18 @@ public sealed class TelemetryPanelEventRelay : BackgroundService
 {
     private readonly PostgresTelemetryPanelEventBus _eventBus;
     private readonly TelemetryPanelHub _panelHub;
+    private readonly BackgroundWorkerHealthRegistry _health;
 
     public TelemetryPanelEventRelay(
         PostgresTelemetryPanelEventBus eventBus,
-        TelemetryPanelHub panelHub)
+        TelemetryPanelHub panelHub,
+        BackgroundWorkerHealthRegistry health)
     {
         _eventBus = eventBus;
         _panelHub = panelHub;
+        _health = health;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
-        _eventBus.ListenAsync(_panelHub.BroadcastRemoteNotification, stoppingToken);
+        _eventBus.ListenAsync(_panelHub.BroadcastRemoteNotification, stoppingToken, _health);
 }

@@ -8,6 +8,7 @@ namespace VendingMachines.Api.Services;
 
 public sealed class TelemetryPanelHub
 {
+    private const int WebSocketCloseTimeoutSeconds = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<Guid, PanelConnection> _clients = new();
     private readonly ILogger<TelemetryPanelHub> _logger;
@@ -67,15 +68,42 @@ public sealed class TelemetryPanelHub
             }
         }
         catch (OperationCanceledException) { }
+        catch (WebSocketException ex)
+        {
+            _logger.LogDebug(ex, "Conexão do painel de telemetria encerrada pelo transporte.");
+        }
         finally
         {
             _clients.TryRemove(client.Id, out _);
             client.Cts.Cancel();
             client.Outbound.Writer.TryComplete();
-            try { await writer; } catch { }
+            try
+            {
+                await writer.WaitAsync(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds));
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug("Writer do painel não encerrou no prazo; abortando o socket.");
+                try { socket.Abort(); } catch { }
+                try { await writer.WaitAsync(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds)); } catch { }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or InvalidOperationException)
+            {
+                _logger.LogDebug(ex, "Writer do painel terminou durante o fechamento da conexão.");
+            }
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Fechado", CancellationToken.None); } catch { }
+                using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
+                closeTimeout.CancelAfter(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds));
+                try
+                {
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Fechado", closeTimeout.Token);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Não foi possível concluir o fechamento do WebSocket do painel.");
+                    try { socket.Abort(); } catch { }
+                }
             }
         }
     }

@@ -3,9 +3,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { resetPassword } from "@/lib/api";
 import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function ResetPassword() {
     const [searchParams] = useSearchParams();
@@ -34,7 +35,7 @@ export default function ResetPassword() {
             toast.success("Senha atualizada. Entre com a nova senha.");
             navigate("/", { replace: true });
         } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Não foi possível redefinir a senha.");
+            toast.error(getErrorMessage(error, "Não foi possível redefinir a senha. Tente novamente."));
         } finally {
             setSubmitting(false);
         }

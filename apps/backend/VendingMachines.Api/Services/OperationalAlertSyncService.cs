@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Models;
 
@@ -32,12 +33,20 @@ public sealed class OperationalAlertSyncService(AppDbContext db, ILogger<Operati
             }
 
             var lastSeen = connection.LastSeenAt ?? connection.ConnectedAt ?? connection.DisconnectedAt;
-            if (connection.IsOnline && connection.OwnerNodeId is null && connection.LastSeenAt >= now.AddSeconds(-90))
+            if (connection.ActivatedAt is DateTime activatedAt &&
+                (!lastSeen.HasValue || activatedAt > lastSeen.Value))
+            {
+                lastSeen = activatedAt;
+            }
+            if (connection.IsOnline &&
+                (connection.OwnerNodeId is null ||
+                 connection.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion) &&
+                connection.LastSeenAt >= now - MachineConnectionFreshness.Window)
             {
                 descriptors.Add(new AlertDescriptor(machine.CompanyId, machine.Id, null, null,
                     $"telemetry-owner-unknown:{machine.Id}", "TelemetryOwnerUnknown", "warning",
                     "Roteamento da máquina indisponível",
-                    $"{machine.Name} está conectada a uma instância sem identificação de proprietário; comandos e consultas MDB podem retornar indisponível até a reconexão em uma versão compatível."));
+                    $"{machine.Name} está conectada a uma instância sem capacidade de roteamento comprovada; comandos e consultas MDB ficam indisponíveis até a reconexão em uma versão compatível."));
             }
 
             if (lastSeen.HasValue && lastSeen.Value < now.AddMinutes(-5))
@@ -77,6 +86,34 @@ public sealed class OperationalAlertSyncService(AppDbContext db, ILogger<Operati
                 $"{productName ?? "Produto"} em {machineName ?? slot.MachineId}, compartimento {slot.ItemNumber}: saldo {slot.CurrentStock}, limite {slot.LowStockThreshold}."));
         }
 
+        // Mantém o predicado literal para o PostgreSQL poder usar o índice parcial.
+        var unresolvedMappingMovements = await db.InventoryMovements.AsNoTracking()
+            .Where(movement => movement.MovementType == EF.Constant("SaleMappingMismatch") &&
+                               db.Machines.Any(machine => machine.Id == movement.MachineId &&
+                                                          machine.CompanyId == movement.CompanyId) &&
+                               !db.InventoryMovements.Any(resolution =>
+                                   resolution.CompanyId == movement.CompanyId &&
+                                   resolution.MachineId == movement.MachineId &&
+                                   resolution.ItemNumber == movement.ItemNumber &&
+                                   resolution.MovementType == "Adjustment" &&
+                                   resolution.CreatedAt > movement.CreatedAt))
+            .Select(movement => new
+            {
+                movement.Id,
+                movement.CompanyId,
+                movement.MachineId,
+                movement.CreatedAt,
+                movement.Reason
+            })
+            .ToListAsync(cancellationToken);
+        foreach (var movement in unresolvedMappingMovements)
+        {
+            machineNames.TryGetValue(movement.MachineId, out var machineName);
+            descriptors.Add(new AlertDescriptor(movement.CompanyId, movement.MachineId, null, null,
+                $"inventory-mapping:{movement.Id}", "InventoryMappingMismatch", "warning",
+                "Venda sem baixa automática", $"{movement.Reason} Máquina: {machineName ?? movement.MachineId}."));
+        }
+
         var failedSessions = await db.MachineSessions.AsNoTracking()
             .Where(session => session.State == MachineSessionStates.DeliveryFailed ||
                               session.State == MachineSessionStates.RefundPending ||
@@ -96,17 +133,27 @@ public sealed class OperationalAlertSyncService(AppDbContext db, ILogger<Operati
 
         var pendingPayments = await db.PaymentTransactions.AsNoTracking()
             .Where(transaction => transaction.Status == "Pending" && transaction.CreatedAt < now.AddMinutes(-5) &&
-                                  transaction.MercadoPagoPaymentId != null && !transaction.MercadoPagoPaymentId.Contains("mock"))
+                                  (transaction.MercadoPagoPaymentId == null || !transaction.MercadoPagoPaymentId.Contains("mock")))
             .Where(transaction => db.Machines.Any(machine => machine.Id == transaction.MachineId &&
                                                              machine.CompanyId == transaction.CompanyId))
-            .Select(transaction => new { transaction.Id, transaction.CompanyId, transaction.MachineId, transaction.CreatedAt })
+            .Select(transaction => new
+            {
+                transaction.Id,
+                transaction.CompanyId,
+                transaction.MachineId,
+                transaction.CreatedAt,
+                HasProviderPaymentId = transaction.MercadoPagoPaymentId != null
+            })
             .ToListAsync(cancellationToken);
         foreach (var payment in pendingPayments)
         {
             machineNames.TryGetValue(payment.MachineId, out var machineName);
+            var description = payment.HasProviderPaymentId
+                ? $"O pagamento na máquina {machineName ?? payment.MachineId} está pendente desde {payment.CreatedAt:O}."
+                : $"A transação de pagamento na máquina {machineName ?? payment.MachineId} está pendente desde {payment.CreatedAt:O} e ainda não tem identificador confirmado pelo provedor.";
             descriptors.Add(new AlertDescriptor(payment.CompanyId, payment.MachineId, null, payment.Id,
                 $"payment-pending:{payment.Id}", "PaymentPending", "warning", "Pagamento pendente",
-                $"O pagamento na máquina {machineName ?? payment.MachineId} está pendente desde {payment.CreatedAt:O}."));
+                description));
         }
 
         var activeAlerts = await db.OperationalAlerts
@@ -168,12 +215,37 @@ public sealed class OperationalAlertSyncService(AppDbContext db, ILogger<Operati
             }
         }
 
-        foreach (var alert in activeAlerts.Where(alert => !observed.Contains((alert.CompanyId, alert.DeduplicationKey))))
+        var alertsToResolve = activeAlerts
+            .Where(alert => !observed.Contains((alert.CompanyId, alert.DeduplicationKey)))
+            .ToList();
+        var closureSessionIds = alertsToResolve
+            .Where(alert => alert.Type == "SessionFailure" && alert.SessionId.HasValue)
+            .Select(alert => alert.SessionId!.Value)
+            .Distinct()
+            .ToArray();
+        var verifiedClosureEvents = closureSessionIds.Length == 0
+            ? new List<ClosureVerificationEvent>()
+            : await db.TelemetryEvents.AsNoTracking()
+                .Where(item => item.EventType == "session.closure_verified" &&
+                               item.SessionId.HasValue && closureSessionIds.Contains(item.SessionId.Value))
+                .OrderByDescending(item => item.CreatedAt)
+                .Select(item => new ClosureVerificationEvent(item.CompanyId, item.SessionId, item.DataJson))
+                .ToListAsync(cancellationToken);
+        var closureEvidenceBySession = verifiedClosureEvents
+            .Where(item => item.SessionId.HasValue)
+            .GroupBy(item => (item.CompanyId, SessionId: item.SessionId!.Value))
+            .ToDictionary(group => group.Key, group => TryGetClosureEvidenceReference(group.First().DataJson));
+
+        foreach (var alert in alertsToResolve)
         {
             alert.Status = "Resolved";
             alert.ResolvedAt = now;
             alert.UpdatedAt = now;
-            alert.Resolution = "A condição que gerou o alerta deixou de ser observada.";
+            alert.Resolution = alert.Type == "SessionFailure" && alert.SessionId.HasValue &&
+                               closureEvidenceBySession.TryGetValue((alert.CompanyId, alert.SessionId.Value), out var evidenceReference) &&
+                               evidenceReference is not null
+                ? $"Encerramento físico confirmado por responsável autorizado. Referência de evidência: {evidenceReference}."
+                : "A condição que gerou o alerta deixou de ser observada.";
         }
 
         try
@@ -186,6 +258,30 @@ public sealed class OperationalAlertSyncService(AppDbContext db, ILogger<Operati
         }
     }
 
+    private static string? TryGetClosureEvidenceReference(string? dataJson)
+    {
+        if (string.IsNullOrWhiteSpace(dataJson)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(dataJson);
+            if (!document.RootElement.TryGetProperty("evidenceReference", out var property) ||
+                property.ValueKind != JsonValueKind.String)
+                return null;
+
+            var reference = property.GetString();
+            if (reference is null || reference.Length is < 3 or > 64 ||
+                reference.Any(character => !char.IsAsciiLetterOrDigit(character) && "._/:_-".IndexOf(character) < 0))
+                return null;
+            return reference;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private sealed record AlertDescriptor(Guid CompanyId, string? MachineId, Guid? SessionId, Guid? TransactionId,
         string Key, string Type, string Severity, string Title, string Description);
+
+    private sealed record ClosureVerificationEvent(Guid CompanyId, Guid? SessionId, string? DataJson);
 }

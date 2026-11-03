@@ -11,9 +11,9 @@ export function MachineStatusSummary({ machines }: { machines: Machine[] }) {
     const belowSalesTarget = machines.filter((m) => m.belowSalesTarget === true).length;
 
     const items = [
-        { label: "Online", count: online, icon: CheckCircle2, colorClass: "text-success" },
+        { label: "Conectadas", count: online, icon: CheckCircle2, colorClass: "text-success" },
         { label: "Atenção", count: warning, icon: AlertTriangle, colorClass: "text-warning" },
-        { label: "Offline", count: offline, icon: XCircle, colorClass: "text-destructive" },
+        { label: "Desconectadas", count: offline, icon: XCircle, colorClass: "text-destructive" },
         { label: "Sem monitoramento", count: unmonitored, icon: AlertTriangle, colorClass: "text-muted-foreground" },
         { label: "Inativas", count: inactive, icon: XCircle, colorClass: "text-muted-foreground" },
         { label: "Estoque Baixo", count: lowStock, icon: Package, colorClass: "text-warning" },

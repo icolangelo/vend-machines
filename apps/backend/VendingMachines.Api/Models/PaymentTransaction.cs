@@ -29,6 +29,7 @@ public class PaymentTransaction
     public string? MercadoPagoPaymentId { get; set; }
     public string? MercadoPagoStatus { get; set; }
     public string? MercadoPagoStatusDetail { get; set; }
+    public string? ReconciliationReason { get; set; }
     public string? RawResponse { get; set; } // Raw JSON string
     
     // Pix details

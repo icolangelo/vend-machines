@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
-using System.Security.Cryptography;
-using System.Text;
 using System.Data;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -177,10 +175,6 @@ public class CompaniesController : ControllerBase
             return NotFound(new { message = "Esta empresa não possui integração configurada." });
         }
 
-        // Decifra para obter os valores originais antes de mascará-los para envio
-        var decryptedAccessToken = EncryptionService.Decrypt(integration.AccessToken);
-        var decryptedClientSecret = EncryptionService.Decrypt(integration.ClientSecret);
-
         var dto = new MercadoPagoIntegrationDto
         {
             Id = integration.Id,
@@ -196,19 +190,20 @@ public class CompaniesController : ControllerBase
             BusinessPhone = integration.BusinessPhone,
             PublicKey = integration.PublicKey,
             ClientId = integration.ClientId,
+            HasAccessToken = !string.IsNullOrWhiteSpace(integration.AccessToken),
             HasRefreshToken = !string.IsNullOrWhiteSpace(integration.RefreshToken),
+            HasClientSecret = !string.IsNullOrWhiteSpace(integration.ClientSecret),
             AccessTokenExpiresAt = integration.AccessTokenExpiresAt,
             MercadoPagoUserId = integration.MercadoPagoUserId,
             MercadoPagoNickname = integration.MercadoPagoNickname,
             MercadoPagoSiteId = integration.MercadoPagoSiteId,
             LastTokenValidationAt = integration.LastTokenValidationAt,
             LastTokenValidationStatus = SanitizeTokenValidationStatus(integration.LastTokenValidationStatus),
-            TokenFingerprint = GetTokenFingerprint(decryptedAccessToken),
             IsActive = integration.IsActive,
             CreatedAt = integration.CreatedAt,
             UpdatedAt = integration.UpdatedAt,
-            AccessToken = MaskValue(decryptedAccessToken),
-            ClientSecret = MaskValue(decryptedClientSecret)
+            AccessToken = string.Empty,
+            ClientSecret = string.Empty
         };
 
         return Ok(dto);
@@ -229,26 +224,6 @@ public class CompaniesController : ControllerBase
             : status;
     }
 
-    private static string MaskValue(string value, int visibleStart = 8, int visibleEnd = 4)
-    {
-        if (string.IsNullOrEmpty(value)) return string.Empty;
-        if (value.Length <= visibleStart + visibleEnd)
-        {
-            return new string('•', value.Length);
-        }
-        return value[..visibleStart] + new string('•', 12) + value[^visibleEnd..];
-    }
-
-    private static string GetTokenFingerprint(string token)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            return "empty";
-        }
-
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token));
-        return Convert.ToHexString(hash)[..12];
-    }
 }
 
 public class CompanyDto

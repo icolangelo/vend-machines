@@ -20,11 +20,12 @@ public static class MachineSessionStates
     public const string ClosedWithoutSelection = "ClosedWithoutSelection";
     public const string ClosedByDeviceBeforeSelection = "ClosedByDeviceBeforeSelection";
     public const string ClosureIncomplete = "ClosureIncomplete";
+    public const string ClosureVerified = "ClosureVerified";
     public const string Denied = "Denied";
 
     public static bool IsTerminal(string state) => state is
         Completed or ClosedWithoutSelection or ClosedByDeviceBeforeSelection or
-        ClosureIncomplete or Denied or Refunded or ReconciliationRequired;
+        ClosureIncomplete or ClosureVerified or Denied or Refunded or ReconciliationRequired;
 }
 
 public class MachineConnectionState
@@ -37,6 +38,8 @@ public class MachineConnectionState
     public string? ConnectionId { get; set; }
     public string? OwnerNodeId { get; set; }
     public string? OwnerConnectionId { get; set; }
+    public int? CommandRoutingVersion { get; set; }
+    public DateTime? OwnerLeaseExpiresAt { get; set; }
     public DateTime? ConnectedAt { get; set; }
     public DateTime? DisconnectedAt { get; set; }
     public DateTime? LastSeenAt { get; set; }
@@ -79,6 +82,10 @@ public class MachineSession
     public Guid Id { get; set; } = Guid.NewGuid();
     public string MachineId { get; set; } = string.Empty;
     public Guid CompanyId { get; set; }
+    public Guid? LocationIdSnapshot { get; set; }
+    public string? LocationNameSnapshot { get; set; }
+    public string? SelectedProductIdSnapshot { get; set; }
+    public string? SelectedProductNameSnapshot { get; set; }
     public Guid? StartedByUserId { get; set; }
     public string Source { get; set; } = "panel";
     public string State { get; set; } = MachineSessionStates.Opening;
@@ -117,6 +124,18 @@ public class TelemetryCommand
     public DateTime? SentAt { get; set; }
     public DateTime? AckAt { get; set; }
     public string? Error { get; set; }
+}
+
+public class TelemetryCommandResolution
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid? TelemetryCommandId { get; set; }
+    public Guid? TelemetryCommandDispatchId { get; set; }
+    public string OperatorName { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+    public string EvidenceReference { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public TelemetryCommand? TelemetryCommand { get; set; }
 }
 
 public class TelemetryCommandDispatch

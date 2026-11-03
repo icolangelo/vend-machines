@@ -12,8 +12,30 @@ using VendingMachines.Api.Data;
 using VendingMachines.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+var aspNetCoreEnvironment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")?.Trim();
+var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")?.Trim();
+var rejectDevelopmentEnvironment = builder.Configuration.GetValue<bool>("VendingMachines:RejectDevelopmentEnvironment");
+if (rejectDevelopmentEnvironment &&
+    !string.IsNullOrWhiteSpace(aspNetCoreEnvironment) &&
+    !string.IsNullOrWhiteSpace(dotnetEnvironment) &&
+    !string.Equals(aspNetCoreEnvironment, dotnetEnvironment, StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException(
+        "ASPNETCORE_ENVIRONMENT e DOTNET_ENVIRONMENT devem indicar o mesmo ambiente na imagem de runtime da API.");
+}
+
+var developmentEnvironmentRequested = builder.Environment.IsDevelopment() ||
+    IsDevelopmentEnvironment(aspNetCoreEnvironment) ||
+    IsDevelopmentEnvironment(dotnetEnvironment);
+if (rejectDevelopmentEnvironment && developmentEnvironmentRequested)
+{
+    throw new InvalidOperationException(
+        "A imagem de runtime da API não pode iniciar no ambiente Development; use um container local de desenvolvimento separado.");
+}
+
+builder.WebHost.ConfigureKestrel(SecurityHeadersConfiguration.ConfigureKestrel);
 builder.Services.Configure<HostOptions>(options =>
-    options.ShutdownTimeout = TimeSpan.FromSeconds(45));
+    options.ShutdownTimeout = TimeSpan.FromSeconds(GracefulShutdownBudget.HostTimeoutSeconds));
 
 var forwardedHeadersEnabled = TrustedProxyForwarding.IsEnabled(builder.Configuration);
 var forwardedHeadersOptions = forwardedHeadersEnabled
@@ -53,7 +75,6 @@ builder.Services.AddRateLimiter(options =>
             AutoReplenishment = true
         }));
 });
-builder.Services.AddHttpClient("MercadoPago");
 builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection(AccountEmailOptions.SectionName));
 builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
 builder.Services.AddSingleton(TimeProvider.System);
@@ -73,21 +94,14 @@ var explicitlyRequestedSqlite = builder.Configuration.GetValue<bool>("UseSqlite"
 var hasSqliteConnection = connectionString?.Contains("Data Source", StringComparison.OrdinalIgnoreCase) == true ||
                           connectionString?.Contains(".db", StringComparison.OrdinalIgnoreCase) == true ||
                           connectionString?.Contains("sqlite", StringComparison.OrdinalIgnoreCase) == true;
-var hasPlaceholderConnection = string.IsNullOrWhiteSpace(connectionString) ||
-                               connectionString.Contains("YOUR_NEON_HOST", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("YOUR_USERNAME", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("YOUR_PASSWORD", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("REPLACE_WITH", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("EXAMPLE", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("LOCALHOST", StringComparison.OrdinalIgnoreCase) ||
-                               connectionString.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase);
 
 if (!builder.Environment.IsDevelopment())
     ProductionDatabaseConfiguration.Validate(connectionString, explicitlyRequestedSqlite, hasSqliteConnection);
 
-var useSqlite = builder.Environment.IsDevelopment() &&
-                (explicitlyRequestedSqlite || hasPlaceholderConnection || hasSqliteConnection);
+var useSqlite = DevelopmentDatabaseConfiguration.ShouldUseSqlite(
+    builder.Environment.IsDevelopment(),
+    explicitlyRequestedSqlite,
+    connectionString);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
@@ -140,6 +154,10 @@ if (!builder.Environment.IsDevelopment())
             throw new InvalidOperationException($"A configuração {requiredSecret} é obrigatória fora do ambiente de desenvolvimento.");
         }
     }
+
+    MercadoPagoEnvironmentConfiguration.Validate(
+        builder.Configuration["MercadoPago:ClientId"],
+        builder.Configuration["MercadoPago:WebhookUrl"]);
 }
 
 var issuer = builder.Configuration["Jwt:Issuer"] ?? "VendingMachinesApi";
@@ -206,7 +224,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedCorsOrigins)
               .AllowCredentials()
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .WithExposedHeaders("X-Total-Count", "X-Page", "X-Page-Size", "X-Total-Pages");
     });
 });
 
@@ -230,16 +249,29 @@ if (!useSqlite)
     builder.Services.AddHostedService<TelemetryPanelEventRelay>();
 }
 builder.Services.AddSingleton<TelemetryPanelHub>();
-builder.Services.AddSingleton<BackgroundWorkerHealthRegistry>();
+builder.Services.AddSingleton(_ => new BackgroundWorkerHealthRegistry(includeTelemetryPanelEventRelay: !useSqlite));
+builder.Services.AddSingleton<ShutdownWriteRequestGate>();
 builder.Services.AddScoped<DeploymentReadinessService>();
-builder.Services.AddSingleton<TelemetryConnectionManager>();
+builder.Services.AddTelemetryConnectionOperations();
+// Registre antes do manager para que o shutdown drene os sockets antes de remover o lease do nó.
+builder.Services.AddHostedService(sp => new TelemetryConnectionLeaseWorker(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<TelemetryConnectionManager>().NodeId,
+    sp.GetRequiredService<TelemetryConnectionManager>().GetActiveMachineConnectionsForLease,
+    sp.GetRequiredService<ILogger<TelemetryConnectionLeaseWorker>>(),
+    sp.GetRequiredService<BackgroundWorkerHealthRegistry>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
 builder.Services.AddScoped<SessionOrchestrator>();
 builder.Services.AddScoped<IDeviceTelemetryMessageHandler>(sp => sp.GetRequiredService<SessionOrchestrator>());
 builder.Services.AddSingleton<DeviceMessageInboxAdmissionGate>();
 builder.Services.AddScoped<DeviceMessageInboxService>();
+builder.Services.AddSingleton<WebhookInboxAdmissionGate>(_ => WebhookInboxAdmissionGate.Shared);
+builder.Services.AddScoped<WebhookInboxAdmissionService>();
 builder.Services.AddScoped<DeviceMessageInboxProcessor>();
 builder.Services.AddHttpClient("MercadoPago", client => client.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient("TelemetryLegacyOwner", client => client.Timeout = TimeSpan.FromSeconds(20))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<LegacyTelemetryRequestRelay>();
 builder.Services.AddScoped<MercadoPagoWebhookProcessor>();
 builder.Services.AddHostedService<MercadoPagoWebhookWorker>();
   builder.Services.AddHostedService<MercadoPagoReconciliationWorker>();
@@ -262,12 +294,10 @@ using (var scope = app.Services.CreateScope())
         var context = services.GetRequiredService<AppDbContext>();
         DbInitializer.Initialize(context, app.Environment.IsDevelopment());
         if (builder.Configuration.GetValue<bool>("Telemetry:RequireDeviceCredentials") &&
-            context.Machines.Any(machine =>
-                string.IsNullOrWhiteSpace(machine.TelemetryCredentialHash) ||
-                machine.TelemetryCredentialRevokedAt.HasValue))
+            DeviceCredentialReadiness.HasActiveMachinesWithoutValidCredential(context.Machines))
         {
             throw new InvalidOperationException(
-                "Telemetry:RequireDeviceCredentials exige credenciais válidas provisionadas para todas as máquinas.");
+                "Telemetry:RequireDeviceCredentials exige credenciais válidas provisionadas para todas as máquinas ativas.");
         }
         // Não limpe o estado de toda a frota no startup. Durante uma troca gradual,
         // outra instância ainda pode manter WebSockets ativos; a limpeza global faria
@@ -301,6 +331,7 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<VendingMachines.Api.Middlewares.UserRoleValidationMiddleware>();
 app.UseAuthorization();
+app.UseMiddleware<VendingMachines.Api.Middlewares.ShutdownWriteRequestMiddleware>();
 app.UseMiddleware<VendingMachines.Api.Middlewares.ImpersonationMiddleware>();
 var webSocketOptions = new WebSocketOptions
 {
@@ -314,28 +345,7 @@ app.MapControllers();
 
 // Health check endpoints para monitoramento do Coolify e testes
 app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }));
-app.MapGet("/health/ready", async (AppDbContext db, CancellationToken cancellationToken) =>
-{
-    try
-    {
-        if (!await db.Database.CanConnectAsync(cancellationToken))
-            return Results.Json(new { status = "NotReady", reason = "database_unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-
-        var pendingMigrations = (await db.Database.GetPendingMigrationsAsync(cancellationToken)).ToList();
-        if (pendingMigrations.Any())
-            return Results.Json(new { status = "NotReady", reason = "database_migrations_pending", pendingCount = pendingMigrations.Count }, statusCode: StatusCodes.Status503ServiceUnavailable);
-
-        return Results.Ok(new { status = "Ready", database = "Connected", timestamp = DateTime.UtcNow });
-    }
-    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-    {
-        throw;
-    }
-    catch
-    {
-        return Results.Json(new { status = "NotReady", reason = "readiness_check_failed" }, statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
-});
+app.MapGet("/health/ready", ApiReadinessEndpoint.HandleAsync);
 app.MapGet("/health/deploy-ready", DeploymentReadinessEndpoint.HandleAsync);
 app.MapGet("/", () => Results.Ok(new { app = "Vending Machines API", status = "Online" }));
 
@@ -348,3 +358,6 @@ static bool IsPlaceholderSecret(string? value) =>
     string.IsNullOrWhiteSpace(value) ||
     new[] { "change_me", "replace_with", "your_", "placeholder", "example", "dummy", "cole_aqui" }
         .Any(marker => value.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+static bool IsDevelopmentEnvironment(string? value) =>
+    string.Equals(value?.Trim(), "Development", StringComparison.OrdinalIgnoreCase);

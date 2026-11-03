@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search, Building2, X, Eye, LogOut } from "lucide-react";
-import { useImpersonation } from "@/contexts/ImpersonationContext";
+import { useImpersonation } from "@/contexts/useImpersonation";
 import { getCompanies } from "@/lib/api";
 
 interface Company {
@@ -19,30 +19,39 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
   const [search, setSearch] = useState("");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [confirmedTerm, setConfirmedTerm] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!isOpen) return;
-    setSearch("");
-    searchRef.current?.focus();
-    fetchCompanies("");
+    if (isOpen) searchRef.current?.focus();
+    else setSearch("");
   }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
-    const debounce = setTimeout(() => fetchCompanies(search), 300);
-    return () => clearTimeout(debounce);
-  }, [search, isOpen]);
-
-  const fetchCompanies = async (term: string) => {
+    let active = true;
     setLoading(true);
-    try {
-      const data = await getCompanies(1, 50, term);
-      setCompanies(data.items ?? []);
-    } finally {
-      setLoading(false);
-    }
-  };
+    setLoadError(false);
+    const debounce = setTimeout(() => {
+      void getCompanies(1, 50, search).then(data => {
+        if (!active) return;
+        setCompanies(data.items ?? []);
+        setConfirmedTerm(search);
+      }).catch(() => {
+        if (active) setLoadError(true);
+      }).finally(() => {
+        if (active) setLoading(false);
+      });
+    }, search ? 300 : 0);
+    return () => {
+      clearTimeout(debounce);
+      active = false;
+    };
+  }, [search, isOpen, retryVersion]);
+
+  const showConfirmedList = confirmedTerm === search;
 
   const handleSelect = (company: Company) => {
     setImpersonatedCompany({ id: company.id, name: company.name });
@@ -88,6 +97,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
           </div>
           <button
             onClick={onClose}
+            aria-label="Fechar seleção de empresa"
             className="p-1 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
           >
             <X className="h-4 w-4 text-zinc-400" />
@@ -123,6 +133,7 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              aria-label="Buscar empresa"
               placeholder="Buscar empresa..."
               className="w-full pl-9 pr-4 py-2 text-sm bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 placeholder:text-zinc-400"
             />
@@ -137,17 +148,25 @@ export function CompanySwitcherModal({ isOpen, onClose }: CompanySwitcherModalPr
             </div>
           )}
 
-          {!loading && companies.length === 0 && (
+          {!loading && loadError && (
+            <div role="alert" className="px-3 py-4 text-xs text-red-700 dark:text-red-300">
+              <p>{showConfirmedList ? "Não foi possível atualizar as empresas. A lista anterior está desatualizada." : "Não foi possível consultar as empresas."}</p>
+              <button type="button" onClick={() => setRetryVersion(version => version + 1)} className="mt-2 font-medium underline">Tentar novamente</button>
+            </div>
+          )}
+
+          {!loading && !loadError && showConfirmedList && companies.length === 0 && (
             <div className="flex items-center justify-center py-8 text-xs text-zinc-400">
               Nenhuma empresa encontrada
             </div>
           )}
 
-          {!loading && companies.map((company) => {
+          {!loading && showConfirmedList && companies.map((company) => {
             const isActive = impersonatedCompany?.id === company.id;
             return (
               <button
                 key={company.id}
+                disabled={loadError}
                 onClick={() => handleSelect(company)}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all duration-150 group
                   ${isActive
