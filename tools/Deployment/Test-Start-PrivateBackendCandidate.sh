@@ -22,6 +22,7 @@ cp "$launcher" "$artifact_directory/start-private-backend-candidate.sh"
 chmod 755 "$artifact_directory/start-private-backend-candidate.sh"
 (cd "$artifact_directory" && sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 start-private-backend-candidate.sh > SHA256SUMS)
 printf 'ASPNETCORE_ENVIRONMENT=Production\nDOTNET_ENVIRONMENT=Production\n' > "$temporary_directory/runtime.env"
+chmod 600 "$temporary_directory/runtime.env"
 
 cat > "$bin_directory/docker" <<'DOCKER'
 #!/usr/bin/env bash
@@ -34,8 +35,8 @@ case "$1" in
   load) exit 0 ;;
   image) printf '%s\n' "$DOCKER_TEST_IMAGE_ID" ;;
   run) printf 'container-id\n' ;;
-  inspect) printf 'healthy\n' ;;
-  stop) exit 0 ;;
+  inspect) printf '%s\n' "${DOCKER_TEST_HEALTH_STATUS:-healthy}" ;;
+  stop) [[ "${DOCKER_TEST_STOP_FAIL:-0}" != 1 ]] ;;
   *) exit 9 ;;
 esac
 DOCKER
@@ -58,6 +59,20 @@ grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
+chmod 644 "$temporary_directory/runtime.env"
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  --legacy-api-origin http://previous-api:8080 \
+  >/dev/null 2>&1; then
+  echo 'O launcher aceitou um arquivo de runtime legível por grupo/outros.' >&2
+  exit 1
+fi
+[[ ! -s "$DOCKER_TEST_LOG" ]]
+chmod 600 "$temporary_directory/runtime.env"
+
 if bash "$launcher" \
   --artifact-dir "$artifact_directory" \
   --expected-source-sha "$source_sha" \
@@ -83,4 +98,20 @@ if bash "$launcher" \
 fi
 ! grep -q '^load ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 1 início isolado e 2 recusas sem carregar imagem.'
+printf 'fixture-image-bytes\n' > "$artifact_directory/backend-image.tar.gz"
+(cd "$artifact_directory" && sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 start-private-backend-candidate.sh > SHA256SUMS)
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_HEALTH_STATUS=unhealthy
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  --legacy-api-origin http://previous-api:8080 \
+  >/dev/null 2>&1; then
+  echo 'O launcher aceitou health check unhealthy.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+
+echo 'Private backend candidate launcher: 1 início isolado, parada após health falho e 3 recusas.'

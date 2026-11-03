@@ -50,6 +50,12 @@ artifact_dir=$(cd -- "$artifact_dir" 2>/dev/null && pwd -P) || fail 'diretório 
 runtime_env_file=$(cd -- "$(dirname -- "$runtime_env_file")" 2>/dev/null && printf '%s/%s\n' "$PWD" "$(basename -- "$runtime_env_file")") || fail 'arquivo de runtime não encontrado.'
 [[ -f "$runtime_env_file" && ! -L "$runtime_env_file" && -r "$runtime_env_file" ]] || fail 'arquivo de runtime precisa existir, ser legível e não ser link simbólico.'
 [[ -f "$artifact_dir/backend-image.tar.gz" ]] || fail 'imagem compactada ausente.'
+if [[ "$runtime_env_file" == "$artifact_dir/"* ]]; then
+  fail 'o arquivo de runtime precisa ficar fora do diretório do artefato.'
+fi
+runtime_file_mode=$(stat -c '%a' -- "$runtime_env_file" 2>/dev/null) || fail 'não foi possível verificar as permissões do arquivo de runtime.'
+[[ "$runtime_file_mode" =~ ^[0-7]{3,4}$ ]] || fail 'permissões do arquivo de runtime inválidas.'
+(( (8#$runtime_file_mode & 077) == 0 )) || fail 'o arquivo de runtime precisa negar leitura e escrita para grupo e outros (por exemplo, chmod 600).'
 
 python3 - "$legacy_api_origin" <<'PY' || fail 'a origem legada deve ser uma URL HTTP privada direta, sem credenciais, caminho, query ou fragmento.'
 import ipaddress
@@ -165,8 +171,10 @@ for _ in $(seq 1 90); do
 done
 
 if [[ "$health_status" != 'healthy' ]]; then
-  docker stop --time 45 "$container_name" >/dev/null 2>&1 || true
-  fail "a candidata não ficou saudável (estado: $health_status); foi parada sem alterar a API anterior."
+  if docker stop --time 45 "$container_name" >/dev/null 2>&1; then
+    fail "a candidata não ficou saudável (estado: $health_status); o container candidato foi parado sem alterar a API anterior."
+  fi
+  fail "a candidata não ficou saudável (estado: $health_status) e não foi possível confirmar a parada do container; verifique-o imediatamente. A API anterior não foi alterada."
 fi
 
 printf 'Candidata iniciada: container=%s sha=%s endpoint=http://127.0.0.1:%s\n' \
