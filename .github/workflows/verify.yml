@@ -64,6 +64,7 @@ jobs:
         run: |
           python -B tools/Deployment/test_check_migration_risk.py
           python -B tools/Deployment/test_bound_migration_lock_wait.py
+          python -B tools/Deployment/test_assemble_release_package.py
           python -B tools/Deployment/check_migration_risk.py
 
       - name: Set up .NET
@@ -207,6 +208,17 @@ jobs:
 
       - name: Build encryption rotation tool
         run: dotnet build tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj --configuration Release
+
+      - name: Assemble verified candidate release package
+        run: python3 tools/Deployment/assemble_release_package.py --segments-directory artifacts --package-directory artifacts/release-package --source-sha "$GITHUB_SHA"
+
+      - name: Upload verified candidate release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-release-package-${{ github.sha }}
+          path: artifacts/release-package/
+          if-no-files-found: error
+          retention-days: 14
 
   frontend-checks:
     name: Frontend types, lint, tests and build

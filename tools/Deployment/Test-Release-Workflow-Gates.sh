@@ -260,25 +260,26 @@ require_contains "$temporary_dir/build-job" '--output artifacts/postgresql-migra
 require_contains "$temporary_dir/build-job" '--output artifacts/postgresql-migration-inventory-mapping-index.sql'
 require_contains "$temporary_dir/build-job" '--output artifacts/postgresql-migrations-after-inventory-index.sql'
 require_contains "$temporary_dir/build-job" 'name: Assemble SHA-matched release package'
+require_contains "$temporary_dir/build-job" 'assemble_release_package.py --segments-directory artifacts --package-directory artifacts/release-package --source-sha "$GITHUB_SHA"'
 require_contains "$temporary_dir/build-job" 'name: Verify isolated PostgreSQL migration rehearsal utility'
 require_contains "$temporary_dir/build-job" './tools/Database/Test-PostgresMigrationRehearsal.ps1 -PostgresImage postgres:17-alpine'
-require_contains "$temporary_dir/build-job" 'migration_scripts=(artifacts/postgresql-migration*.sql)'
-require_contains "$temporary_dir/build-job" '[ "${#migration_scripts[@]}" -ne 7 ]'
-require_contains "$temporary_dir/build-job" 'cp "${migration_scripts[@]}" "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'printf '\''%s\n'\'' "$GITHUB_SHA" > "$package_dir/source-sha.txt"'
-require_contains "$temporary_dir/build-job" 'sha256sum -- *.sql *.md *.json *.txt *.ps1 > SHA256SUMS'
-require_contains "$temporary_dir/build-job" 'test "$(cat "$package_dir/source-sha.txt")" = "$GITHUB_SHA"'
-require_contains "$temporary_dir/build-job" 'sha256sum --check SHA256SUMS'
 require_contains "$temporary_dir/build-job" 'name: Upload SHA-matched release package'
 require_contains "$temporary_dir/build-job" 'name: release-package-${{ github.sha }}'
-require_contains "$temporary_dir/build-job" 'package_dir=artifacts/release-package'
 require_contains "$temporary_dir/build-job" 'path: artifacts/release-package/'
-require_contains "$temporary_dir/build-job" 'cp tools/Database/List-UnresolvedTelemetryCommands.sql "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'cp tools/Database/Cancel-PendingTelemetryCommand.sql "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'cp tools/Database/Resolve-StaleProcessingTelemetryCommand.sql "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'cp tools/Database/Rehearse-PostgresMigrations.ps1 "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'cp docs/deploy-preflight.sql "$package_dir/"'
-require_contains "$temporary_dir/build-job" 'cp docs/deploy-seguro.md "$package_dir/"'
+release_package_builder="$repo_root/tools/Deployment/assemble_release_package.py"
+require_contains "$release_package_builder" 'SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")'
+require_contains "$release_package_builder" 'MIGRATION_FILES = ('
+require_contains "$release_package_builder" 'hashlib.sha256(path.read_bytes()).hexdigest()'
+require_contains "$release_package_builder" '_verify_local_runbook_links(staged_package)'
+for required_package_file in \
+  'tools/Database/List-UnresolvedTelemetryCommands.sql' \
+  'tools/Database/Cancel-PendingTelemetryCommand.sql' \
+  'tools/Database/Resolve-StaleProcessingTelemetryCommand.sql' \
+  'tools/Database/Rehearse-PostgresMigrations.ps1' \
+  'docs/deploy-preflight.sql' \
+  'docs/deploy-seguro.md'; do
+  require_contains "$release_package_builder" "$required_package_file"
+done
 require_contains "$temporary_dir/build-job" 'name: Bound PostgreSQL migration lock waits'
 require_contains "$temporary_dir/build-job" 'name: Apply generated PostgreSQL release segments to an isolated database'
 require_contains "$temporary_dir/build-job" './tools/Database/Test-PostgresReleaseMigrationSegments.ps1 -SegmentsDirectory artifacts -PostgresImage postgres:17-alpine'
@@ -393,7 +394,6 @@ require_contains "$temporary_dir/build-job" 'name: Verify online migration segme
 segment_validation_line="$(grep -nF 'name: Verify online migration segments are outside EF idempotency wrappers' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
 lock_timeout_line="$(grep -nF 'name: Bound PostgreSQL migration lock waits' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
 package_assembly_line="$(grep -nF 'name: Assemble SHA-matched release package' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
-package_checksum_line="$(grep -nF 'sha256sum --check SHA256SUMS' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
 package_upload_line="$(grep -nF 'name: Upload SHA-matched release package' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
 image_build_line="$(grep -nF 'name: Build candidate backend image without publishing' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
 image_validation_line="$(grep -nF 'name: Verify backend runtime image before publishing' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
@@ -410,8 +410,8 @@ if (( lock_timeout_line >= segment_validation_line || segment_validation_line >=
   echo "As migrations precisam receber limite de lock e passar nos gates antes de montar o pacote de release." >&2
   exit 1
 fi
-if (( package_assembly_line >= package_checksum_line || package_checksum_line >= image_publish_line || image_publish_line >= package_upload_line )); then
-  echo "Artefatos só podem ser enviados após validações, checagem do pacote e publicação bem-sucedida da imagem." >&2
+if (( package_assembly_line >= image_publish_line || image_publish_line >= package_upload_line )); then
+  echo "O pacote deve ser montado antes da publicação e enviado somente após as validações da imagem." >&2
   exit 1
 fi
 if (( image_build_line >= image_validation_line || image_validation_line >= image_startup_line || image_startup_line >= image_overlap_line || image_overlap_line >= image_publish_line )); then
@@ -647,6 +647,10 @@ if GITHUB_REPOSITORY=example/repository python3 "$repo_root/tools/Deployment/Val
 fi
 require_contains "$verify_workflow" 'Test-Release-Workflow-Gates.sh'
 require_contains "$verify_workflow" 'Test-Coolify-Deployment.sh'
+require_contains "$verify_workflow" 'test_assemble_release_package.py'
+require_contains "$verify_workflow" 'name: Assemble verified candidate release package'
+require_contains "$verify_workflow" 'name: Upload verified candidate release package'
+require_contains "$verify_workflow" 'name: candidate-release-package-${{ github.sha }}'
 
 require_contains "$frontend_workflow" 'type=sha,format=long'
 require_contains "$frontend_workflow" 'Build immutable candidate image'
