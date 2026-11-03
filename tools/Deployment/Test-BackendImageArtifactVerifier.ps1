@@ -44,6 +44,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $temporaryPath "README.txt"), "Fixture de teste.`n")
     Copy-Item -LiteralPath $verifierPath -Destination (Join-Path $temporaryPath "Verify-BackendImageArtifact.ps1")
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools/Deployment/start-private-backend-candidate.sh") -Destination (Join-Path $temporaryPath "start-private-backend-candidate.sh")
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "tools/Deployment/verify-candidate-artifact-pair.py") -Destination (Join-Path $temporaryPath "verify-candidate-artifact-pair.py")
     Write-TestManifest $temporaryPath
 
     & $verifierPath -ArtifactPath $temporaryPath -ExpectedSourceSha $sourceSha | Out-Null

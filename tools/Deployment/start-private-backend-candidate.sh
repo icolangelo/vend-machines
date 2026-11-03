@@ -6,6 +6,7 @@ usage() {
 Uso:
   start-private-backend-candidate.sh \
     --artifact-dir DIR \
+    --release-package-dir DIR \
     --expected-source-sha SHA40 \
     --docker-network NETWORK \
     --runtime-env-file FILE \
@@ -23,6 +24,7 @@ fail() {
 }
 
 artifact_dir=''
+release_package_dir=''
 expected_source_sha=''
 docker_network=''
 runtime_env_file=''
@@ -32,6 +34,7 @@ host_port='18080'
 while (($# > 0)); do
   case "$1" in
     --artifact-dir) (($# >= 2)) || { usage >&2; exit 2; }; artifact_dir=$2; shift 2 ;;
+    --release-package-dir) (($# >= 2)) || { usage >&2; exit 2; }; release_package_dir=$2; shift 2 ;;
     --expected-source-sha) (($# >= 2)) || { usage >&2; exit 2; }; expected_source_sha=$2; shift 2 ;;
     --docker-network) (($# >= 2)) || { usage >&2; exit 2; }; docker_network=$2; shift 2 ;;
     --runtime-env-file) (($# >= 2)) || { usage >&2; exit 2; }; runtime_env_file=$2; shift 2 ;;
@@ -43,15 +46,19 @@ while (($# > 0)); do
 done
 
 [[ "$expected_source_sha" =~ ^[A-Fa-f0-9]{40}$ ]] || fail 'informe o SHA Git completo esperado (40 caracteres hexadecimais).'
-[[ -n "$artifact_dir" && -n "$docker_network" && -n "$runtime_env_file" && -n "$legacy_api_origin" ]] || { usage >&2; exit 2; }
+[[ -n "$artifact_dir" && -n "$release_package_dir" && -n "$docker_network" && -n "$runtime_env_file" && -n "$legacy_api_origin" ]] || { usage >&2; exit 2; }
 [[ "$host_port" =~ ^[0-9]{1,5}$ ]] && ((10#$host_port >= 1 && 10#$host_port <= 65535)) || fail 'a porta local precisa estar entre 1 e 65535.'
 
 artifact_dir=$(cd -- "$artifact_dir" 2>/dev/null && pwd -P) || fail 'diretório do artefato não encontrado.'
+release_package_dir=$(cd -- "$release_package_dir" 2>/dev/null && pwd -P) || fail 'diretório do pacote operacional não encontrado.'
 runtime_env_file=$(cd -- "$(dirname -- "$runtime_env_file")" 2>/dev/null && printf '%s/%s\n' "$PWD" "$(basename -- "$runtime_env_file")") || fail 'arquivo de runtime não encontrado.'
 [[ -f "$runtime_env_file" && ! -L "$runtime_env_file" && -r "$runtime_env_file" ]] || fail 'arquivo de runtime precisa existir, ser legível e não ser link simbólico.'
 [[ -f "$artifact_dir/backend-image.tar.gz" ]] || fail 'imagem compactada ausente.'
 if [[ "$runtime_env_file" == "$artifact_dir/"* ]]; then
   fail 'o arquivo de runtime precisa ficar fora do diretório do artefato.'
+fi
+if [[ "$runtime_env_file" == "$release_package_dir/"* ]]; then
+  fail 'o arquivo de runtime precisa ficar fora do pacote operacional.'
 fi
 runtime_file_mode=$(stat -c '%a' -- "$runtime_env_file" 2>/dev/null) || fail 'não foi possível verificar as permissões do arquivo de runtime.'
 [[ "$runtime_file_mode" =~ ^[0-7]{3,4}$ ]] || fail 'permissões do arquivo de runtime inválidas.'
@@ -95,6 +102,11 @@ PY
 [[ "$(grep -c '^ASPNETCORE_ENVIRONMENT=Production$' "$runtime_env_file" || true)" == 1 ]] || fail 'ASPNETCORE_ENVIRONMENT=Production precisa estar definido exatamente uma vez no arquivo privado de runtime.'
 [[ "$(grep -c '^DOTNET_ENVIRONMENT=Production$' "$runtime_env_file" || true)" == 1 ]] || fail 'DOTNET_ENVIRONMENT=Production precisa estar definido exatamente uma vez no arquivo privado de runtime.'
 
+python3 "$artifact_dir/verify-candidate-artifact-pair.py" \
+  --image-artifact-dir "$artifact_dir" \
+  --release-package-dir "$release_package_dir" \
+  --expected-source-sha "$expected_source_sha" || fail 'imagem e pacote operacional não correspondem ao mesmo SHA ou algum checksum diverge.'
+
 required_files=(
   backend-image.tar.gz
   image-id.txt
@@ -104,6 +116,7 @@ required_files=(
   README.txt
   Verify-BackendImageArtifact.ps1
   start-private-backend-candidate.sh
+  verify-candidate-artifact-pair.py
 )
 expected_entries=($(printf '%s\n' "${required_files[@]}" SHA256SUMS | sort))
 actual_entries=()
