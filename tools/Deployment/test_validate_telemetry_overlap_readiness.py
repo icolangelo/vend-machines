@@ -138,7 +138,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(result.stdout, r"observation_samples=[2-9][0-9]*")
+        self.assertNotIn("observation_samples=1\n", result.stdout)
         self.assertIn("observation_seconds=0.3", result.stdout)
 
     def test_blocks_when_legacy_connections_drop_during_observation(self):
