@@ -74,6 +74,13 @@ require_contains "$verify_workflow" 'git diff --quiet "$base_ref" "$GITHUB_SHA" 
 require_contains "$verify_workflow" "if: steps.frontend-target.outputs.changed == 'true'"
 require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ steps.frontend-target.outputs.base_ref }}'
 require_contains "$verify_workflow" '--backend-ref "$backend_ref"'
+require_contains "$verify_workflow" 'Generate PostgreSQL release migration segments'
+require_contains "$verify_workflow" 'artifacts/postgresql-migrations-after-inventory-index.sql'
+require_contains "$verify_workflow" 'python3 tools/Deployment/bound_migration_lock_wait.py artifacts'
+require_contains "$verify_workflow" 'Verify previous API overlap while a legacy MDB socket stays connected'
+require_contains "$verify_workflow" 'Test-PreviousBackendRollbackCompatibility.py'
+require_contains "$verify_workflow" '--candidate-image vend-machines-backend:verify'
+require_contains "$verify_workflow" 'APP_REVISION=${{ github.sha }}'
 frontend_checkout="$(sed -n '/^  frontend-checks:/,$p' "$verify_workflow" | sed -n '/^[[:space:]]*- name: Checkout code$/,/^[[:space:]]*- name: Set up Node.js$/p')"
 if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
   echo "O job frontend-checks precisa buscar o histórico-base completo para validar a API de destino." >&2

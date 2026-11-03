@@ -71,6 +71,9 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Install pinned EF Core CLI
+        run: dotnet tool install --tool-path "$RUNNER_TEMP/dotnet-tools" dotnet-ef --version 10.0.12
+
       - name: Audit backend dependencies
         run: |
           for project in \
@@ -88,11 +91,57 @@ jobs:
           VENDMACHINES_REQUIRE_TEST_POSTGRES: "true"
         run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
 
+      - name: Generate PostgreSQL release migration segments
+        env:
+          VENDMACHINES_DESIGNTIME_POSTGRES: "Host=localhost;Port=5432;Database=vending_test;Username=postgres;Password=postgres"
+        run: |
+          mkdir -p artifacts
+          ef="$RUNNER_TEMP/dotnet-tools/dotnet-ef"
+          before_session_index=20260715023221_AddTelemetrySessionManagement
+          session_index=20260730120000_AddMdbStatusAndAutomaticSession
+          before_payment_index=20260926173525_AddWebhookInbox
+          payment_index=20260926174359_AddPaymentReconciliationTracking
+          before_inventory_mapping_index=20261026083333_AddSessionProductSnapshot
+          inventory_mapping_index=20261026091223_IndexInventoryMappingMismatchAlerts
+          after_inventory_mapping_index=20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata
+
+          "$ef" migrations script 0 "$before_session_index" --idempotent --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-before-session-index.sql
+          "$ef" migrations script "$before_session_index" "$session_index" --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-session-index.sql
+          "$ef" migrations script "$session_index" "$before_payment_index" --idempotent --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-between-online-indexes.sql
+          "$ef" migrations script "$before_payment_index" "$payment_index" --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-payment-reconciliation-index.sql
+          "$ef" migrations script "$payment_index" "$before_inventory_mapping_index" --idempotent --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-after-payment-index.sql
+          "$ef" migrations script "$before_inventory_mapping_index" "$inventory_mapping_index" --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-inventory-mapping-index.sql
+          "$ef" migrations script "$inventory_mapping_index" "$after_inventory_mapping_index" --idempotent --configuration Release --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-after-inventory-index.sql
+
+      - name: Bound PostgreSQL migration lock waits
+        run: python3 tools/Deployment/bound_migration_lock_wait.py artifacts
+
       - name: Verify backend Docker context and base configuration
         run: python -B tools/Deployment/test_backend_docker_context.py
 
       - name: Build backend Docker image without publishing
-        run: docker build --tag vend-machines-backend:verify --file apps/backend/VendingMachines.Api/Dockerfile apps/backend/VendingMachines.Api
+        run: docker build --build-arg APP_REVISION=${{ github.sha }} --tag vend-machines-backend:verify --file apps/backend/VendingMachines.Api/Dockerfile apps/backend/VendingMachines.Api
 
       - name: Verify backend runtime image contents and fail-closed configuration
         run: bash tools/Deployment/Test-BackendRuntimeImage.sh vend-machines-backend:verify
@@ -105,6 +154,35 @@ jobs:
             echo "::error::A imagem do backend deve executar como o usuário não privilegiado app."
             exit 1
           fi
+
+      - name: Verify previous API overlap while a legacy MDB socket stays connected
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BEFORE_SHA: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            previous_ref="$PR_BASE_SHA"
+          elif [[ "$REF_NAME" == "develop" || "$REF_NAME" == "main" || "$REF_NAME" == "master" ]]; then
+            previous_ref="$EVENT_BEFORE_SHA"
+          elif git rev-parse --verify origin/develop^{commit} >/dev/null 2>&1; then
+            previous_ref="origin/develop"
+          else
+            previous_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          if [[ -z "$previous_ref" || "$previous_ref" =~ ^0+$ ]]; then
+            previous_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          if ! git cat-file -e "${previous_ref}^{commit}"; then
+            echo "::error::Não foi possível resolver o binário anterior para o ensaio de sobreposição."
+            exit 1
+          fi
+          python tools/Database/Test-PreviousBackendRollbackCompatibility.py \
+            --segments artifacts \
+            --previous-ref "$previous_ref" \
+            --candidate-image vend-machines-backend:verify \
+            --postgres-image postgres:17-alpine
 
       - name: Verify isolated PostgreSQL backup restore utility
         shell: pwsh
