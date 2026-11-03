@@ -56,10 +56,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def normalize_base_url(value: str) -> str:
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise PreflightError("--api-base-url contém host ou porta inválidos.") from None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
+        or not parsed.hostname
+        or (port is not None and port < 1)
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path not in {"", "/"}
@@ -88,7 +94,7 @@ def read_json(opener, url: str, token: str | None, timeout: float) -> dict:
         raise PreflightError(
             f"Falha de rede em {urlsplit(url).path}: {type(exc).__name__}."
         ) from None
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         raise PreflightError(f"Resposta inválida em JSON em {urlsplit(url).path}.") from None
     if not isinstance(payload, dict):
         raise PreflightError(f"Formato inesperado em {urlsplit(url).path}.")
@@ -121,6 +127,12 @@ def main() -> int:
         print("ERRO: --expected-commit deve ser um SHA Git completo de 40 caracteres hexadecimais.", file=sys.stderr)
         return 2
 
+    try:
+        base_url = normalize_base_url(args.api_base_url)
+    except PreflightError as exc:
+        print(f"ERRO: {exc}", file=sys.stderr)
+        return 2
+
     token = os.environ.get("VENDMACHINES_ADMIN_BEARER_TOKEN", "").strip()
     if not token:
         try:
@@ -132,7 +144,6 @@ def main() -> int:
             return 2
 
     try:
-        base_url = normalize_base_url(args.api_base_url)
         opener = build_opener(RejectRedirects())
 
         live = read_json(opener, f"{base_url}/health", None, args.timeout_seconds)
@@ -152,7 +163,7 @@ def main() -> int:
         )
         legacy_count = legacy.get("totalItems")
         relay = legacy.get("relay")
-        if not isinstance(legacy_count, int) or not isinstance(relay, dict):
+        if type(legacy_count) is not int or not isinstance(relay, dict):
             raise PreflightError("/api/admin/legacy-machine-connections: formato inesperado.")
         if legacy_count < args.minimum_legacy_connections:
             raise PreflightError(

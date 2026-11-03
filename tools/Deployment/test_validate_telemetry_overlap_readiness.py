@@ -124,6 +124,35 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("mínimo exigido: 2", result.stderr)
 
+    def test_blocks_boolean_connection_count_instead_of_treating_it_as_one(self):
+        Handler.legacy_count = True
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("formato inesperado", result.stderr)
+
+    def test_rejects_invalid_url_before_requesting_admin_token(self):
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--api-base-url",
+            "https://[invalid-ipv6/",
+            "--expected-commit",
+            COMMIT,
+            "--minimum-legacy-connections",
+            "1",
+        ]
+        import os
+
+        env = os.environ.copy()
+        env.pop("VENDMACHINES_ADMIN_BEARER_TOKEN", None)
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("host ou porta inválidos", result.stderr)
+        self.assertNotIn("Token bearer", result.stderr)
+
     def test_requires_full_git_commit_sha(self):
         command = [
             sys.executable,
