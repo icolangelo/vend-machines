@@ -18,9 +18,12 @@ python ./Validate-TelemetryOverlapReadiness.py `
   --api-base-url 'http://candidate-api:8080' `
   --expected-commit '<sha da candidata>' `
   --minimum-legacy-connections '<quantidade esperada de sockets legados>' `
+  --maximum-clock-skew-seconds 30 `
   --observation-seconds 120 `
   --sample-interval-seconds 15
 ```
+
+O preflight compara `/health.timestamp` com o relógio UTC local e falha se a diferença exceder o padrão de 30 segundos. Isso detecta relógio local sem NTP ou diferença entre a API e a máquina operadora; confirme `w32tm /query /status` (Windows) ou `timedatectl status` (Linux) antes de iniciar. O limite deixa margem abaixo da janela de presença de 90 segundos. Cada amostra registra o desvio observado.
 
 Com `--observation-seconds` maior que zero, o script repete todas as consultas de readiness, relay e conexões até o fim da janela e falha na primeira amostra abaixo do mínimo informado. Zero mantém uma única amostra. A janela indicada de 120 segundos cobre a expiração de presença da API (90 segundos) e a persistência do `LastSeenAt` (até 60 segundos); aumente-a caso o intervalo normal de ping do firmware seja maior. Cada amostra é somente leitura e registra SHA, horário UTC e quantidade observada, sem emitir comandos MDB ou criar sessões.
 

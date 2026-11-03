@@ -56,6 +56,12 @@ def parse_args() -> argparse.Namespace:
         help="Timeout por requisição HTTP (padrão: 8 segundos).",
     )
     parser.add_argument(
+        "--maximum-clock-skew-seconds",
+        type=float,
+        default=30.0,
+        help="Desvio máximo entre o relógio local e /health.timestamp (padrão: 30 segundos).",
+    )
+    parser.add_argument(
         "--observation-seconds",
         type=float,
         default=0.0,
@@ -130,9 +136,39 @@ def check_commit(payload: dict, endpoint: str, expected: str) -> None:
         raise PreflightError(f"{endpoint}: sourceCommit não corresponde ao SHA esperado.")
 
 
-def validate_snapshot(opener, base_url: str, token: str, timeout: float, expected_commit: str, minimum_connections: int) -> int:
+def check_clock_skew(payload: dict, maximum_skew_seconds: float) -> float:
+    raw_timestamp = payload.get("timestamp")
+    if not isinstance(raw_timestamp, str):
+        raise PreflightError("/health: timestamp UTC ausente ou inválido.")
+    try:
+        server_time = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        raise PreflightError("/health: timestamp UTC ausente ou inválido.") from None
+    if server_time.tzinfo is None:
+        raise PreflightError("/health: timestamp precisa informar fuso horário.")
+
+    skew_seconds = (server_time.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+    if abs(skew_seconds) > maximum_skew_seconds:
+        raise PreflightError(
+            f"/health: diferença entre o relógio da API e o relógio local é de "
+            f"{skew_seconds:+.1f}s; máximo permitido: {maximum_skew_seconds:g}s. "
+            "Sincronize os relógios UTC antes do preflight."
+        )
+    return skew_seconds
+
+
+def validate_snapshot(
+    opener,
+    base_url: str,
+    token: str,
+    timeout: float,
+    expected_commit: str,
+    minimum_connections: int,
+    maximum_clock_skew_seconds: float,
+) -> tuple[int, float]:
     live = read_json(opener, f"{base_url}/health", None, timeout)
     require_status(live, "/health", "Healthy")
+    clock_skew_seconds = check_clock_skew(live, maximum_clock_skew_seconds)
     ready = read_json(opener, f"{base_url}/health/ready", None, timeout)
     require_status(ready, "/health/ready", "Ready")
     check_commit(ready, "/health/ready", expected_commit)
@@ -175,7 +211,7 @@ def validate_snapshot(opener, base_url: str, token: str, timeout: float, expecte
     if readiness_gate.get("unroutable") != 0:
         raise PreflightError("A candidata reporta conexões online sem rota compatível.")
 
-    return legacy_count
+    return legacy_count, clock_skew_seconds
 
 
 def main() -> int:
@@ -185,6 +221,9 @@ def main() -> int:
         return 2
     if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
         print("ERRO: --timeout-seconds deve ser positivo e finito.", file=sys.stderr)
+        return 2
+    if not math.isfinite(args.maximum_clock_skew_seconds) or args.maximum_clock_skew_seconds <= 0:
+        print("ERRO: --maximum-clock-skew-seconds deve ser positivo e finito.", file=sys.stderr)
         return 2
     if not math.isfinite(args.observation_seconds) or args.observation_seconds < 0:
         print("ERRO: --observation-seconds deve ser finito e não negativo.", file=sys.stderr)
@@ -218,18 +257,20 @@ def main() -> int:
         sample_count = 0
         legacy_count = 0
         while True:
-            legacy_count = validate_snapshot(
+            legacy_count, clock_skew_seconds = validate_snapshot(
                 opener,
                 base_url,
                 token,
                 args.timeout_seconds,
                 args.expected_commit,
                 args.minimum_legacy_connections,
+                args.maximum_clock_skew_seconds,
             )
             sample_count += 1
             observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
             print(
                 f"observation_sample={sample_count} observed_at_utc={observed_at} "
+                f"api_clock_skew_seconds={clock_skew_seconds:+.1f} "
                 f"legacy_connections={legacy_count}"
             )
             remaining = deadline - time.monotonic()

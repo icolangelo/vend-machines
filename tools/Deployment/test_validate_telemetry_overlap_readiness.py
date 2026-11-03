@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from threading import Thread
 import unittest
 
@@ -20,6 +21,15 @@ class Handler(BaseHTTPRequestHandler):
     redirect_health = False
     followed_redirect = False
     source_commit = COMMIT
+    health_clock_offset_seconds = 0
+
+    def date_time_string(self, timestamp=None):
+        import time
+
+        if timestamp is None:
+            timestamp = time.time()
+        timestamp += type(self).health_clock_offset_seconds
+        return super().date_time_string(timestamp)
 
     def do_GET(self):
         if self.path == "/health" and type(self).redirect_health:
@@ -35,7 +45,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/health":
-            payload = {"status": "Healthy"}
+            server_now = datetime.now(timezone.utc) + timedelta(
+                seconds=type(self).health_clock_offset_seconds
+            )
+            payload = {
+                "status": "Healthy",
+                "timestamp": server_now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            }
         elif self.path in {"/health/ready", "/health/deploy-ready"}:
             payload = {"status": "Ready", "sourceCommit": type(self).source_commit}
         elif self.path == "/api/admin/legacy-machine-connections":
@@ -97,6 +113,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         Handler.redirect_health = False
         Handler.followed_redirect = False
         Handler.source_commit = COMMIT
+        Handler.health_clock_offset_seconds = 0
 
     def run_preflight(self, *extra_args):
         import os
@@ -128,6 +145,21 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertIn("overlap_runtime_preflight=passed", result.stdout)
         self.assertIn("legacy_connections_preserved=2", result.stdout)
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_blocks_when_local_clock_is_out_of_sync_with_api(self):
+        Handler.health_clock_offset_seconds = 120
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("diferença entre o relógio da API e o relógio local", result.stderr)
+        self.assertIn("máximo permitido: 30s", result.stderr)
+
+    def test_reports_api_clock_skew_for_each_sample(self):
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"api_clock_skew_seconds=[+-]?\d+\.\d")
 
     def test_observes_legacy_connections_repeatedly_for_requested_window(self):
         result = self.run_preflight(
@@ -166,6 +198,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
             ("--observation-seconds", "nan"),
             ("--sample-interval-seconds", "inf"),
             ("--timeout-seconds", "nan"),
+            ("--maximum-clock-skew-seconds", "inf"),
         ):
             with self.subTest(option=option, value=value):
                 result = self.run_preflight(option, value)
