@@ -23,7 +23,8 @@ $requiredFiles = @(
     "platform.txt",
     "source-sha.txt",
     "README.txt",
-    "Verify-BackendImageArtifact.ps1"
+    "Verify-BackendImageArtifact.ps1",
+    "start-private-backend-candidate.sh"
 )
 $expectedDirectoryEntries = @($requiredFiles + "SHA256SUMS" | Sort-Object)
 $actualDirectoryEntries = @(Get-ChildItem -LiteralPath $resolvedArtifactPath -Force | Sort-Object Name)

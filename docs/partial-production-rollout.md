@@ -31,9 +31,21 @@ Qualquer divergência, `401/403`, readiness bloqueado, rota inacessível, redire
 
 ## Imagem imutável da candidata
 
-O workflow de verificação constrói e testa a imagem backend sem publicá-la em um registry nem iniciar um serviço. Somente depois dos gates de sobreposição e release, ele anexa `candidate-backend-image-<SHA>` à execução aprovada. O pacote contém `backend-image.tar.gz`, `image-ref.txt`, `image-id.txt`, `platform.txt`, `source-sha.txt`, `README.txt`, o script `Verify-BackendImageArtifact.ps1` e `SHA256SUMS`.
+O workflow de verificação constrói e testa a imagem backend sem publicá-la em um registry nem iniciar um serviço. Somente depois dos gates de sobreposição e release, ele anexa `candidate-backend-image-<SHA>` à execução aprovada. O pacote contém `backend-image.tar.gz`, `image-ref.txt`, `image-id.txt`, `platform.txt`, `source-sha.txt`, `README.txt`, `Verify-BackendImageArtifact.ps1`, `start-private-backend-candidate.sh` e `SHA256SUMS`.
 
-Use o artefato apenas de uma execução concluída com sucesso. Antes de `docker load`, extraia o pacote e execute `./Verify-BackendImageArtifact.ps1 -ArtifactPath . -ExpectedSourceSha '<SHA Git completo esperado>'` em um host com Docker disponível. O script confere o SHA de origem, a referência e o ID da imagem, a integridade e cobertura exata dos checksums, a ausência de arquivos extras e a compatibilidade da plataforma com o daemon local. Ele somente valida os metadados e não carrega nem inicia a imagem. Se aprovado, carregar o arquivo somente importa a imagem ao daemon local; não inicia container nem altera o roteamento. Mantenha credenciais e demais configurações exclusivamente no runtime isolado da candidata. O artefato expira conforme a retenção configurada no workflow; gere uma nova execução aprovada se o SHA ou o checksum não corresponder.
+Use o artefato apenas de uma execução concluída com sucesso. Em Windows com Docker, `Verify-BackendImageArtifact.ps1` confere o SHA de origem, referência/ID declarados, checksums, arquivos esperados e plataforma sem carregar a imagem. No host Linux Docker, o launcher incluído repete a validação de SHA, manifesto, checksums e plataforma antes de `docker load`, confere o ID da imagem carregada e exige rede/runtime privados. Ele inicia um container com nome exclusivo, sem restart automático, publica apenas em `127.0.0.1:<porta>:8080` e espera até três minutos pelo health check. Não altera rota pública, não remove containers existentes e não aplica migrations. Antes de usá-lo, conclua o ensaio SQL isolado, obtenha backup restaurável, rode o preflight SQL e aplique apenas as migrations aprovadas do mesmo SHA; a API recusa iniciar com migrations pendentes. O arquivo de runtime deve ficar fora do repositório e a origem legada precisa apontar diretamente ao processo antigo pela rede privada. Após o health check, execute o preflight administrativo somente leitura contra o SHA completo antes de encaminhar tráfego.
+
+Com backup, migrations e preflight SQL aprovados, execute no host Linux e numa rede Docker que alcance a API antiga. O comando não contém segredos; o runtime é lido do arquivo privado:
+
+```bash
+bash ./start-private-backend-candidate.sh \
+  --artifact-dir . \
+  --expected-source-sha '<SHA Git completo>' \
+  --docker-network '<rede privada existente>' \
+  --runtime-env-file '<arquivo privado fora do repositório>' \
+  --legacy-api-origin 'http://<API antiga privada>:8080' \
+  --host-port 18080
+```
 
 ## Operações que ficam indisponíveis para sockets legados
 

@@ -148,6 +148,9 @@ jobs:
         shell: pwsh
         run: ./tools/Deployment/Test-BackendImageArtifactVerifier.ps1
 
+      - name: Test private backend candidate launcher
+        run: bash tools/Deployment/Test-Start-PrivateBackendCandidate.sh
+
       - name: Build backend Docker image without publishing
         run: docker build --build-arg APP_REVISION=${{ github.sha }} --tag vend-machines-backend:verify --file apps/backend/VendingMachines.Api/Dockerfile apps/backend/VendingMachines.Api
 
@@ -241,16 +244,19 @@ jobs:
           printf '%s\n' "$SOURCE_SHA" > "$output_directory/source-sha.txt"
           printf '%s\n' "$image_ref" > "$output_directory/image-ref.txt"
           cp tools/Deployment/Verify-BackendImageArtifact.ps1 "$output_directory/Verify-BackendImageArtifact.ps1"
+          cp tools/Deployment/start-private-backend-candidate.sh "$output_directory/start-private-backend-candidate.sh"
+          chmod 755 "$output_directory/start-private-backend-candidate.sh"
           printf '%s\n' \
             'Este artefato contém somente a imagem backend verificada. Ele não inicia container nem altera serviço.' \
             'A configuração, os segredos e os dados de runtime não são incluídos; injete-os somente no ambiente isolado da candidata.' \
-            'Antes de carregar, execute: ./Verify-BackendImageArtifact.ps1 -ArtifactPath . -ExpectedSourceSha <SHA completo>.' \
+            'Em Windows, antes de carregar, execute: ./Verify-BackendImageArtifact.ps1 -ArtifactPath . -ExpectedSourceSha <SHA completo>.' \
+            'Em um host Linux Docker, após preflight SQL, backup restaurável e aplicação aprovada das migrations, inicie em loopback com bash ./start-private-backend-candidate.sh --artifact-dir . --expected-source-sha <SHA completo> --docker-network <rede privada> --runtime-env-file <arquivo privado> --legacy-api-origin http://<api antiga privada>:8080.' \
             > "$output_directory/README.txt"
           docker save "$image_ref" | gzip --no-name -1 > "$output_directory/backend-image.tar.gz"
           gzip -t "$output_directory/backend-image.tar.gz"
           (
             cd "$output_directory"
-            sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 > SHA256SUMS
+            sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 start-private-backend-candidate.sh > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
           pwsh tools/Deployment/Verify-BackendImageArtifact.ps1 -ArtifactPath "$output_directory" -ExpectedSourceSha "$SOURCE_SHA"
