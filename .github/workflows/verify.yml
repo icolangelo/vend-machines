@@ -144,6 +144,10 @@ jobs:
       - name: Verify backend Docker context and base configuration
         run: python -B tools/Deployment/test_backend_docker_context.py
 
+      - name: Test backend image artifact verifier
+        shell: pwsh
+        run: ./tools/Deployment/Test-BackendImageArtifactVerifier.ps1
+
       - name: Build backend Docker image without publishing
         run: docker build --build-arg APP_REVISION=${{ github.sha }} --tag vend-machines-backend:verify --file apps/backend/VendingMachines.Api/Dockerfile apps/backend/VendingMachines.Api
 
@@ -236,17 +240,20 @@ jobs:
           docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_ref" > "$output_directory/platform.txt"
           printf '%s\n' "$SOURCE_SHA" > "$output_directory/source-sha.txt"
           printf '%s\n' "$image_ref" > "$output_directory/image-ref.txt"
+          cp tools/Deployment/Verify-BackendImageArtifact.ps1 "$output_directory/Verify-BackendImageArtifact.ps1"
           printf '%s\n' \
             'Este artefato contém somente a imagem backend verificada. Ele não inicia container nem altera serviço.' \
             'A configuração, os segredos e os dados de runtime não são incluídos; injete-os somente no ambiente isolado da candidata.' \
+            'Antes de carregar, execute: ./Verify-BackendImageArtifact.ps1 -ArtifactPath . -ExpectedSourceSha <SHA completo>.' \
             > "$output_directory/README.txt"
           docker save "$image_ref" | gzip --no-name -1 > "$output_directory/backend-image.tar.gz"
           gzip -t "$output_directory/backend-image.tar.gz"
           (
             cd "$output_directory"
-            sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt > SHA256SUMS
+            sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 > SHA256SUMS
             sha256sum --check SHA256SUMS
           )
+          pwsh tools/Deployment/Verify-BackendImageArtifact.ps1 -ArtifactPath "$output_directory" -ExpectedSourceSha "$SOURCE_SHA"
 
       - name: Upload verified backend image artifact
         uses: actions/upload-artifact@v4
