@@ -2813,3 +2813,7 @@ Ampliei o ensaio side-by-side para iniciar quatro sessões simultaneamente, divi
 ### Contagem mínima obrigatória no preflight de sobreposição (03/11/2026)
 
 Removi o padrão permissivo de uma conexão em `Validate-TelemetryOverlapReadiness.py`: agora a pessoa operadora precisa informar explicitamente `--minimum-legacy-connections` com a quantidade esperada pela fonte de operação da frota. O preflight não pode passar com uma amostra menor que esse mínimo por uma opção esquecida no exemplo. O runbook explica a origem da contagem; os testes passaram **6/6**, incluindo ausência do argumento, e os gates de release **17/17**. Alteração local sem acesso ou mudança em produção.
+
+### Leitura pública da API de produção para preflight (03/11/2026)
+
+Consultei somente os endpoints HTTP públicos, sem autenticação nem comandos: em duas amostras separadas por três segundos, `/health` retornou `200 Healthy`, enquanto `/health/ready` e `/health/deploy-ready` retornaram `404`. Isso confirma liveness naquele momento, mas não permite verificar banco, SHA candidata, conexões preservadas ou readiness de publicação. O preflight de sobreposição não pode ser aprovado nesse endereço enquanto essas rotas não estiverem disponíveis na candidata; não alterei servidor, configuração ou máquinas.
