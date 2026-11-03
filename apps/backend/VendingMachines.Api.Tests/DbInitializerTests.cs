@@ -46,6 +46,39 @@ public sealed class DbInitializerTests
     }
 
     [Fact]
+    public async Task DevelopmentSeedCreatesDatabaseFileWhenNoLocalDatabaseExists()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"vending-machines-{Guid.NewGuid():N}.db");
+        Assert.False(File.Exists(databasePath));
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite(new SqliteConnectionStringBuilder
+                {
+                    DataSource = databasePath,
+                    Pooling = false
+                }.ToString())
+                .Options;
+            await using (var db = new AppDbContext(options))
+            {
+                DbInitializer.Initialize(db, seedDemoData: true);
+
+                Assert.Contains(await db.Companies.Select(company => company.Name).ToListAsync(),
+                    name => name == "ACME Machines LTDA");
+                Assert.True(await db.Machines.CountAsync() > 0);
+            }
+
+            Assert.True(File.Exists(databasePath));
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task ExistingSqliteConnectionStateAddsOwnerNodeWithoutChangingLiveState()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
