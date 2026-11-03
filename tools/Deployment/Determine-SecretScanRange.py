@@ -8,9 +8,9 @@ import subprocess
 from pathlib import Path
 
 
-def git(repo_root: Path, *args: str) -> str:
+def git(repo_root: Path, *args: str, git_command: str = "git") -> str:
     result = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
+        [git_command, "-C", str(repo_root), *args],
         check=True,
         capture_output=True,
         text=True,
@@ -29,6 +29,7 @@ def determine_range(
     base_sha: str,
     before_sha: str,
     default_branch: str,
+    git_command: str = "git",
 ) -> str:
     if event_name == "pull_request":
         if not base_sha or not head_sha:
@@ -42,8 +43,8 @@ def determine_range(
         default_ref = f"refs/remotes/origin/{default_branch}" if default_branch else ""
         if default_ref:
             try:
-                git(repo_root, "rev-parse", "--verify", default_ref)
-                merge_base = git(repo_root, "merge-base", head_sha, default_ref)
+                git(repo_root, "rev-parse", "--verify", default_ref, git_command=git_command)
+                merge_base = git(repo_root, "merge-base", head_sha, default_ref, git_command=git_command)
                 return f"{merge_base}..{head_sha}"
             except subprocess.CalledProcessError:
                 # An unrelated branch or a repository's first push has no common base.
@@ -52,7 +53,7 @@ def determine_range(
         return head_sha
 
     try:
-        parent_sha = git(repo_root, "rev-parse", f"{head_sha}^")
+        parent_sha = git(repo_root, "rev-parse", f"{head_sha}^", git_command=git_command)
     except subprocess.CalledProcessError:
         # A root commit has no parent; scanning the head scans that commit itself.
         return head_sha
@@ -67,6 +68,7 @@ def main() -> int:
     parser.add_argument("--base", default="")
     parser.add_argument("--before", default="")
     parser.add_argument("--default-branch", default="")
+    parser.add_argument("--git-command", default="git")
     args = parser.parse_args()
 
     try:
@@ -77,6 +79,7 @@ def main() -> int:
             args.base,
             args.before,
             args.default_branch,
+            args.git_command,
         ))
     except (ValueError, subprocess.CalledProcessError) as exc:
         print(f"::error::{exc}")
