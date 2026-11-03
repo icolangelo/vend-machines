@@ -94,6 +94,44 @@ fi
 [[ ! -s "$DOCKER_TEST_LOG" ]]
 chmod 600 "$temporary_directory/runtime.env"
 
+mkdir "$temporary_directory/artifact-alias"
+ln -s "$artifact_directory" "$temporary_directory/artifact-alias/nested"
+printf 'ASPNETCORE_ENVIRONMENT=Production\nDOTNET_ENVIRONMENT=Production\n' > "$artifact_directory/secret-runtime.env"
+chmod 600 "$artifact_directory/secret-runtime.env"
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/artifact-alias/nested/secret-runtime.env" \
+  --legacy-api-origin http://previous-api:8080 \
+  >/dev/null 2>&1; then
+  echo 'O launcher aceitou runtime dentro do artefato via diretório simbólico.' >&2
+  exit 1
+fi
+[[ ! -s "$DOCKER_TEST_LOG" ]]
+rm -f "$artifact_directory/secret-runtime.env" "$temporary_directory/artifact-alias/nested"
+rmdir "$temporary_directory/artifact-alias"
+
+mkdir "$temporary_directory/release-alias"
+ln -s "$release_directory" "$temporary_directory/release-alias/nested"
+printf 'ASPNETCORE_ENVIRONMENT=Production\nDOTNET_ENVIRONMENT=Production\n' > "$release_directory/secret-runtime.env"
+chmod 600 "$release_directory/secret-runtime.env"
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/release-alias/nested/secret-runtime.env" \
+  --legacy-api-origin http://previous-api:8080 \
+  >/dev/null 2>&1; then
+  echo 'O launcher aceitou runtime dentro do pacote operacional via diretório simbólico.' >&2
+  exit 1
+fi
+[[ ! -s "$DOCKER_TEST_LOG" ]]
+rm -f "$release_directory/secret-runtime.env" "$temporary_directory/release-alias/nested"
+rmdir "$temporary_directory/release-alias"
+
 if bash "$launcher" \
   --artifact-dir "$artifact_directory" \
   --release-package-dir "$release_directory" \
@@ -138,4 +176,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 1 início isolado, parada após health falho e 4 recusas antes do início.'
+echo 'Private backend candidate launcher: 1 início isolado, parada após health falho e 6 recusas antes do início.'

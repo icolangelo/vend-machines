@@ -51,7 +51,7 @@ done
 
 artifact_dir=$(cd -- "$artifact_dir" 2>/dev/null && pwd -P) || fail 'diretório do artefato não encontrado.'
 release_package_dir=$(cd -- "$release_package_dir" 2>/dev/null && pwd -P) || fail 'diretório do pacote operacional não encontrado.'
-runtime_env_file=$(cd -- "$(dirname -- "$runtime_env_file")" 2>/dev/null && printf '%s/%s\n' "$PWD" "$(basename -- "$runtime_env_file")") || fail 'arquivo de runtime não encontrado.'
+runtime_env_file=$(cd -- "$(dirname -- "$runtime_env_file")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename -- "$runtime_env_file")") || fail 'arquivo de runtime não encontrado.'
 [[ -f "$runtime_env_file" && ! -L "$runtime_env_file" && -r "$runtime_env_file" ]] || fail 'arquivo de runtime precisa existir, ser legível e não ser link simbólico.'
 [[ -f "$artifact_dir/backend-image.tar.gz" ]] || fail 'imagem compactada ausente.'
 if [[ "$runtime_env_file" == "$artifact_dir/"* ]]; then
