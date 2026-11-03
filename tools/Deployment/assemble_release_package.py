@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 RELEASE_FILES = (
+    "tools/Deployment/Validate-TelemetryOverlapReadiness.py",
     "tools/Database/Pause-SessionAdmission.sql",
     "tools/Database/Resume-SessionAdmission.sql",
     "tools/Database/List-UnresolvedTelemetryCommands.sql",

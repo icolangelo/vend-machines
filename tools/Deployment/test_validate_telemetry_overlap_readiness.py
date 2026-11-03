@@ -14,6 +14,9 @@ COMMIT = "a" * 40
 
 class Handler(BaseHTTPRequestHandler):
     legacy_count = 2
+    legacy_count_sequence = None
+    legacy_reads = 0
+    current_legacy_count = 2
     redirect_health = False
     followed_redirect = False
     source_commit = COMMIT
@@ -36,15 +39,22 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in {"/health/ready", "/health/deploy-ready"}:
             payload = {"status": "Ready", "sourceCommit": type(self).source_commit}
         elif self.path == "/api/admin/legacy-machine-connections":
+            sequence = type(self).legacy_count_sequence
+            if sequence:
+                index = min(type(self).legacy_reads, len(sequence) - 1)
+                type(self).current_legacy_count = sequence[index]
+                type(self).legacy_reads += 1
+            else:
+                type(self).current_legacy_count = type(self).legacy_count
             payload = {
-                "totalItems": type(self).legacy_count,
+                "totalItems": type(self).current_legacy_count,
                 "relay": {"configured": True, "healthy": True},
             }
         elif self.path == "/api/admin/worker-health":
             payload = {
                 "queueMetrics": {
                     "machineConnections": {
-                        "legacyRelay": {"eligibleConnections": type(self).legacy_count, "healthy": True},
+                        "legacyRelay": {"eligibleConnections": type(self).current_legacy_count, "healthy": True},
                         "readinessGate": {"unroutable": 0},
                     }
                 }
@@ -81,6 +91,9 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
 
     def setUp(self):
         Handler.legacy_count = 2
+        Handler.legacy_count_sequence = None
+        Handler.legacy_reads = 0
+        Handler.current_legacy_count = 2
         Handler.redirect_health = False
         Handler.followed_redirect = False
         Handler.source_commit = COMMIT
@@ -115,6 +128,37 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertIn("overlap_runtime_preflight=passed", result.stdout)
         self.assertIn("legacy_connections_preserved=2", result.stdout)
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_observes_legacy_connections_repeatedly_for_requested_window(self):
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.3",
+            "--sample-interval-seconds",
+            "0.02",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"observation_samples=[2-9][0-9]*")
+        self.assertIn("observation_seconds=0.3", result.stdout)
+
+    def test_blocks_when_legacy_connections_drop_during_observation(self):
+        Handler.legacy_count_sequence = [2, 1]
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.5",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Foram observadas 1 conexões legadas", result.stderr)
+
+    def test_rejects_negative_observation_duration(self):
+        result = self.run_preflight("--observation-seconds", "-1")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("não pode ser negativo", result.stderr)
 
     def test_blocks_when_no_legacy_machine_connection_is_observed(self):
         Handler.legacy_count = 0

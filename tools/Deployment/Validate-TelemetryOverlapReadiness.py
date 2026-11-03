@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -51,6 +52,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=8.0,
         help="Timeout por requisição HTTP (padrão: 8 segundos).",
+    )
+    parser.add_argument(
+        "--observation-seconds",
+        type=float,
+        default=0.0,
+        help="Janela de observação repetida; zero executa uma única amostra (padrão: 0).",
+    )
+    parser.add_argument(
+        "--sample-interval-seconds",
+        type=float,
+        default=15.0,
+        help="Intervalo entre amostras durante a janela (padrão: 15 segundos).",
     )
     return parser.parse_args()
 
@@ -115,6 +128,54 @@ def check_commit(payload: dict, endpoint: str, expected: str) -> None:
         raise PreflightError(f"{endpoint}: sourceCommit não corresponde ao SHA esperado.")
 
 
+def validate_snapshot(opener, base_url: str, token: str, timeout: float, expected_commit: str, minimum_connections: int) -> int:
+    live = read_json(opener, f"{base_url}/health", None, timeout)
+    require_status(live, "/health", "Healthy")
+    ready = read_json(opener, f"{base_url}/health/ready", None, timeout)
+    require_status(ready, "/health/ready", "Ready")
+    check_commit(ready, "/health/ready", expected_commit)
+    deploy_ready = read_json(opener, f"{base_url}/health/deploy-ready", None, timeout)
+    require_status(deploy_ready, "/health/deploy-ready", "Ready")
+    check_commit(deploy_ready, "/health/deploy-ready", expected_commit)
+
+    legacy = read_json(
+        opener,
+        f"{base_url}/api/admin/legacy-machine-connections",
+        token,
+        timeout,
+    )
+    legacy_count = legacy.get("totalItems")
+    relay = legacy.get("relay")
+    if type(legacy_count) is not int or not isinstance(relay, dict):
+        raise PreflightError("/api/admin/legacy-machine-connections: formato inesperado.")
+    if legacy_count < minimum_connections:
+        raise PreflightError(
+            f"Foram observadas {legacy_count} conexões legadas; mínimo exigido: "
+            f"{minimum_connections}."
+        )
+    if relay.get("configured") is not True or relay.get("healthy") is not True:
+        raise PreflightError("O relay legado não está configurado e saudável na candidata.")
+
+    worker_health = read_json(
+        opener,
+        f"{base_url}/api/admin/worker-health",
+        token,
+        timeout,
+    )
+    queue_metrics = worker_health.get("queueMetrics")
+    machine_connections = queue_metrics.get("machineConnections") if isinstance(queue_metrics, dict) else None
+    legacy_relay = machine_connections.get("legacyRelay") if isinstance(machine_connections, dict) else None
+    readiness_gate = machine_connections.get("readinessGate") if isinstance(machine_connections, dict) else None
+    if not isinstance(legacy_relay, dict) or not isinstance(readiness_gate, dict):
+        raise PreflightError("/api/admin/worker-health: métricas de conexão ausentes.")
+    if legacy_relay.get("eligibleConnections") != legacy_count or legacy_relay.get("healthy") is not True:
+        raise PreflightError("As métricas do relay divergem da lista de conexões legadas.")
+    if readiness_gate.get("unroutable") != 0:
+        raise PreflightError("A candidata reporta conexões online sem rota compatível.")
+
+    return legacy_count
+
+
 def main() -> int:
     args = parse_args()
     if args.minimum_legacy_connections < 1:
@@ -122,6 +183,12 @@ def main() -> int:
         return 2
     if args.timeout_seconds <= 0:
         print("ERRO: --timeout-seconds deve ser positivo.", file=sys.stderr)
+        return 2
+    if args.observation_seconds < 0:
+        print("ERRO: --observation-seconds não pode ser negativo.", file=sys.stderr)
+        return 2
+    if args.sample_interval_seconds <= 0:
+        print("ERRO: --sample-interval-seconds deve ser positivo.", file=sys.stderr)
         return 2
     if re.fullmatch(r"[0-9a-fA-F]{40}", args.expected_commit) is None:
         print("ERRO: --expected-commit deve ser um SHA Git completo de 40 caracteres hexadecimais.", file=sys.stderr)
@@ -145,54 +212,30 @@ def main() -> int:
 
     try:
         opener = build_opener(RejectRedirects())
-
-        live = read_json(opener, f"{base_url}/health", None, args.timeout_seconds)
-        require_status(live, "/health", "Healthy")
-        ready = read_json(opener, f"{base_url}/health/ready", None, args.timeout_seconds)
-        require_status(ready, "/health/ready", "Ready")
-        check_commit(ready, "/health/ready", args.expected_commit)
-        deploy_ready = read_json(opener, f"{base_url}/health/deploy-ready", None, args.timeout_seconds)
-        require_status(deploy_ready, "/health/deploy-ready", "Ready")
-        check_commit(deploy_ready, "/health/deploy-ready", args.expected_commit)
-
-        legacy = read_json(
-            opener,
-            f"{base_url}/api/admin/legacy-machine-connections",
-            token,
-            args.timeout_seconds,
-        )
-        legacy_count = legacy.get("totalItems")
-        relay = legacy.get("relay")
-        if type(legacy_count) is not int or not isinstance(relay, dict):
-            raise PreflightError("/api/admin/legacy-machine-connections: formato inesperado.")
-        if legacy_count < args.minimum_legacy_connections:
-            raise PreflightError(
-                f"Foram observadas {legacy_count} conexões legadas; mínimo exigido: "
-                f"{args.minimum_legacy_connections}."
+        deadline = time.monotonic() + args.observation_seconds
+        sample_count = 0
+        legacy_count = 0
+        while True:
+            legacy_count = validate_snapshot(
+                opener,
+                base_url,
+                token,
+                args.timeout_seconds,
+                args.expected_commit,
+                args.minimum_legacy_connections,
             )
-        if relay.get("configured") is not True or relay.get("healthy") is not True:
-            raise PreflightError("O relay legado não está configurado e saudável na candidata.")
-
-        worker_health = read_json(
-            opener,
-            f"{base_url}/api/admin/worker-health",
-            token,
-            args.timeout_seconds,
-        )
-        queue_metrics = worker_health.get("queueMetrics")
-        machine_connections = queue_metrics.get("machineConnections") if isinstance(queue_metrics, dict) else None
-        legacy_relay = machine_connections.get("legacyRelay") if isinstance(machine_connections, dict) else None
-        readiness_gate = machine_connections.get("readinessGate") if isinstance(machine_connections, dict) else None
-        if not isinstance(legacy_relay, dict) or not isinstance(readiness_gate, dict):
-            raise PreflightError("/api/admin/worker-health: métricas de conexão ausentes.")
-        if legacy_relay.get("eligibleConnections") != legacy_count or legacy_relay.get("healthy") is not True:
-            raise PreflightError("As métricas do relay divergem da lista de conexões legadas.")
-        if readiness_gate.get("unroutable") != 0:
-            raise PreflightError("A candidata reporta conexões online sem rota compatível.")
+            sample_count += 1
+            print(f"observation_sample={sample_count} legacy_connections={legacy_count}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(args.sample_interval_seconds, remaining))
 
         print("overlap_runtime_preflight=passed")
-        print(f"candidate_commit={ready.get('sourceCommit', 'not-reported')}")
+        print(f"candidate_commit={args.expected_commit}")
         print(f"legacy_connections_preserved={legacy_count}")
+        print(f"observation_samples={sample_count}")
+        print(f"observation_seconds={args.observation_seconds:g}")
         print("legacy_owner_relay=healthy")
         print("candidate_unroutable_connections=0")
         return 0
