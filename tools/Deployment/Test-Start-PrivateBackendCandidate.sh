@@ -45,7 +45,7 @@ export PATH="$bin_directory:$PATH"
 export DOCKER_TEST_IMAGE_ID="$image_id"
 export DOCKER_TEST_LOG="$temporary_directory/docker.log"
 
-"$launcher" \
+bash "$launcher" \
   --artifact-dir "$artifact_directory" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
@@ -58,7 +58,7 @@ grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
-if "$launcher" \
+if bash "$launcher" \
   --artifact-dir "$artifact_directory" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
@@ -71,7 +71,7 @@ fi
 [[ ! -s "$DOCKER_TEST_LOG" ]]
 
 printf 'alteração\n' >> "$artifact_directory/backend-image.tar.gz"
-if "$launcher" \
+if bash "$launcher" \
   --artifact-dir "$artifact_directory" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
