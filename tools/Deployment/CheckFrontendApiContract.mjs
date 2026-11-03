@@ -56,7 +56,7 @@ function methodFromOptions(options, sourceFile) {
   return method.initializer.text.toUpperCase();
 }
 
-export function parseFrontendRequestEntries(sourceText, filename = "frontend.ts") {
+function parseFrontendRequestEntries(sourceText, filename = "frontend.ts") {
   const sourceFile = ts.createSourceFile(filename, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const requests = new Set();
   const entries = [];
@@ -211,26 +211,6 @@ export function loadFrontendSourcesFromGitRef(
   }));
 }
 
-export function loadFrontendSourcesFromWorkingTree(repoRoot = repositoryRoot) {
-  const sourceRoot = join(repoRoot, "apps", "frontend", "src");
-  const filenames = [];
-  function collect(directory) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const filename = join(directory, entry.name);
-      if (entry.isDirectory()) collect(filename);
-      else if (entry.isFile() && /\.tsx?$/.test(entry.name)) filenames.push(filename);
-    }
-  }
-
-  collect(sourceRoot);
-  return filenames
-    .sort()
-    .map(filename => ({
-      filename: relative(repoRoot, filename).split(sep).join("/"),
-      text: readFileSync(filename, "utf8"),
-    }));
-}
-
 function main() {
   const args = process.argv.slice(2);
   let backendRef = null;
@@ -256,22 +236,18 @@ function main() {
   let frontendSources;
   let selectedControllerDirectory = controllerDirectory;
   try {
-    let allFrontendSources;
+    let usedClientFunctions = null;
     if (frontendRef) {
-      allFrontendSources = loadFrontendSourcesFromGitRef(frontendRef);
-      frontendSources = allFrontendSources.filter(source =>
+      const allSources = loadFrontendSourcesFromGitRef(frontendRef);
+      frontendSources = allSources.filter(source =>
         frontendFiles.some(filename => relative(repositoryRoot, filename).split(sep).join("/") === source.filename));
       if (frontendSources.length !== frontendFiles.length) {
         throw new Error(`A referência ${frontendRef} não contém todos os clientes de API esperados.`);
       }
+      usedClientFunctions = referencedClientFunctions(frontendSources, allSources);
     } else {
-      frontendSources = frontendFiles.map(filename => ({
-        filename: relative(repositoryRoot, filename).split(sep).join("/"),
-        text: readFileSync(filename, "utf8"),
-      }));
-      allFrontendSources = loadFrontendSourcesFromWorkingTree();
+      frontendSources = frontendFiles.map(filename => ({ filename, text: readFileSync(filename, "utf8") }));
     }
-    const usedClientFunctions = referencedClientFunctions(frontendSources, allFrontendSources);
     if (backendRef) selectedControllerDirectory = materializeControllersFromGitRef(backendRef);
     const mismatches = findContractMismatches(frontendSources, selectedControllerDirectory, usedClientFunctions);
     if (mismatches.length > 0) {

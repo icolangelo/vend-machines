@@ -9,9 +9,7 @@ import { execFileSync } from "node:child_process";
 import {
   findContractMismatches,
   loadFrontendSourcesFromGitRef,
-  loadFrontendSourcesFromWorkingTree,
   materializeControllersFromGitRef,
-  parseFrontendRequestEntries,
   parseFrontendRequests,
   referencedClientFunctions,
 } from "./CheckFrontendApiContract.mjs";
@@ -26,14 +24,6 @@ fetch(\`\${API_BASE_URL}/alerts/summary\`);
     [...parseFrontendRequests(source)].sort(),
     ["GET /alerts/summary", "PUT /machines/{}"],
   );
-});
-
-test("associates API calls with their exported helper for live-route filtering", () => {
-  const entries = parseFrontendRequestEntries(
-    'export async function saveIntegration() { return authFetch(`${API_BASE_URL}/payments/integration`, { method: "POST" }); }',
-    "apps/frontend/src/lib/api.ts",
-  ).entries;
-  assert.deepEqual(entries, [{ request: "POST /payments/integration", owner: "saveIntegration" }]);
 });
 
 test("requires matching HTTP verbs, not merely a matching path", () => {
@@ -136,27 +126,6 @@ test("loads frontend API clients from a selected git ref without changing the ch
       "fetch(`${API_BASE_URL}/machines`);",
       "postAuthSession(\"login\", {});",
     ]);
-  } finally {
-    rmSync(repository, { recursive: true, force: true });
-  }
-});
-
-test("loads current frontend production sources recursively with normalized paths", () => {
-  const repository = mkdtempSync(join(tmpdir(), "frontend-client-working-tree-"));
-  try {
-    const apiPath = join(repository, "apps", "frontend", "src", "lib", "api.ts");
-    const pagePath = join(repository, "apps", "frontend", "src", "pages", "Machines.tsx");
-    mkdirSync(join(repository, "apps", "frontend", "src", "lib"), { recursive: true });
-    mkdirSync(join(repository, "apps", "frontend", "src", "pages"), { recursive: true });
-    writeFileSync(apiPath, "export async function getMachines() { return authFetch(`${API_BASE_URL}/machines`); }");
-    writeFileSync(pagePath, "import { getMachines } from \"@/lib/api\"; getMachines();");
-
-    const sources = loadFrontendSourcesFromWorkingTree(repository);
-    assert.deepEqual(sources.map(source => source.filename), [
-      "apps/frontend/src/lib/api.ts",
-      "apps/frontend/src/pages/Machines.tsx",
-    ]);
-    assert.equal(sources[0].text, readFileSync(apiPath, "utf8"));
   } finally {
     rmSync(repository, { recursive: true, force: true });
   }

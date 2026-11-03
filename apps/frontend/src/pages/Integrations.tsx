@@ -2,7 +2,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, ArrowRight, Power, PowerOff, ShieldCheck, User, Building, CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import { useCallback, useState, useEffect } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { getIntegration, toggleIntegration, getOauthConfig, disconnectIntegration, type MercadoPagoIntegration } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
@@ -12,18 +12,22 @@ import { getErrorMessage } from "@/lib/utils";
 
 export default function Integrations() {
     const { logout, user } = useAuth();
+    const canManageIntegration = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const { toast } = useToast();
 
     const [integration, setIntegration] = useState<MercadoPagoIntegration | null>(null);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState(false);
 
     const loadIntegration = useCallback(async () => {
         setLoading(true);
+        setLoadError(false);
         try {
             const data = await getIntegration();
             setIntegration(data);
         } catch (err) {
             console.error("Erro ao carregar integração:", err);
+            setLoadError(true);
             toast({
                 title: "Erro",
                 description: "Não foi possível carregar a integração do Mercado Pago.",
@@ -39,7 +43,7 @@ export default function Integrations() {
     }, [loadIntegration]);
 
     const handleToggleStatus = async () => {
-        if (!integration) return;
+        if (!integration || !canManageIntegration) return;
 
         const newStatus = !integration.isActive;
         const actionText = newStatus ? "habilitar" : "desabilitar";
@@ -67,12 +71,12 @@ export default function Integrations() {
     };
 
     const handleConnectOauth = async () => {
+        if (!canManageIntegration) return;
         try {
             setLoading(true);
             const config = await getOauthConfig();
-            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "";
 
-            if (isTest) {
+            if (import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true") {
                 toast({
                     title: "Ambiente de Testes / Simulado",
                     description: "Redirecionando para autenticação simulada..."
@@ -82,6 +86,9 @@ export default function Integrations() {
                     window.location.href = `${window.location.origin}/?code=dummy_mock_oauth_code_${Date.now()}${stateParam}`;
                 }, 1200);
             } else {
+                if (!config.clientId.trim()) {
+                    throw new Error("A integração com o Mercado Pago não está configurada. Contate o administrador da plataforma.");
+                }
                 const stateParam = config.state ? `&state=${encodeURIComponent(config.state)}` : "";
                 const authUrl = `https://auth.mercadopago.com/authorization?client_id=${config.clientId}&response_type=code&platform_id=mp&redirect_uri=${encodeURIComponent(config.redirectUri)}${stateParam}`;
                 window.location.href = authUrl;
@@ -98,6 +105,7 @@ export default function Integrations() {
     };
 
     const handleDisconnect = async () => {
+        if (!canManageIntegration) return;
         const confirmed = window.confirm("Deseja realmente desconectar sua conta do Mercado Pago? Isso removerá todas as credenciais vinculadas e suas máquinas não poderão aceitar Pix.");
         if (!confirmed) return;
 
@@ -153,20 +161,37 @@ export default function Integrations() {
                             </p>
                         </div>
 
-                        {loading ? (
+                        {loading && !integration ? (
                             <div className="flex flex-col items-center justify-center h-[40vh] gap-3">
                                 <RefreshCw className="w-8 h-8 text-sky-500 animate-spin" />
                                 <p className="text-muted-foreground font-medium">Carregando integrações...</p>
                             </div>
+                        ) : loadError && !integration ? (
+                            <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <XCircle className="h-9 w-9 text-destructive" />
+                                <div>
+                                    <h2 className="font-semibold">Não foi possível consultar a integração</h2>
+                                    <p className="mt-1 text-sm text-muted-foreground">O estado da conta não está confirmado. Tente carregar novamente antes de iniciar uma conexão.</p>
+                                </div>
+                                <Button variant="outline" onClick={() => void loadIntegration()} disabled={loading}>
+                                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />Tentar novamente
+                                </Button>
+                            </div>
                         ) : (
                             <div className="max-w-3xl space-y-6">
-                                <Card className="border border-slate-200 bg-white shadow-sm relative overflow-hidden group">
-                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-sky-400 to-blue-600" />
+                                {(loadError || loading) && integration && (
+                                    <div role={loadError ? "alert" : "status"} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                                        <span>{loadError ? "Não foi possível atualizar a integração. Os dados exibidos podem estar desatualizados." : "Atualizando a integração. Os dados da última leitura continuam visíveis."}</span>
+                                        {loadError && <Button variant="outline" size="sm" onClick={() => void loadIntegration()} disabled={loading}>Tentar novamente</Button>}
+                                    </div>
+                                )}
+                                <Card className="border border-slate-200 bg-white shadow-xs relative overflow-hidden group">
+                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-linear-to-r from-sky-400 to-blue-600" />
 
                                     <CardHeader className="pb-4">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-3">
-                                                <div className="h-12 w-12 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shadow-sm">
+                                                <div className="h-12 w-12 rounded-xl bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shadow-xs">
                                                     <svg className="w-8 h-8" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
                                                         <circle cx="20" cy="20" r="18" fill="#009EE3" />
                                                         <path d="M12 20C12 18.5 13.5 16.5 15.5 16.5C17.5 16.5 18 18 19 19.5C20 21 20.5 22.5 22.5 22.5C24.5 22.5 26 20.5 26 19M19 19.5C18.5 20.5 17 21.5 15.5 21.5C14 21.5 12.5 20 12.5 19.5M26 19C26.5 18 25.5 17.5 24.5 17.5C23.5 17.5 22.5 18.5 22 19.5" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -180,7 +205,7 @@ export default function Integrations() {
                                                 </div>
                                             </div>
 
-                                            <Badge variant={isConnected && integration?.isActive ? "success" : "secondary"} className={`text-xs font-semibold px-2.5 py-1 ${isConnected && integration?.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
+                                            <Badge variant="secondary" className={`text-xs font-semibold px-2.5 py-1 ${isConnected && integration?.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
                                                 {isConnected ? (integration?.isActive ? "Conectado e Ativo" : "Pausado") : "Não Configurado"}
                                             </Badge>
                                         </div>
@@ -237,12 +262,11 @@ export default function Integrations() {
                                                 <div className="bg-white border border-slate-200/70 rounded-lg p-3 text-xs space-y-2">
                                                     <p className="font-semibold text-slate-700">Diagnóstico Mercado Pago</p>
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-600">
-                                                        <span>User ID: <strong className="text-slate-800">{integration.mercadoPagoUserId || "-"}</strong></span>
-                                                        <span>Nickname: <strong className="text-slate-800">{integration.mercadoPagoNickname || "-"}</strong></span>
+                                                        <span>ID de usuário: <strong className="text-slate-800">{integration.mercadoPagoUserId || "-"}</strong></span>
+                                                        <span>Apelido: <strong className="text-slate-800">{integration.mercadoPagoNickname || "-"}</strong></span>
                                                         <span>Site: <strong className="text-slate-800">{integration.mercadoPagoSiteId || "-"}</strong></span>
-                                                        <span>Refresh token: <strong className="text-slate-800">{integration.hasRefreshToken ? "Salvo" : "Ausente"}</strong></span>
+                                                        <span>Token de atualização: <strong className="text-slate-800">{integration.hasRefreshToken ? "Salvo" : "Ausente"}</strong></span>
                                                         <span>Expira em: <strong className="text-slate-800">{integration.accessTokenExpiresAt ? new Date(integration.accessTokenExpiresAt).toLocaleString("pt-BR") : "-"}</strong></span>
-                                                        <span>Fingerprint: <strong className="text-slate-800 font-mono">{integration.tokenFingerprint || "-"}</strong></span>
                                                     </div>
                                                     {integration.lastTokenValidationStatus && (
                                                         <p className="text-slate-500 pt-1 border-t border-slate-100">{integration.lastTokenValidationStatus}</p>
@@ -270,7 +294,9 @@ export default function Integrations() {
                                         </div>
 
                                         <div className="flex gap-2 flex-col sm:flex-row">
-                                            {isConnected ? (
+                                            {!canManageIntegration ? (
+                                                <span className="text-xs text-muted-foreground self-center">Somente administradores podem alterar a integração.</span>
+                                            ) : isConnected ? (
                                                 <>
                                                     <Button
                                                         variant="outline"
@@ -306,7 +332,7 @@ export default function Integrations() {
                                                 </>
                                             ) : (
                                                 <Button
-                                                    className="bg-sky-600 hover:bg-sky-700 text-white flex items-center justify-center gap-1.5 h-10 font-bold px-5 shadow-sm hover:shadow transition-all"
+                                                    className="bg-sky-600 hover:bg-sky-700 text-white flex items-center justify-center gap-1.5 h-10 font-bold px-5 shadow-xs hover:shadow-sm transition-all"
                                                     onClick={handleConnectOauth}
                                                 >
                                                     Conectar com Mercado Pago
