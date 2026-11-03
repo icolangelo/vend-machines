@@ -655,11 +655,18 @@ require_contains "$verify_workflow" 'name: Assemble verified candidate release p
 require_contains "$verify_workflow" 'name: Upload verified candidate release package'
 require_contains "$verify_workflow" 'name: candidate-release-package-${{ github.sha }}'
 require_contains "$verify_workflow" 'name: Export verified backend image artifact'
+require_contains "$verify_workflow" 'SOURCE_SHA: ${{ github.sha }}'
+require_contains "$verify_workflow" 'image_ref="vend-machines-backend:${SOURCE_SHA}"'
 require_contains "$verify_workflow" 'docker save "$image_ref"'
 require_contains "$verify_workflow" 'gzip -t "$output_directory/backend-image.tar.gz"'
+require_contains "$verify_workflow" 'image-id.txt'
+require_contains "$verify_workflow" 'image-ref.txt'
+require_contains "$verify_workflow" 'platform.txt'
+require_contains "$verify_workflow" 'source-sha.txt'
 require_contains "$verify_workflow" 'sha256sum --check SHA256SUMS'
 require_contains "$verify_workflow" 'name: Upload verified backend image artifact'
 require_contains "$verify_workflow" 'name: candidate-backend-image-${{ github.sha }}'
+require_contains "$verify_workflow" 'retention-days: 14'
 
 overlap_gate_line="$(grep -nF 'name: Verify previous API overlap while a legacy MDB socket stays connected' "$verify_workflow" | head -n 1 | cut -d: -f1)"
 workflow_gate_line="$(grep -nF 'name: Verify production workflow release gates' "$verify_workflow" | head -n 1 | cut -d: -f1)"
