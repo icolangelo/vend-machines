@@ -11,7 +11,7 @@ Este preflight é somente leitura. Ele não envia comandos MDB, não cria sessõ
 
 ## Verificação somente leitura
 
-Execute de uma máquina autorizada a consultar a candidata e a API antiga. O token precisa pertencer a um administrador de plataforma. Sem variável de ambiente, o script solicita o token com entrada oculta; não o coloque no comando, em arquivo ou em histórico de shell. Use o SHA completo da imagem candidata e ajuste o mínimo para a quantidade de sockets que a equipe espera observar:
+Execute de uma máquina autorizada a consultar a candidata e a API antiga. O token precisa pertencer a um administrador de plataforma. Sem variável de ambiente, o script solicita o token com entrada oculta; não o coloque no comando, em arquivo ou em histórico de shell. `--expected-commit` é obrigatório e deve receber o SHA Git completo, com 40 caracteres hexadecimais; o script compara o valor inteiro informado pelos endpoints de readiness. Ajuste o mínimo para a quantidade de sockets que a equipe espera observar:
 
 ```powershell
 python tools/Deployment/Validate-TelemetryOverlapReadiness.py `
@@ -28,6 +28,16 @@ O verificador consulta `/health`, `/health/ready`, `/health/deploy-ready`, `/api
 - a contagem do relay coincide nos dois diagnósticos e a candidata reporta zero conexões online sem rota.
 
 Qualquer divergência, `401/403`, readiness bloqueado, rota inacessível, redirect ou contagem abaixo do mínimo encerra o preflight com código diferente de zero. Corrija a causa e repita a leitura; não desative o gate para prosseguir. O token não é impresso pelo script.
+
+## Operações que ficam indisponíveis para sockets legados
+
+Enquanto uma máquina estiver conectada à API antiga, não rotacione nem revogue sua credencial pela candidata e não altere campos que exigem desconexão, como número de série ou ativação. A API antiga de `origin/develop` não oferece a operação de credencial e não conhece o protocolo de owner/dispatch da candidata. A candidata deve responder `503 machine_owner_unknown` antes de alterar a credencial; alterações de identidade/ativação online devem ser recusadas. Não contorne essas respostas editando diretamente o banco. Faça essas mudanças somente depois que o socket estiver offline ou pertencer a uma versão com rota de desconexão comprovada.
+
+Repetir o cancelamento de uma sessão que já está em `ClosingWithoutSelection` ou fechada retorna `202 Accepted` pela candidata sem encaminhar outro pedido à API antiga. Para chamadas que passam pela candidata, o lock PostgreSQL da máquina também serializa concorrência entre réplicas; o ensaio local com duas candidatas confirmou um único `FECHAR_SESSAO` para quatro requisições simultâneas. Chamadas diretas à API antiga contornam esse lock. Uma falha antes da gravação ou um resultado incerto após timeout ainda exige consultar a sessão pelo ID antes de iniciar outra operação.
+
+Se a API antiga responder `session_already_active`, a candidata retorna a sessão `panel` que continua aberta para o mesmo usuário, preservando o ID original. Para sessão aberta por outro usuário, mantém o conflito sem expor o registro. Isso permite retomar uma sessão que ainda está ativa após perder a resposta inicial; não é um ledger durável para retries depois do fechamento, nem cobre uma corrida simultânea entre chamadas.
+
+Para cancelamentos de sockets legados, todas as chamadas da aplicação devem passar pela candidata durante a sobreposição; mantenha o endereço da API anterior acessível somente pela rota interna usada no relay. A candidata adquire o lock PostgreSQL da máquina e reavalia a sessão antes de encaminhar, mantendo o lock até o resultado do relay (timeout HTTP de 20 segundos). Réplicas candidatas compartilham esse lock; chamadas diretas ao processo antigo contornariam a serialização e não estão cobertas por este controle.
 
 ## Critério para considerar esta etapa validada
 

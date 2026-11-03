@@ -17,6 +17,185 @@ namespace VendingMachines.Api.Tests;
 
 public sealed class LegacyTelemetryRequestRelayTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RepeatedLegacySessionStartReturnsActiveSessionOnlyToItsCreator(bool sessionBelongsToCaller)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa legada" });
+        db.Machines.Add(new Machine
+        {
+            Id = "MACHINE-LEGACY-START",
+            Name = "Máquina legada",
+            SerialNumber = "SERIAL-LEGACY-START",
+            NormalizedSerialNumber = "SERIAL-LEGACY-START",
+            CompanyId = companyId
+        });
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = "MACHINE-LEGACY-START",
+            CompanyId = companyId,
+            IsOnline = true,
+            ConnectionId = "legacy-socket",
+            LastSeenAt = DateTime.UtcNow,
+            OwnerNodeId = null,
+            OwnerConnectionId = null,
+            CommandRoutingVersion = null
+        });
+        db.MachineSessions.Add(new MachineSession
+        {
+            Id = sessionId,
+            MachineId = "MACHINE-LEGACY-START",
+            CompanyId = companyId,
+            StartedByUserId = sessionBelongsToCaller ? userId : Guid.NewGuid(),
+            Source = "panel",
+            State = MachineSessionStates.AwaitingSelection
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new CaptureHttpHandler
+        {
+            StatusCodeToReturn = HttpStatusCode.Conflict,
+            ResponseContent = "{\"code\":\"session_already_active\"}"
+        };
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+        var controller = new TelemetryController(
+            db,
+            orchestrator: null!,
+            connections: null!,
+            panelHub: null!,
+            tickets: null!,
+            mdbStatusRequests: null!,
+            mdbOptions: Options.Create(new MdbStatusOptions()),
+            commandSender: null,
+            scopeFactory: null,
+            legacyTelemetryRelay: relay);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Method = "POST";
+        httpContext.Request.Headers.Authorization = "Bearer original-user-token";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("company_id", companyId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.Role, AppRoles.Admin)
+        ], "test"));
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+
+        var result = await controller.StartSession(
+            "MACHINE-LEGACY-START",
+            new StartSessionRequest(),
+            CancellationToken.None);
+
+        Assert.Equal(1, handler.RequestCount);
+        if (sessionBelongsToCaller)
+        {
+            var created = Assert.IsType<CreatedAtActionResult>(result);
+            Assert.Equal(sessionId, Assert.IsType<MachineSession>(created.Value).Id);
+        }
+        else
+        {
+            var conflict = Assert.IsType<ContentResult>(result);
+            Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+            Assert.Contains("session_already_active", conflict.Content);
+        }
+        Assert.Single(await db.MachineSessions.ToListAsync());
+        Assert.Empty(await db.TelemetryCommands.ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(MachineSessionStates.ClosingWithoutSelection, false)]
+    [InlineData(MachineSessionStates.ClosedWithoutSelection, true)]
+    public async Task RepeatedLegacySessionCancellationReturnsAcceptedWithoutForwardingAgain(
+        string state,
+        bool isClosed)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        db.Companies.Add(new Company { Id = companyId, Name = "Empresa legada" });
+        db.Machines.Add(new Machine
+        {
+            Id = "MACHINE-LEGACY-CANCEL",
+            Name = "Máquina legada",
+            SerialNumber = "SERIAL-LEGACY-CANCEL",
+            NormalizedSerialNumber = "SERIAL-LEGACY-CANCEL",
+            CompanyId = companyId
+        });
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = "MACHINE-LEGACY-CANCEL",
+            CompanyId = companyId,
+            IsOnline = true,
+            ConnectionId = "legacy-socket",
+            LastSeenAt = DateTime.UtcNow,
+            OwnerNodeId = null,
+            OwnerConnectionId = null,
+            CommandRoutingVersion = null
+        });
+        db.MachineSessions.Add(new MachineSession
+        {
+            Id = sessionId,
+            MachineId = "MACHINE-LEGACY-CANCEL",
+            CompanyId = companyId,
+            State = state,
+            ClosedAt = isClosed ? DateTime.UtcNow : null
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new CaptureHttpHandler();
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+        var controller = new TelemetryController(
+            db,
+            orchestrator: null!,
+            connections: null!,
+            panelHub: null!,
+            tickets: null!,
+            mdbStatusRequests: null!,
+            mdbOptions: Options.Create(new MdbStatusOptions()),
+            commandSender: null,
+            scopeFactory: null,
+            legacyTelemetryRelay: relay);
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Method = "POST";
+        httpContext.Request.Headers.Authorization = "Bearer original-user-token";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("company_id", companyId.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.Role, AppRoles.Admin)
+        ], "test"));
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+
+        var result = await controller.CancelSession(
+            sessionId,
+            new CancelSessionRequest { Reason = "user_cancelled" },
+            CancellationToken.None);
+
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        Assert.Equal(StatusCodes.Status202Accepted, accepted.StatusCode);
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Empty(await db.TelemetryCommands.ToListAsync());
+    }
+
     [Fact]
     public async Task ManualCommandForLegacySocketIsForwardedOnceWithOriginalBearerAndRequestId()
     {

@@ -199,7 +199,17 @@ public sealed class TelemetryController : BaseApiController
             $"api/telemetry/machines/{Uri.EscapeDataString(machineId)}/sessions",
             request,
             cancellationToken);
-        if (relayed is not null) return ToRelayActionResult(relayed);
+        if (relayed is not null)
+        {
+            if (IsRelayErrorCode(relayed, "session_already_active"))
+            {
+                var existingSession = await ExistingPanelSessionResultAsync(
+                    machineId, companyId, userId, cancellationToken);
+                if (existingSession is not null) return existingSession;
+            }
+
+            return ToRelayActionResult(relayed);
+        }
         var state = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
             x => x.MachineId == machineId && x.CompanyId == companyId, cancellationToken);
         if (state?.MonitoringEnabled != true) return Conflict(new { code = "monitoring_inactive", message = "Ative o acompanhamento da máquina." });
@@ -310,19 +320,59 @@ public sealed class TelemetryController : BaseApiController
     public async Task<IActionResult> CancelSession(Guid sessionId, [FromBody] CancelSessionRequest request, CancellationToken cancellationToken)
     {
         if (!TryGetIdentity(out var userId, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
-        var sessionMachineId = await _db.MachineSessions.AsNoTracking()
+        var sessionForCancellation = await _db.MachineSessions.AsNoTracking()
             .Where(x => x.Id == sessionId && x.CompanyId == companyId)
-            .Select(x => x.MachineId)
+            .Select(x => new { x.MachineId, x.State, x.ClosedAt })
             .FirstOrDefaultAsync(cancellationToken);
-        if (sessionMachineId is not null)
+        if (sessionForCancellation is not null &&
+            (sessionForCancellation.ClosedAt.HasValue ||
+             sessionForCancellation.State == MachineSessionStates.ClosingWithoutSelection))
         {
+            return Accepted(new { sessionId, state = sessionForCancellation.State });
+        }
+
+        if (sessionForCancellation is not null && _legacyTelemetryRelay?.IsConfigured == true)
+        {
+            await using var operationTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+            if (!await MachineOperationLock.AcquireAsync(
+                    _db,
+                    sessionForCancellation.MachineId,
+                    companyId,
+                    cancellationToken))
+            {
+                return NotFound();
+            }
+
+            sessionForCancellation = await _db.MachineSessions.AsNoTracking()
+                .Where(x => x.Id == sessionId && x.CompanyId == companyId)
+                .Select(x => new { x.MachineId, x.State, x.ClosedAt })
+                .FirstOrDefaultAsync(CancellationToken.None);
+            if (sessionForCancellation is null)
+            {
+                await operationTransaction.CommitAsync(CancellationToken.None);
+                return NotFound();
+            }
+
+            if (sessionForCancellation.ClosedAt.HasValue ||
+                sessionForCancellation.State == MachineSessionStates.ClosingWithoutSelection)
+            {
+                await operationTransaction.CommitAsync(CancellationToken.None);
+                return Accepted(new { sessionId, state = sessionForCancellation.State });
+            }
+
             var relayed = await TryGetLegacyOwnerRelayResultAsync(
-                sessionMachineId,
+                sessionForCancellation.MachineId,
                 companyId,
                 $"api/telemetry/sessions/{sessionId:D}/cancel",
                 request,
-                cancellationToken);
-            if (relayed is not null) return ToRelayActionResult(relayed);
+                CancellationToken.None);
+            if (relayed is not null)
+            {
+                await operationTransaction.CommitAsync(CancellationToken.None);
+                return ToRelayActionResult(relayed);
+            }
+
+            await operationTransaction.CommitAsync(CancellationToken.None);
         }
         try
         {
@@ -610,6 +660,38 @@ public sealed class TelemetryController : BaseApiController
             relativePath,
             requestBody,
             cancellationToken);
+    }
+
+    private async Task<IActionResult?> ExistingPanelSessionResultAsync(
+        string machineId,
+        Guid companyId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var session = await _db.MachineSessions.AsNoTracking()
+            .Where(x => x.MachineId == machineId && x.CompanyId == companyId &&
+                        x.StartedByUserId == userId && x.Source == "panel" && x.ClosedAt == null)
+            .OrderByDescending(x => x.StartedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        return session is null
+            ? null
+            : CreatedAtAction(nameof(GetSession), new { sessionId = session.Id }, session);
+    }
+
+    private static bool IsRelayErrorCode(LegacyTelemetryRelayResult result, string expectedCode)
+    {
+        if (result.StatusCode != StatusCodes.Status409Conflict) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(result.Content);
+            return document.RootElement.TryGetProperty("code", out var code) &&
+                   code.ValueKind == JsonValueKind.String &&
+                   string.Equals(code.GetString(), expectedCode, StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static IActionResult ToRelayActionResult(LegacyTelemetryRelayResult result) => new ContentResult

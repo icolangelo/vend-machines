@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
@@ -435,11 +436,13 @@ def main() -> int:
         "postgres": f"vendmachines-rollback-pg-{uid}",
         "api": f"vendmachines-rollback-api-{uid}",
         "candidate_api": f"vendmachines-candidate-api-{uid}",
+        "candidate_api_secondary": f"vendmachines-candidate-api-secondary-{uid}",
         "simulator": f"vendmachines-overlap-simulator-{uid}",
         "image": f"vendmachines-rollback-rehearsal:{uid}",
     }
     password = f"local-rollback-{uid}-Only"
-    network_created = postgres_created = api_created = candidate_api_created = simulator_created = image_built = worktree_added = False
+    network_created = postgres_created = api_created = candidate_api_created = False
+    candidate_api_secondary_created = simulator_created = image_built = worktree_added = False
     preserve_failed_resources = False
     worktree: Path | None = None
     temp_context: tempfile.TemporaryDirectory[str] | None = None
@@ -771,6 +774,40 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 _, candidate_logs = attempt("docker", "logs", "--tail", "100", names["candidate_api"])
                 raise RehearsalError(f"A candidata não ficou saudável na sobreposição: {candidate_logs[-3500:]}")
 
+            secondary_candidate_command = [
+                "docker", "run", "--detach", "--network", names["network"],
+                "--network-alias", "candidate-api-secondary", "--name", names["candidate_api_secondary"],
+            ]
+            for value in runtime:
+                secondary_candidate_command.extend(("--env", value))
+            secondary_candidate_command.append(args.candidate_image)
+            run(*secondary_candidate_command)
+            candidate_api_secondary_created = True
+
+            secondary_candidate_healthy = False
+            for _ in range(args.startup_timeout_seconds):
+                probe_code, _ = attempt(
+                    "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                    "http://candidate-api-secondary:8080/health",
+                )
+                if probe_code == 0:
+                    secondary_candidate_healthy = True
+                    break
+                inspect_code, candidate_state = attempt(
+                    "docker", "inspect", "--format", "{{.State.Status}}", names["candidate_api_secondary"],
+                )
+                if inspect_code != 0 or candidate_state.strip().lower() in {"exited", "dead", "removing"}:
+                    _, candidate_logs = attempt("docker", "logs", names["candidate_api_secondary"])
+                    raise RehearsalError(
+                        f"A segunda candidata falhou ao iniciar sobre o schema compartilhado: {candidate_logs[-3500:]}"
+                    )
+                time.sleep(1)
+            if not secondary_candidate_healthy:
+                _, candidate_logs = attempt("docker", "logs", "--tail", "100", names["candidate_api_secondary"])
+                raise RehearsalError(
+                    f"A segunda candidata não ficou saudável na sobreposição: {candidate_logs[-3500:]}"
+                )
+
             readiness_code, readiness_body = attempt(
                 "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
                 "http://candidate-api:8080/health/deploy-ready",
@@ -820,6 +857,39 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 raise RehearsalError(f"Relay de início de sessão retornou resposta inválida: {start_response[-1800:]}") from exc
             print("candidate_legacy_session_start=accepted")
 
+            duplicate_start_code, duplicate_start_response = attempt(
+                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                authorization_header,
+                "--header=Content-Type: application/json",
+                "--post-data={}",
+                f"http://candidate-api:8080/api/telemetry/machines/{machine_id}/sessions",
+            )
+            active_session_count = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT COUNT(*) FROM "MachineSessions" WHERE "MachineId"='{machine_id}' AND "ClosedAt" IS NULL;''',
+            )
+            open_command_count = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT COUNT(*) FROM "TelemetryCommands" WHERE "SessionId"='{relayed_session_id}'::uuid AND "Command"='ABRIR_SESSAO';''',
+            )
+            try:
+                duplicate_start_payload = json.loads(duplicate_start_response)
+            except json.JSONDecodeError as exc:
+                raise RehearsalError(
+                    "O retry do início de sessão não retornou a sessão existente em JSON válido: "
+                    f"{duplicate_start_response[-1200:]}"
+                ) from exc
+            if duplicate_start_code != 0 or duplicate_start_payload.get("id") != relayed_session_id or \
+                active_session_count != "1" or open_command_count != "1":
+                raise RehearsalError(
+                    "O retry do início de sessão deveria retornar o ID original sem criar sessão ou comando duplicado; "
+                    f"http_exit={duplicate_start_code}, returned_id={duplicate_start_payload.get('id')}, "
+                    f"active_sessions={active_session_count}, "
+                    f"open_commands={open_command_count}, response={duplicate_start_response[-1200:]}"
+                )
+            print("candidate_legacy_duplicate_session_start_reused_original=yes")
+            print("candidate_legacy_duplicate_session_start_no_second_command=yes")
+
             mdb_code, mdb_response = attempt(
                 "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
                 authorization_header,
@@ -839,24 +909,65 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 raise RehearsalError(f"Resposta MDB não confirmou correlação da consulta: {mdb_response[-1800:]}")
             print("candidate_legacy_mdb_status=correlated")
 
-            cancel_code, cancel_response = attempt(
-                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
-                authorization_header,
-                "--header=Content-Type: application/json",
-                "--post-data={\"reason\":\"local_overlap_test\"}",
-                f"http://candidate-api:8080/api/telemetry/sessions/{relayed_session_id}/cancel",
+            cancel_delay_trigger = (
+                "CREATE OR REPLACE FUNCTION local_delay_legacy_session_close() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
+                f"IF NEW.\"Id\"='{relayed_session_id}'::uuid AND NEW.\"State\"='ClosingWithoutSelection' "
+                "THEN PERFORM pg_sleep(1); END IF; RETURN NEW; END; $$; "
+                "CREATE TRIGGER local_delay_legacy_session_close BEFORE UPDATE OF \"State\" ON \"MachineSessions\" "
+                "FOR EACH ROW EXECUTE FUNCTION local_delay_legacy_session_close();"
             )
-            if cancel_code != 0:
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c", cancel_delay_trigger,
+            )
+            cancel_request_commands = []
+            for candidate_host in ("candidate-api", "candidate-api-secondary"):
+                for _ in range(2):
+                    cancel_request_commands.append((
+                        "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                        authorization_header,
+                        "--header=Content-Type: application/json",
+                        "--post-data={\"reason\":\"local_overlap_concurrent_cancel\"}",
+                        f"http://{candidate_host}:8080/api/telemetry/sessions/{relayed_session_id}/cancel",
+                    ))
+            with ThreadPoolExecutor(max_workers=len(cancel_request_commands)) as executor:
+                cancel_results = list(executor.map(lambda command: attempt(*command), cancel_request_commands))
+
+            for cancel_index, (cancel_code, cancel_response) in enumerate(cancel_results, start=1):
+                if cancel_code != 0:
+                    raise RehearsalError(
+                        f"Cancelamento concorrente {cancel_index} falhou; "
+                        f"exit={cancel_code}, body={cancel_response[-1800:]}"
+                    )
+                try:
+                    cancel_payload = json.loads(cancel_response)
+                except json.JSONDecodeError as exc:
+                    raise RehearsalError(
+                        f"Cancelamento concorrente {cancel_index} retornou JSON inválido: {cancel_response[-1800:]}"
+                    ) from exc
+                if cancel_payload.get("sessionId") != relayed_session_id:
+                    raise RehearsalError(
+                        f"Cancelamento concorrente {cancel_index} retornou outra sessão: {cancel_response[-1800:]}"
+                    )
+
+            close_command_count = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT COUNT(*) FROM "TelemetryCommands" WHERE "SessionId"='{relayed_session_id}'::uuid AND "Command"='FECHAR_SESSAO';''',
+            )
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c",
+                "DROP TRIGGER local_delay_legacy_session_close ON \"MachineSessions\"; "
+                "DROP FUNCTION local_delay_legacy_session_close();",
+            )
+            if close_command_count != "1":
                 raise RehearsalError(
-                    "A candidata não encaminhou o cancelamento de sessão ao owner legado; "
-                    f"exit={cancel_code}, body={cancel_response[-1800:]}"
+                    "Os cancelamentos concorrentes precisam produzir um único comando físico; "
+                    f"FECHAR_SESSAO={close_command_count}"
                 )
-            try:
-                cancel_payload = json.loads(cancel_response)
-            except json.JSONDecodeError as exc:
-                raise RehearsalError(f"Relay de cancelamento retornou resposta inválida: {cancel_response[-1800:]}") from exc
-            if cancel_payload.get("sessionId") != relayed_session_id:
-                raise RehearsalError(f"Resposta de cancelamento não corresponde à sessão encaminhada: {cancel_response[-1800:]}")
+            print("candidate_concurrent_legacy_cancel_single_close_command=yes")
+
             closed_session_state = ""
             closed_session_query = (
                 f'''SELECT "State" || '|' || CASE WHEN "ClosedAt" IS NULL THEN 'open' ELSE 'closed' END '''
@@ -873,6 +984,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     f"session={closed_session_state}"
                 )
             print("candidate_legacy_session_cancel=physically_closed")
+            run("docker", "kill", names["candidate_api_secondary"])
 
             legacy_payment_id = str(int(uid[:8], 16))
             legacy_transaction_id = str(uuid.uuid4())
@@ -1248,6 +1360,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
         if not preserve_failed_resources:
             for key, created in (
                 ("simulator", simulator_created),
+                ("candidate_api_secondary", candidate_api_secondary_created),
                 ("candidate_api", candidate_api_created),
                 ("api", api_created),
                 ("postgres", postgres_created),
