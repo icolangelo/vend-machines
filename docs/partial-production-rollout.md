@@ -29,6 +29,12 @@ O verificador consulta `/health`, `/health/ready`, `/health/deploy-ready`, `/api
 
 Qualquer divergência, `401/403`, readiness bloqueado, rota inacessível, redirect ou contagem abaixo do mínimo encerra o preflight com código diferente de zero. Corrija a causa e repita a leitura; não desative o gate para prosseguir. O token não é impresso pelo script.
 
+## Imagem imutável da candidata
+
+O workflow de verificação constrói e testa a imagem backend sem publicá-la em um registry nem iniciar um serviço. Somente depois dos gates de sobreposição e release, ele anexa `candidate-backend-image-<SHA>` à execução aprovada. O pacote contém `backend-image.tar.gz`, `image-ref.txt`, `image-id.txt`, `platform.txt`, `source-sha.txt`, `README.txt` e `SHA256SUMS`.
+
+Use o artefato apenas de uma execução concluída com sucesso. Confirme que `source-sha.txt` é o SHA completo esperado, que a plataforma declarada é compatível com o host candidato e que `sha256sum -c SHA256SUMS` passa antes de carregar a imagem. Carregar o arquivo somente importa a imagem ao daemon local; não inicia container nem altera o roteamento. Mantenha credenciais e demais configurações exclusivamente no runtime isolado da candidata. O artefato expira conforme a retenção configurada no workflow; gere uma nova execução aprovada se o SHA ou o checksum não corresponder.
+
 ## Operações que ficam indisponíveis para sockets legados
 
 Enquanto uma máquina estiver conectada à API antiga, não rotacione nem revogue sua credencial pela candidata e não altere campos que exigem desconexão, como número de série ou ativação. A API antiga de `origin/develop` não oferece a operação de credencial e não conhece o protocolo de owner/dispatch da candidata. A candidata deve responder `503 machine_owner_unknown` antes de alterar a credencial; alterações de identidade/ativação online devem ser recusadas. Não contorne essas respostas editando diretamente o banco. Faça essas mudanças somente depois que o socket estiver offline ou pertencer a uma versão com rota de desconexão comprovada.

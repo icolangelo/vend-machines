@@ -223,6 +223,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Export verified backend image artifact
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image_ref="vend-machines-backend:${SOURCE_SHA}"
+          output_directory="artifacts/backend-image"
+          mkdir -p "$output_directory"
+          docker tag vend-machines-backend:verify "$image_ref"
+          docker image inspect --format '{{.Id}}' "$image_ref" > "$output_directory/image-id.txt"
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_ref" > "$output_directory/platform.txt"
+          printf '%s\n' "$SOURCE_SHA" > "$output_directory/source-sha.txt"
+          printf '%s\n' "$image_ref" > "$output_directory/image-ref.txt"
+          printf '%s\n' \
+            'Este artefato contém somente a imagem backend verificada. Ele não inicia container nem altera serviço.' \
+            'A configuração, os segredos e os dados de runtime não são incluídos; injete-os somente no ambiente isolado da candidata.' \
+            > "$output_directory/README.txt"
+          docker save "$image_ref" | gzip --no-name -1 > "$output_directory/backend-image.tar.gz"
+          gzip -t "$output_directory/backend-image.tar.gz"
+          (
+            cd "$output_directory"
+            sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload verified backend image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-backend-image-${{ github.sha }}
+          path: artifacts/backend-image/
+          if-no-files-found: error
+          retention-days: 14
+
   frontend-checks:
     name: Frontend types, lint, tests and build
     runs-on: ubuntu-latest
