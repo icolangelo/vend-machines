@@ -486,9 +486,15 @@ def main() -> int:
         )
         postgres_created = True
 
+        # The official PostgreSQL image starts a temporary socket-only server
+        # while initializing the data directory. Requiring TCP readiness avoids
+        # accepting that bootstrap server just before it shuts down.
         ready = False
         for _ in range(60):
-            code, _ = attempt("docker", "exec", names["postgres"], "pg_isready", "-U", "postgres", "-d", "postgres")
+            code, _ = attempt(
+                "docker", "exec", names["postgres"], "pg_isready",
+                "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres",
+            )
             if code == 0:
                 ready = True
                 break

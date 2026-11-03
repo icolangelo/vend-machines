@@ -292,6 +292,7 @@ require_contains "$temporary_dir/build-job" './tools/Database/Test-BackendImageP
 require_contains "$temporary_dir/build-job" 'name: Verify previous API overlap while a legacy MDB socket stays connected'
 require_contains "$temporary_dir/build-job" 'Test-PreviousBackendRollbackCompatibility.py'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'overlap_socket_preserved=yes'
+require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" '"-h", "127.0.0.1"'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_readiness=Ready_with_healthy_legacy_owner_relay'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_command_relay=acknowledged'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'legacy_socket_survives_candidate_stop=yes'
