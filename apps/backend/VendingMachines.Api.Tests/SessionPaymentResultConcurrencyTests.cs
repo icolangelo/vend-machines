@@ -700,13 +700,14 @@ public sealed class SessionPaymentResultConcurrencyTests
         private readonly TaskCompletionSource _bothRequestsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _reads;
 
-        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
             DbCommand command,
-            CommandEventData eventData,
-            InterceptionResult<DbDataReader> result,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
             CancellationToken cancellationToken = default)
         {
             if (command.CommandText.Contains("FROM \"MachineSessions\"", StringComparison.Ordinal) &&
+                command.CommandText.Contains("\"ClosedAt\" IS NULL", StringComparison.Ordinal) &&
                 Interlocked.Increment(ref _reads) <= 2)
             {
                 if (Volatile.Read(ref _reads) == 2)

@@ -305,9 +305,25 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         session ??= await ActiveSessions().Include(x => x.Machine).Include(x => x.Transaction)
             .FirstOrDefaultAsync(x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId, cancellationToken);
 
+        // A resposta de entrega pode chegar enquanto end_session fecha a sessão.
+        // Se a primeira busca de sessões encerradas ocorreu antes do commit e a
+        // consulta de sessões ativas ocorreu depois, repita a correlação agora.
+        if (deliverySuccessWithoutTransaction && session == null && recentClosedDeliverySessions.Count == 0)
+        {
+            recentClosedDeliverySessions = await FindRecentClosedDeliverySessionsAsync(message, cancellationToken);
+        }
+
         if (deliverySuccessWithoutTransaction && recentClosedDeliverySessions.Count > 0)
         {
-            if (session != null || recentClosedDeliverySessions.Count > 1)
+            var hasActiveSession = session != null;
+            if (!hasActiveSession)
+            {
+                hasActiveSession = await ActiveSessions().AnyAsync(
+                    x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId,
+                    cancellationToken);
+            }
+
+            if (hasActiveSession || recentClosedDeliverySessions.Count > 1)
             {
                 await AddStandaloneEventAsync(
                     message,
@@ -461,7 +477,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         return await _db.MachineSessions.Include(x => x.Transaction)
             .Where(x => x.MachineId == message.MachineId &&
                         x.CompanyId == message.CompanyId &&
-                        x.ClosedAt != null && x.ClosedAt >= lowerBound && x.ClosedAt <= message.ReceivedAt &&
+                        x.ClosedAt != null && x.ClosedAt >= lowerBound &&
                         x.TransactionId != null &&
                         x.ItemNumber != null)
             .OrderByDescending(x => x.ClosedAt)
