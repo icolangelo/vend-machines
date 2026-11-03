@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import math
 import os
@@ -13,8 +14,9 @@ import sys
 import time
 from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from uuid import UUID
 
 
 class RejectRedirects(HTTPRedirectHandler):
@@ -157,6 +159,53 @@ def check_clock_skew(payload: dict, maximum_skew_seconds: float) -> float:
     return skew_seconds
 
 
+def read_legacy_connection_snapshot(opener, base_url: str, token: str, timeout: float) -> tuple[int, str, dict]:
+    endpoint = f"{base_url}/api/admin/legacy-machine-connections"
+    page_size = 200
+    first = read_json(opener, f"{endpoint}?{urlencode({'page': 1, 'pageSize': page_size})}", token, timeout)
+    total_items = first.get("totalItems")
+    total_pages = first.get("totalPages")
+    relay = first.get("relay")
+    if (
+        type(total_items) is not int
+        or total_items < 0
+        or type(total_pages) is not int
+        or total_pages < 1
+        or not isinstance(relay, dict)
+    ):
+        raise PreflightError(f"{endpoint}: formato inesperado.")
+    expected_pages = max(1, math.ceil(total_items / page_size))
+    if total_pages != expected_pages:
+        raise PreflightError(f"{endpoint}: paginação inconsistente.")
+
+    machine_ids: list[str] = []
+    for page_number in range(1, total_pages + 1):
+        page = first if page_number == 1 else read_json(
+            opener,
+            f"{endpoint}?{urlencode({'page': page_number, 'pageSize': page_size})}",
+            token,
+            timeout,
+        )
+        if page.get("totalItems") != total_items or page.get("totalPages") != total_pages:
+            raise PreflightError(f"{endpoint}: a contagem mudou durante a leitura paginada.")
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise PreflightError(f"{endpoint}: lista de conexões ausente.")
+        for item in items:
+            machine_id = item.get("machineId") if isinstance(item, dict) else None
+            if not isinstance(machine_id, str):
+                raise PreflightError(f"{endpoint}: identificador de máquina ausente.")
+            try:
+                machine_ids.append(str(UUID(machine_id)))
+            except ValueError:
+                raise PreflightError(f"{endpoint}: identificador de máquina inválido.") from None
+
+    if len(machine_ids) != total_items or len(set(machine_ids)) != total_items:
+        raise PreflightError(f"{endpoint}: IDs ausentes ou duplicados na lista de conexões.")
+    fingerprint = hashlib.sha256("\n".join(sorted(machine_ids)).encode("ascii")).hexdigest()
+    return total_items, fingerprint, relay
+
+
 def validate_snapshot(
     opener,
     base_url: str,
@@ -165,7 +214,7 @@ def validate_snapshot(
     expected_commit: str,
     minimum_connections: int,
     maximum_clock_skew_seconds: float,
-) -> tuple[int, float]:
+) -> tuple[int, float, str]:
     live = read_json(opener, f"{base_url}/health", None, timeout)
     require_status(live, "/health", "Healthy")
     clock_skew_seconds = check_clock_skew(live, maximum_clock_skew_seconds)
@@ -176,16 +225,9 @@ def validate_snapshot(
     require_status(deploy_ready, "/health/deploy-ready", "Ready")
     check_commit(deploy_ready, "/health/deploy-ready", expected_commit)
 
-    legacy = read_json(
-        opener,
-        f"{base_url}/api/admin/legacy-machine-connections",
-        token,
-        timeout,
+    legacy_count, machine_fingerprint, relay = read_legacy_connection_snapshot(
+        opener, base_url, token, timeout
     )
-    legacy_count = legacy.get("totalItems")
-    relay = legacy.get("relay")
-    if type(legacy_count) is not int or not isinstance(relay, dict):
-        raise PreflightError("/api/admin/legacy-machine-connections: formato inesperado.")
     if legacy_count < minimum_connections:
         raise PreflightError(
             f"Foram observadas {legacy_count} conexões legadas; mínimo exigido: "
@@ -211,7 +253,7 @@ def validate_snapshot(
     if readiness_gate.get("unroutable") != 0:
         raise PreflightError("A candidata reporta conexões online sem rota compatível.")
 
-    return legacy_count, clock_skew_seconds
+    return legacy_count, clock_skew_seconds, machine_fingerprint
 
 
 def main() -> int:
@@ -256,8 +298,9 @@ def main() -> int:
         deadline = time.monotonic() + args.observation_seconds
         sample_count = 0
         legacy_count = 0
+        baseline_machine_fingerprint = None
         while True:
-            legacy_count, clock_skew_seconds = validate_snapshot(
+            legacy_count, clock_skew_seconds, machine_fingerprint = validate_snapshot(
                 opener,
                 base_url,
                 token,
@@ -266,6 +309,13 @@ def main() -> int:
                 args.minimum_legacy_connections,
                 args.maximum_clock_skew_seconds,
             )
+            if baseline_machine_fingerprint is None:
+                baseline_machine_fingerprint = machine_fingerprint
+            elif machine_fingerprint != baseline_machine_fingerprint:
+                raise PreflightError(
+                    "O conjunto de máquinas legadas mudou durante a janela de observação; "
+                    "uma conexão pode ter caído ou sido substituída."
+                )
             sample_count += 1
             observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
             print(
@@ -281,6 +331,7 @@ def main() -> int:
         print("overlap_runtime_preflight=passed")
         print(f"candidate_commit={args.expected_commit}")
         print(f"legacy_connections_preserved={legacy_count}")
+        print(f"legacy_machine_set_sha256={baseline_machine_fingerprint}")
         print(f"observation_samples={sample_count}")
         print(f"observation_seconds={args.observation_seconds:g}")
         print("legacy_owner_relay=healthy")

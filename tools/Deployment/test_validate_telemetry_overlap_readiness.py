@@ -5,6 +5,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from threading import Thread
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 import unittest
 
 
@@ -18,6 +20,9 @@ class Handler(BaseHTTPRequestHandler):
     legacy_count_sequence = None
     legacy_reads = 0
     current_legacy_count = 2
+    legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
+    legacy_machine_id_sequence = None
+    current_legacy_machine_ids = legacy_machine_ids
     redirect_health = False
     followed_redirect = False
     source_commit = COMMIT
@@ -54,16 +59,31 @@ class Handler(BaseHTTPRequestHandler):
             }
         elif self.path in {"/health/ready", "/health/deploy-ready"}:
             payload = {"status": "Ready", "sourceCommit": type(self).source_commit}
-        elif self.path == "/api/admin/legacy-machine-connections":
+        elif urlsplit(self.path).path == "/api/admin/legacy-machine-connections":
+            query = parse_qs(urlsplit(self.path).query)
+            page = int(query.get("page", ["1"])[0])
+            page_size = int(query.get("pageSize", ["50"])[0])
             sequence = type(self).legacy_count_sequence
-            if sequence:
+            id_sequence = type(self).legacy_machine_id_sequence
+            if page == 1 and id_sequence:
+                index = min(type(self).legacy_reads, len(id_sequence) - 1)
+                type(self).current_legacy_machine_ids = id_sequence[index]
+                type(self).current_legacy_count = len(type(self).current_legacy_machine_ids)
+                type(self).legacy_reads += 1
+            elif page == 1 and sequence:
                 index = min(type(self).legacy_reads, len(sequence) - 1)
                 type(self).current_legacy_count = sequence[index]
+                type(self).current_legacy_machine_ids = type(self).legacy_machine_ids[:type(self).current_legacy_count]
                 type(self).legacy_reads += 1
-            else:
+            elif page == 1:
                 type(self).current_legacy_count = type(self).legacy_count
+                type(self).current_legacy_machine_ids = type(self).legacy_machine_ids[:type(self).current_legacy_count]
+            start = (page - 1) * page_size
+            current_ids = type(self).current_legacy_machine_ids
             payload = {
                 "totalItems": type(self).current_legacy_count,
+                "totalPages": max(1, (type(self).current_legacy_count + page_size - 1) // page_size),
+                "items": [{"machineId": machine_id} for machine_id in current_ids[start:start + page_size]],
                 "relay": {"configured": True, "healthy": True},
             }
         elif self.path == "/api/admin/worker-health":
@@ -110,6 +130,9 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         Handler.legacy_count_sequence = None
         Handler.legacy_reads = 0
         Handler.current_legacy_count = 2
+        Handler.legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
+        Handler.legacy_machine_id_sequence = None
+        Handler.current_legacy_machine_ids = Handler.legacy_machine_ids
         Handler.redirect_health = False
         Handler.followed_redirect = False
         Handler.source_commit = COMMIT
@@ -144,7 +167,36 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("overlap_runtime_preflight=passed", result.stdout)
         self.assertIn("legacy_connections_preserved=2", result.stdout)
+        self.assertRegex(result.stdout, r"legacy_machine_set_sha256=[a-f0-9]{64}")
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_blocks_when_machine_set_changes_without_connection_count_drop(self):
+        Handler.legacy_machine_id_sequence = [
+            [str(UUID(int=1)), str(UUID(int=2))],
+            [str(UUID(int=1)), str(UUID(int=3))],
+        ]
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.5",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("conjunto de máquinas legadas mudou", result.stderr)
+        self.assertNotIn(str(UUID(int=1)), result.stdout + result.stderr)
+
+    def test_reads_all_pages_and_fingerprints_complete_machine_set(self):
+        Handler.legacy_machine_ids = [str(UUID(int=index + 1)) for index in range(205)]
+        Handler.legacy_count = len(Handler.legacy_machine_ids)
+        Handler.current_legacy_machine_ids = Handler.legacy_machine_ids
+        Handler.current_legacy_count = len(Handler.legacy_machine_ids)
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("legacy_connections_preserved=205", result.stdout)
 
     def test_blocks_when_local_clock_is_out_of_sync_with_api(self):
         Handler.health_clock_offset_seconds = 120
