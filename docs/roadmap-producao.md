@@ -2817,3 +2817,7 @@ Removi o padrão permissivo de uma conexão em `Validate-TelemetryOverlapReadine
 ### Leitura pública da API de produção para preflight (03/11/2026)
 
 Consultei somente os endpoints HTTP públicos, sem autenticação nem comandos: em duas amostras separadas por três segundos, `/health` retornou `200 Healthy`, enquanto `/health/ready` e `/health/deploy-ready` retornaram `404`. Isso confirma liveness naquele momento, mas não permite verificar banco, SHA candidata, conexões preservadas ou readiness de publicação. O preflight de sobreposição não pode ser aprovado nesse endereço enquanto essas rotas não estiverem disponíveis na candidata; não alterei servidor, configuração ou máquinas.
+
+### Correspondência do bootstrap com a resposta pública atual (03/11/2026)
+
+A consulta GET pública à raiz respondeu `200 {"app":"Vending Machines API","status":"Online"}` e `/health` respondeu `200 Healthy`; em duas amostras, `/health/ready` e `/health/deploy-ready` responderam `404`. O simulador local do fluxo de publicação passou e cobre esse padrão de API antiga: bootstrap explicitamente confirmado, raiz/liveness obrigatórias, as duas rotas antigas ausentes e exigência de que a candidata as instale após a troca; bootstrap parcial ou rotas ainda ausentes bloqueiam a troca/conclusão. Essa correspondência permite considerar somente o gate de bootstrap compatível com a resposta pública observada. Não confirma configuração, backup, segredos, dados, conexões MDB ou continuidade real, e nenhuma publicação foi iniciada.
