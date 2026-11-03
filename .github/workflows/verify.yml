@@ -179,6 +179,10 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
+      - name: Install dependencies
+        working-directory: apps/frontend
+        run: npm ci
+
       - name: Verify frontend API contract
         run: |
           node tools/Deployment/CheckFrontendApiContract.mjs
@@ -195,11 +199,6 @@ jobs:
             backend_ref="$(git rev-parse "${GITHUB_SHA}^")"
           fi
           node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
-
-      - name: Install dependencies
-        if: steps.frontend-target.outputs.changed == 'true'
-        working-directory: apps/frontend
-        run: npm ci
 
       - name: Audit dependencies
         if: steps.frontend-target.outputs.changed == 'true'
