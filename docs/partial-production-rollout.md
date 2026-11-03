@@ -42,6 +42,24 @@ O workflow de verificação constrói e testa a imagem backend sem publicá-la e
 
 Use os dois artefatos da mesma execução concluída com sucesso. Antes de revisar ou aplicar qualquer SQL, rode `python3 ./verify-candidate-artifact-pair.py --image-artifact-dir '<diretório da imagem>' --release-package-dir '<diretório do pacote operacional>' --expected-source-sha '<SHA Git completo>'`. O verificador valida os manifests/checksums dos dois pacotes, confirma a igualdade do SHA completo e rejeita arquivos extras na imagem, caminhos inesperados, checksums inválidos e divergência entre os pacotes. Em Windows com Docker, `Verify-BackendImageArtifact.ps1` também confere a plataforma antes de carregar a imagem. No host Linux Docker, o launcher repete a comparação dos artefatos antes de `docker load`, confere o ID da imagem carregada e exige rede/runtime privados. O arquivo de runtime precisa ficar fora do repositório, dos diretórios dos artefatos e do pacote operacional, legível somente pelo operador (`chmod 600`). O launcher inicia um container com nome exclusivo, sem restart automático, publica apenas em `127.0.0.1:<porta>:8080` e espera até três minutos pelo health check. Não altera rota pública, não remove containers existentes e não aplica migrations. Antes de usá-lo, conclua o ensaio SQL isolado, obtenha backup restaurável, rode o preflight SQL e aplique apenas as migrations aprovadas do mesmo SHA; a API recusa iniciar com migrations pendentes. A origem legada precisa apontar diretamente ao processo antigo pela rede privada. Após o health check, execute o preflight administrativo somente leitura contra o SHA completo antes de encaminhar tráfego.
 
+Antes de extrair, compare o SHA-256 de **cada arquivo ZIP** com o `digest` exibido nos metadados dos artefatos da execução GitHub Actions aprovada. Confirme também que os dois artefatos vieram da mesma execução e têm o SHA completo esperado no nome. O digest deve ser obtido dos metadados do GitHub, separadamente do arquivo baixado; os manifests internos não substituem essa verificação externa.
+
+No Linux:
+
+```bash
+printf '%s  %s\n' '<digest SHA-256 do GitHub sem o prefixo sha256:>' '<arquivo.zip>' | sha256sum --check --strict
+```
+
+No PowerShell:
+
+```powershell
+$ExpectedArtifactSha256 = '<digest SHA-256 do GitHub sem o prefixo sha256:>'
+$ActualArtifactSha256 = (Get-FileHash -LiteralPath '<arquivo.zip>' -Algorithm SHA256).Hash
+if ($ActualArtifactSha256 -ne $ExpectedArtifactSha256) { throw 'Digest do ZIP diverge dos metadados do GitHub.' }
+```
+
+Se qualquer digest divergir, o artefato estiver expirado, ou os nomes/execuções/SHA não coincidirem, não extraia nem use os arquivos; obtenha o par novamente ou gere uma execução aprovada para o SHA revisado. Extraia cada ZIP em diretório vazio separado e então execute o verificador de pareamento.
+
 Com backup, migrations e preflight SQL aprovados, execute no host Linux e numa rede Docker que alcance a API antiga. O comando não contém segredos; o runtime é lido do arquivo privado:
 
 ```bash
