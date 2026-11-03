@@ -18,11 +18,11 @@ python ./Validate-TelemetryOverlapReadiness.py `
   --api-base-url 'http://candidate-api:8080' `
   --expected-commit '<sha da candidata>' `
   --minimum-legacy-connections '<quantidade esperada de sockets legados>' `
-  --observation-seconds '<janela maior que um intervalo normal de ping>' `
+  --observation-seconds 120 `
   --sample-interval-seconds 15
 ```
 
-Com `--observation-seconds` maior que zero, o script repete todas as consultas de readiness, relay e conexões até o fim da janela e falha na primeira amostra abaixo do mínimo informado. Zero mantém uma única amostra. Use uma janela que cubra mais de um intervalo normal de ping das máquinas; cada amostra é somente leitura e registra o SHA e a quantidade observada, sem emitir comandos MDB ou criar sessões.
+Com `--observation-seconds` maior que zero, o script repete todas as consultas de readiness, relay e conexões até o fim da janela e falha na primeira amostra abaixo do mínimo informado. Zero mantém uma única amostra. A janela indicada de 120 segundos cobre a expiração de presença da API (90 segundos) e a persistência do `LastSeenAt` (até 60 segundos); aumente-a caso o intervalo normal de ping do firmware seja maior. Cada amostra é somente leitura e registra SHA, horário UTC e quantidade observada, sem emitir comandos MDB ou criar sessões.
 
 O verificador consulta `/health`, `/health/ready`, `/health/deploy-ready`, `/api/admin/legacy-machine-connections` e `/api/admin/worker-health`. Não segue redirects. Só retorna sucesso quando:
 

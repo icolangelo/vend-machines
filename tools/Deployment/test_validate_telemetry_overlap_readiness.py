@@ -140,6 +140,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("observation_samples=1\n", result.stdout)
         self.assertIn("observation_seconds=0.3", result.stdout)
+        self.assertRegex(result.stdout, r"observed_at_utc=\d{4}-\d{2}-\d{2}T[^ ]+Z")
 
     def test_blocks_when_legacy_connections_drop_during_observation(self):
         Handler.legacy_count_sequence = [2, 1]
@@ -158,7 +159,19 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         result = self.run_preflight("--observation-seconds", "-1")
 
         self.assertEqual(result.returncode, 2)
-        self.assertIn("não pode ser negativo", result.stderr)
+        self.assertIn("finito e não negativo", result.stderr)
+
+    def test_rejects_non_finite_observation_and_request_timeouts(self):
+        for option, value in (
+            ("--observation-seconds", "nan"),
+            ("--sample-interval-seconds", "inf"),
+            ("--timeout-seconds", "nan"),
+        ):
+            with self.subTest(option=option, value=value):
+                result = self.run_preflight(option, value)
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("finito", result.stderr)
 
     def test_blocks_when_no_legacy_machine_connection_is_observed(self):
         Handler.legacy_count = 0

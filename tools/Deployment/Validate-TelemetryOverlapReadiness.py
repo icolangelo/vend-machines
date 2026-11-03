@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import math
 import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -181,14 +183,14 @@ def main() -> int:
     if args.minimum_legacy_connections < 1:
         print("ERRO: --minimum-legacy-connections deve ser pelo menos 1 neste preflight.", file=sys.stderr)
         return 2
-    if args.timeout_seconds <= 0:
-        print("ERRO: --timeout-seconds deve ser positivo.", file=sys.stderr)
+    if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+        print("ERRO: --timeout-seconds deve ser positivo e finito.", file=sys.stderr)
         return 2
-    if args.observation_seconds < 0:
-        print("ERRO: --observation-seconds não pode ser negativo.", file=sys.stderr)
+    if not math.isfinite(args.observation_seconds) or args.observation_seconds < 0:
+        print("ERRO: --observation-seconds deve ser finito e não negativo.", file=sys.stderr)
         return 2
-    if args.sample_interval_seconds <= 0:
-        print("ERRO: --sample-interval-seconds deve ser positivo.", file=sys.stderr)
+    if not math.isfinite(args.sample_interval_seconds) or args.sample_interval_seconds <= 0:
+        print("ERRO: --sample-interval-seconds deve ser positivo e finito.", file=sys.stderr)
         return 2
     if re.fullmatch(r"[0-9a-fA-F]{40}", args.expected_commit) is None:
         print("ERRO: --expected-commit deve ser um SHA Git completo de 40 caracteres hexadecimais.", file=sys.stderr)
@@ -225,7 +227,11 @@ def main() -> int:
                 args.minimum_legacy_connections,
             )
             sample_count += 1
-            print(f"observation_sample={sample_count} legacy_connections={legacy_count}")
+            observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            print(
+                f"observation_sample={sample_count} observed_at_utc={observed_at} "
+                f"legacy_connections={legacy_count}"
+            )
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
