@@ -9,13 +9,14 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("Validate-TelemetryOverlapReadiness.py")
 TOKEN = "temporary-test-token"
+COMMIT = "a" * 40
 
 
 class Handler(BaseHTTPRequestHandler):
     legacy_count = 2
     redirect_health = False
     followed_redirect = False
-    source_commit = "abc123def456"
+    source_commit = COMMIT
 
     def do_GET(self):
         if self.path == "/health" and type(self).redirect_health:
@@ -82,7 +83,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         Handler.legacy_count = 2
         Handler.redirect_health = False
         Handler.followed_redirect = False
-        Handler.source_commit = "abc123def456"
+        Handler.source_commit = COMMIT
 
     def run_preflight(self, *extra_args):
         import os
@@ -96,7 +97,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
                 "--api-base-url",
                 self.base_url,
                 "--expected-commit",
-                "abc123",
+                COMMIT,
                 *extra_args,
             ],
             capture_output=True,
@@ -120,6 +121,32 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("mínimo exigido: 1", result.stderr)
+
+    def test_requires_full_git_commit_sha(self):
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--api-base-url",
+            self.base_url,
+            "--expected-commit",
+            "a" * 39,
+        ]
+        import os
+
+        env = os.environ.copy()
+        env["VENDMACHINES_ADMIN_BEARER_TOKEN"] = TOKEN
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("SHA Git completo", result.stderr)
+
+    def test_rejects_commit_with_matching_prefix_but_different_revision(self):
+        Handler.source_commit = "a" * 39 + "b"
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("sourceCommit não corresponde", result.stderr)
 
     def test_does_not_follow_redirects(self):
         Handler.redirect_health = True

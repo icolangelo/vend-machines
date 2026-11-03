@@ -7,6 +7,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--expected-commit",
+        required=True,
         help="SHA esperado no campo sourceCommit dos endpoints de readiness.",
     )
     parser.add_argument(
@@ -101,11 +103,9 @@ def require_status(payload: dict, endpoint: str, expected: str) -> None:
         raise PreflightError(f"{endpoint}: status {actual!r}; esperado {expected!r}{detail}.")
 
 
-def check_commit(payload: dict, endpoint: str, expected: str | None) -> None:
-    if not expected:
-        return
+def check_commit(payload: dict, endpoint: str, expected: str) -> None:
     actual = payload.get("sourceCommit")
-    if not isinstance(actual, str) or not actual.lower().startswith(expected.lower()):
+    if not isinstance(actual, str) or actual.lower() != expected.lower():
         raise PreflightError(f"{endpoint}: sourceCommit não corresponde ao SHA esperado.")
 
 
@@ -116,6 +116,9 @@ def main() -> int:
         return 2
     if args.timeout_seconds <= 0:
         print("ERRO: --timeout-seconds deve ser positivo.", file=sys.stderr)
+        return 2
+    if re.fullmatch(r"[0-9a-fA-F]{40}", args.expected_commit) is None:
+        print("ERRO: --expected-commit deve ser um SHA Git completo de 40 caracteres hexadecimais.", file=sys.stderr)
         return 2
 
     token = os.environ.get("VENDMACHINES_ADMIN_BEARER_TOKEN", "").strip()
