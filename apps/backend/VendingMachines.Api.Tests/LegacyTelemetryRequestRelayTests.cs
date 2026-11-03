@@ -93,6 +93,7 @@ public sealed class LegacyTelemetryRequestRelayTests
         Assert.Equal("http://legacy-api.internal/api/telemetry/machines/MACHINE-LEGACY-RELAY/commands", handler.RequestUri?.ToString());
         Assert.Equal("Bearer", handler.Authorization?.Scheme);
         Assert.Equal("original-user-token", handler.Authorization?.Parameter);
+        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.RelayHopHeaderName]);
         using var body = JsonDocument.Parse(handler.Body!);
         Assert.Equal(requestId, body.RootElement.GetProperty("requestId").GetGuid());
         var retried = await controller.SendCommand(
@@ -152,6 +153,43 @@ public sealed class LegacyTelemetryRequestRelayTests
     }
 
     [Fact]
+    public async Task LegacyOwnerHealthProbeCarriesHopMarker()
+    {
+        var handler = new CaptureHttpHandler
+        {
+            StatusCodeToReturn = HttpStatusCode.OK,
+            ResponseContent = "{\"status\":\"Healthy\"}"
+        };
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+
+        var ready = await relay.IsLegacyApiReadyAsync(CancellationToken.None);
+
+        Assert.True(ready);
+        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.RelayHopHeaderName]);
+        Assert.Equal("http://legacy-api.internal/health", handler.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task SelfReferentialOwnerEndpointIsNotConsideredHealthy()
+    {
+        var handler = new CaptureHttpHandler
+        {
+            StatusCodeToReturn = (HttpStatusCode)508,
+            ResponseContent = "{\"code\":\"legacy_relay_loop_blocked\"}"
+        };
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://candidate-api.internal")));
+
+        var ready = await relay.IsLegacyApiReadyAsync(CancellationToken.None);
+
+        Assert.False(ready);
+        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.RelayHopHeaderName]);
+    }
+
+    [Fact]
     public async Task WebhookRelayPreservesProviderQueryBodyAndVerificationHeaders()
     {
         var handler = new CaptureHttpHandler();
@@ -171,6 +209,7 @@ public sealed class LegacyTelemetryRequestRelayTests
 
         Assert.Equal((int)HttpStatusCode.Accepted, response?.StatusCode);
         Assert.Equal("http://legacy-api.internal/webhooks/mercadopago?data.id=123456789&type=payment", handler.RequestUri?.ToString());
+        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.RelayHopHeaderName]);
         Assert.Equal("{\"type\":\"payment\",\"data\":{\"id\":\"123456789\"}}", handler.Body);
         Assert.Equal("ts=123,v1=abc", handler.Headers["x-signature"]);
         Assert.Equal("provider-request-1", handler.Headers["x-request-id"]);

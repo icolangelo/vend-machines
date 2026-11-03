@@ -326,6 +326,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<VendingMachines.Api.Middlewares.SecurityHeadersMiddleware>();
 app.UseRouting();
+app.UseMiddleware<VendingMachines.Api.Middlewares.LegacyRelayLoopGuardMiddleware>();
 app.UseCors();
 app.UseRateLimiter();
 app.UseAuthentication();

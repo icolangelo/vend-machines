@@ -15,6 +15,8 @@ public sealed record LegacyTelemetryRelayResult(int StatusCode, string? ContentT
 public sealed class LegacyTelemetryRequestRelay
 {
     private const string ClientName = "TelemetryLegacyOwner";
+    public const string RelayHopHeaderName = "X-VendMachines-Legacy-Relay-Hop";
+    private const string RelayHopHeaderValue = "1";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan ReadinessCacheDuration = TimeSpan.FromSeconds(5);
     private readonly IHttpClientFactory _httpClientFactory;
@@ -63,6 +65,7 @@ public sealed class LegacyTelemetryRequestRelay
                 // The currently deployed API exposes /health and reports "Healthy".
                 // Accept "Ready" as well for compatible newer implementations of this endpoint.
                 using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(_baseAddress, "health"));
+                request.Headers.TryAddWithoutValidation(RelayHopHeaderName, RelayHopHeaderValue);
                 using var response = await _httpClientFactory.CreateClient(ClientName)
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 if (response.IsSuccessStatusCode && response.Content is not null)
@@ -116,6 +119,7 @@ public sealed class LegacyTelemetryRequestRelay
         var target = new Uri(_baseAddress, relativePath.TrimStart('/'));
         using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), target);
         request.Headers.Authorization = authorization;
+        request.Headers.TryAddWithoutValidation(RelayHopHeaderName, RelayHopHeaderValue);
         if (context.Request.Headers.Accept.Count > 0)
         {
             request.Headers.TryAddWithoutValidation("Accept", context.Request.Headers.Accept.ToArray());
@@ -164,6 +168,7 @@ public sealed class LegacyTelemetryRequestRelay
 
         var relativePath = $"webhooks/mercadopago{context.Request.QueryString.Value}";
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(_baseAddress, relativePath));
+        request.Headers.TryAddWithoutValidation(RelayHopHeaderName, RelayHopHeaderValue);
         request.Content = new StringContent(
             rawJsonBody,
             Encoding.UTF8,
