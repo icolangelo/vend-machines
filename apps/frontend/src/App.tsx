@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense } from "react";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -8,20 +9,21 @@ import { useAuth } from "@/contexts/AuthContext";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { CookieConsent } from "@/components/CookieConsent";
-import Index from "./pages/Index.tsx";
-import Login from "./pages/Login.tsx";
-import NotFound from "./pages/NotFound.tsx";
-import Machines from "./pages/Machines.tsx";
-import Locations from "./pages/Locations.tsx";
-import Products from "./pages/Products.tsx";
-import Settings from "./pages/Settings.tsx";
-import Integrations from "./pages/Integrations.tsx";
-import MachineFormPage from "./pages/MachineFormPage.tsx";
-import Telemetry from "./pages/Telemetry.tsx";
-import Reports from "./pages/Reports.tsx";
-import Alerts from "./pages/Alerts.tsx";
-import Admin from "./pages/Admin.tsx";
-import PaymentSimulator from "./pages/PaymentSimulator.tsx";
+
+const Index = lazy(() => import("./pages/Index.tsx"));
+const Login = lazy(() => import("./pages/Login.tsx"));
+const NotFound = lazy(() => import("./pages/NotFound.tsx"));
+const Machines = lazy(() => import("./pages/Machines.tsx"));
+const Locations = lazy(() => import("./pages/Locations.tsx"));
+const Products = lazy(() => import("./pages/Products.tsx"));
+const Settings = lazy(() => import("./pages/Settings.tsx"));
+const Integrations = lazy(() => import("./pages/Integrations.tsx"));
+const MachineFormPage = lazy(() => import("./pages/MachineFormPage.tsx"));
+const Telemetry = lazy(() => import("./pages/Telemetry.tsx"));
+const Reports = lazy(() => import("./pages/Reports.tsx"));
+const Alerts = lazy(() => import("./pages/Alerts.tsx"));
+const Admin = lazy(() => import("./pages/Admin.tsx"));
+const PaymentSimulator = lazy(() => import("./pages/PaymentSimulator.tsx"));
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -110,26 +112,28 @@ const App = () => {
                                         Ambiente de Teste
                                     </div>
                                 )}
-                                <Routes>
-                                    <Route path="/" element={<Login />} />
-                                    <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
-                                    <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
-                                    <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
-                                    <Route path="/machines/edit" element={<ProtectedRoute><Navigate to="/machines" replace /></ProtectedRoute>} />
-                                    <Route path="/machines/:id/edit" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
-                                    <Route path="/locations" element={<ProtectedRoute><Locations /></ProtectedRoute>} />
-                                    <Route path="/clients" element={<ProtectedRoute><Navigate to="/locations" replace /></ProtectedRoute>} />
-                                    <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
-                                    <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-                                    <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
-                                    <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
-                                    <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
-                                    <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
-                                    <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
-                                    <Route path="/payment-simulator" element={<ProtectedRoute><PaymentSimulator /></ProtectedRoute>} />
-                                    {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-                                    <Route path="*" element={<NotFound />} />
-                                </Routes>
+                                <Suspense fallback={<div role="status" className="p-6 text-center text-muted-foreground">Carregando página...</div>}>
+                                    <Routes>
+                                        <Route path="/" element={<Login />} />
+                                        <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
+                                        <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
+                                        <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
+                                        <Route path="/machines/edit" element={<ProtectedRoute><Navigate to="/machines" replace /></ProtectedRoute>} />
+                                        <Route path="/machines/:id/edit" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />
+                                        <Route path="/locations" element={<ProtectedRoute><Locations /></ProtectedRoute>} />
+                                        <Route path="/clients" element={<ProtectedRoute><Navigate to="/locations" replace /></ProtectedRoute>} />
+                                        <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
+                                        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+                                        <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
+                                        <Route path="/telemetry" element={<ProtectedRoute><Telemetry /></ProtectedRoute>} />
+                                        <Route path="/reports" element={<ProtectedRoute><Reports /></ProtectedRoute>} />
+                                        <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
+                                        <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+                                        <Route path="/payment-simulator" element={<ProtectedRoute><PaymentSimulator /></ProtectedRoute>} />
+                                        {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                                        <Route path="*" element={<NotFound />} />
+                                    </Routes>
+                                </Suspense>
                             </div>
                         </OauthInterceptor>
                     </HashRouter>
