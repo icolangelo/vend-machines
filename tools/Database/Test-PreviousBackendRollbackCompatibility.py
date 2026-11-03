@@ -1017,6 +1017,117 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             print("candidate_can_route_legacy_socket=yes")
             print("candidate_legacy_command_relay=acknowledged")
 
+            run("docker", "kill", names["candidate_api"])
+            time.sleep(6)
+            legacy_presence_during_candidate_stop = query(
+                names["postgres"], "vendmachines", live_presence_query,
+            )
+            simulator_state_code, simulator_state = attempt(
+                "docker", "inspect", "--format", "{{.State.Status}}", names["simulator"],
+            )
+            _, simulator_logs = attempt("docker", "logs", names["simulator"])
+            if (
+                legacy_presence_during_candidate_stop.split("|")[0] != old_connection_id
+                or legacy_presence_during_candidate_stop.split("|")[1] != "true"
+                or simulator_state_code != 0
+                or simulator_state.strip() != "running"
+                or "pong id=" not in simulator_logs
+            ):
+                raise RehearsalError(
+                    "Parar a candidata afetou o socket MDB mantido pela API antiga. "
+                    f"presence={legacy_presence_during_candidate_stop}, simulator={simulator_state}, "
+                    f"logs={simulator_logs[-2500:]}"
+                )
+            print("legacy_socket_survives_candidate_stop=yes")
+
+            run("docker", "start", names["candidate_api"])
+            candidate_healthy = False
+            for _ in range(args.startup_timeout_seconds):
+                probe_code, _ = attempt(
+                    "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                    "http://candidate-api:8080/health",
+                )
+                if probe_code == 0:
+                    candidate_healthy = True
+                    break
+                inspect_code, candidate_state = attempt(
+                    "docker", "inspect", "--format", "{{.State.Status}}", names["candidate_api"],
+                )
+                if inspect_code != 0 or candidate_state.strip().lower() in {"exited", "dead", "removing"}:
+                    _, candidate_logs = attempt("docker", "logs", names["candidate_api"])
+                    raise RehearsalError(
+                        "A candidata falhou ao reiniciar com a API anterior ainda ativa: "
+                        f"{candidate_logs[-3500:]}"
+                    )
+                time.sleep(1)
+            if not candidate_healthy:
+                _, candidate_logs = attempt("docker", "logs", "--tail", "100", names["candidate_api"])
+                raise RehearsalError(
+                    "A candidata não ficou saudável após reiniciar com o socket legado ativo: "
+                    f"{candidate_logs[-3500:]}"
+                )
+
+            restart_readiness_code, restart_readiness_body = attempt(
+                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                "http://candidate-api:8080/health/deploy-ready",
+            )
+            try:
+                restart_readiness = json.loads(restart_readiness_body)
+            except json.JSONDecodeError as exc:
+                raise RehearsalError(
+                    "Readiness retornou JSON inválido após reiniciar a candidata: "
+                    f"{restart_readiness_body[-1800:]}"
+                ) from exc
+            if restart_readiness_code != 0 or restart_readiness.get("status") != "Ready":
+                raise RehearsalError(
+                    "A candidata não recuperou readiness com a API antiga saudável: "
+                    f"{restart_readiness_body[-1800:]}"
+                )
+
+            post_restart_request_id = str(uuid.uuid4())
+            post_restart_command = json.dumps({
+                "requestId": post_restart_request_id,
+                "command": "VENDMACHINES_POST_RESTART_PROBE",
+                "data": "VENDMACHINES_POST_RESTART_PROBE",
+            }, separators=(",", ":"))
+            post_restart_code, post_restart_response = attempt(
+                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                authorization_header,
+                "--header=Content-Type: application/json",
+                f"--post-data={post_restart_command}",
+                f"http://candidate-api:8080/api/telemetry/machines/{machine_id}/commands",
+            )
+            try:
+                post_restart_payload = json.loads(post_restart_response)
+            except json.JSONDecodeError as exc:
+                raise RehearsalError(
+                    "O relay retornou JSON inválido após reiniciar a candidata: "
+                    f"{post_restart_response[-1800:]}"
+                ) from exc
+            if post_restart_code != 0 or post_restart_payload.get("status") != "acknowledged":
+                raise RehearsalError(
+                    "O comando não recebeu ACK após reiniciar a candidata com o owner legado ativo: "
+                    f"{post_restart_response[-1800:]}"
+                )
+
+            time.sleep(6)
+            legacy_presence_after_candidate_restart = query(
+                names["postgres"], "vendmachines", live_presence_query,
+            )
+            _, simulator_logs = attempt("docker", "logs", names["simulator"])
+            if (
+                legacy_presence_after_candidate_restart.split("|")[0] != old_connection_id
+                or legacy_presence_after_candidate_restart.split("|")[1] != "true"
+                or "pong id=" not in simulator_logs
+            ):
+                raise RehearsalError(
+                    "O socket MDB legado mudou durante o reinício da candidata. "
+                    f"before={live_presence}, during_stop={legacy_presence_during_candidate_stop}, "
+                    f"after={legacy_presence_after_candidate_restart}, logs={simulator_logs[-2500:]}"
+                )
+            print("legacy_socket_survives_candidate_restart=yes")
+            print("candidate_post_restart_command_relay=acknowledged")
+
             run("docker", "kill", names["api"])
             time.sleep(6)
             unavailable_readiness_code, unavailable_readiness_response = attempt(
