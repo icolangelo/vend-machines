@@ -408,7 +408,7 @@ public sealed class SessionPaymentResultConcurrencyTests
                 await setup.SaveChangesAsync();
             }
 
-            var barrier = new InitialSessionReadBarrier();
+            var barrier = new ActiveSessionReadBarrier();
             await using var firstDb = CreateDbContext(scopedConnectionString, barrier);
             await using var secondDb = CreateDbContext(scopedConnectionString, barrier);
             var firstOrchestrator = CreateOrchestrator(firstDb);
@@ -696,6 +696,29 @@ public sealed class SessionPaymentResultConcurrencyTests
     }
 
     private sealed class InitialSessionReadBarrier : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _bothRequestsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _reads;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"MachineSessions\"", StringComparison.Ordinal) &&
+                Interlocked.Increment(ref _reads) <= 2)
+            {
+                if (Volatile.Read(ref _reads) == 2)
+                    _bothRequestsReady.TrySetResult();
+                await _bothRequestsReady.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class ActiveSessionReadBarrier : DbCommandInterceptor
     {
         private readonly TaskCompletionSource _bothRequestsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _reads;
