@@ -877,7 +877,6 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             legacy_payment_id = str(int(uid[:8], 16))
             legacy_transaction_id = str(uuid.uuid4())
             legacy_session_id = str(uuid.uuid4())
-            legacy_outbox_id = str(uuid.uuid4())
             legacy_webhook_setup = (
                 'INSERT INTO "PaymentTransactions" '
                 '("Id","MachineId","CompanyId","Amount","ApplicationFee","Status",'
@@ -887,13 +886,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 'INSERT INTO "MachineSessions" '
                 '("Id","MachineId","CompanyId","Source","State","TransactionId","StartedAt","LastEventAt") '
                 f"VALUES ('{legacy_session_id}'::uuid,'{machine_id}','{company_id}'::uuid,'panel',"
-                f"'PaymentPending','{legacy_transaction_id}'::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP); "
-                'INSERT INTO "OutboxMessages" '
-                '("Id","CompanyId","MachineId","SessionId","TransactionId","MessageType",'
-                '"PayloadJson","Status","Attempts","CreatedAt","NextAttemptAt") '
-                f"VALUES ('{legacy_outbox_id}'::uuid,'{company_id}'::uuid,'{machine_id}',"
-                f"'{legacy_session_id}'::uuid,'{legacy_transaction_id}'::uuid,'refund_payment','{{}}',"
-                "'deferred_legacy_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
+                f"'PaymentPending','{legacy_transaction_id}'::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
             )
             run(
                 "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
@@ -1002,16 +995,6 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     f"before={live_presence}, after={live_presence_after}, "
                     f"simulator_logs={simulator_logs[-2500:]}"
                 )
-            deferred_outbox_status = query(
-                names["postgres"], "vendmachines",
-                f'''SELECT "Status" FROM "OutboxMessages" WHERE "Id"='{legacy_outbox_id}'::uuid;''',
-            )
-            if deferred_outbox_status != "deferred_legacy_overlap":
-                raise RehearsalError(
-                    "A outbox candidata foi reivindicada pela API antiga durante a sobreposição; "
-                    f"status={deferred_outbox_status}"
-                )
-            print("candidate_financial_outbox_deferred=yes")
             print("overlap_socket_preserved=yes")
             print("candidate_readiness=Ready_with_healthy_legacy_owner_relay")
             print("candidate_can_route_legacy_socket=yes")
@@ -1040,6 +1023,43 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 )
             print("legacy_socket_survives_candidate_stop=yes")
 
+            overlap_transaction_id = str(uuid.uuid4())
+            overlap_session_id = str(uuid.uuid4())
+            overlap_outbox_id = str(uuid.uuid4())
+            candidate_outbox_fixture = (
+                'INSERT INTO "PaymentTransactions" '
+                '("Id","MachineId","CompanyId","Amount","ApplicationFee","Status",'
+                '"SendTelemetryToMachine","MercadoPagoPaymentId","QrCode","QrCodeBase64","CreatedAt") '
+                f"VALUES ('{overlap_transaction_id}'::uuid,'{machine_id}','{company_id}'::uuid,10.00,0.50,"
+                f"'Pending',1,'mock_overlap_{uid}','fixture','',CURRENT_TIMESTAMP); "
+                'INSERT INTO "MachineSessions" '
+                '("Id","MachineId","CompanyId","Source","State","TransactionId",'
+                '"StartedAt","LastEventAt","ClosedAt") '
+                f"VALUES ('{overlap_session_id}'::uuid,'{machine_id}','{company_id}'::uuid,'panel',"
+                f"'RefundPending','{overlap_transaction_id}'::uuid,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP); "
+                'INSERT INTO "OutboxMessages" '
+                '("Id","CompanyId","MachineId","SessionId","TransactionId","MessageType",'
+                '"PayloadJson","Status","Attempts","CreatedAt","NextAttemptAt") '
+                f"VALUES ('{overlap_outbox_id}'::uuid,'{company_id}'::uuid,'{machine_id}',"
+                f"'{overlap_session_id}'::uuid,'{overlap_transaction_id}'::uuid,'refund_payment','{{}}',"
+                "'deferred_legacy_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
+            )
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c", candidate_outbox_fixture,
+            )
+            time.sleep(6)
+            legacy_outbox_status = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT "Status" FROM "OutboxMessages" WHERE "Id"='{overlap_outbox_id}'::uuid;''',
+            )
+            if legacy_outbox_status != "deferred_legacy_overlap":
+                raise RehearsalError(
+                    "A API antiga reivindicou uma outbox candidata enquanto a candidata estava parada; "
+                    f"status={legacy_outbox_status}"
+                )
+            print("legacy_api_ignores_candidate_deferred_outbox=yes")
+
             run("docker", "start", names["candidate_api"])
             candidate_healthy = False
             for _ in range(args.startup_timeout_seconds):
@@ -1065,23 +1085,6 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 raise RehearsalError(
                     "A candidata não ficou saudável após reiniciar com o socket legado ativo: "
                     f"{candidate_logs[-3500:]}"
-                )
-
-            restart_readiness_code, restart_readiness_body = attempt(
-                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
-                "http://candidate-api:8080/health/deploy-ready",
-            )
-            try:
-                restart_readiness = json.loads(restart_readiness_body)
-            except json.JSONDecodeError as exc:
-                raise RehearsalError(
-                    "Readiness retornou JSON inválido após reiniciar a candidata: "
-                    f"{restart_readiness_body[-1800:]}"
-                ) from exc
-            if restart_readiness_code != 0 or restart_readiness.get("status") != "Ready":
-                raise RehearsalError(
-                    "A candidata não recuperou readiness com a API antiga saudável: "
-                    f"{restart_readiness_body[-1800:]}"
                 )
 
             post_restart_request_id = str(uuid.uuid4())
@@ -1125,8 +1128,52 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     f"before={live_presence}, during_stop={legacy_presence_during_candidate_stop}, "
                     f"after={legacy_presence_after_candidate_restart}, logs={simulator_logs[-2500:]}"
                 )
+
+            processed_outbox_state = ""
+            for _ in range(30):
+                processed_outbox_state = query(
+                    names["postgres"], "vendmachines",
+                    f'''SELECT "Status" || '|' || "Attempts" FROM "OutboxMessages" WHERE "Id"='{overlap_outbox_id}'::uuid;''',
+                )
+                if processed_outbox_state == "processed|1":
+                    break
+                time.sleep(0.5)
+            if processed_outbox_state != "processed|1":
+                raise RehearsalError(
+                    "A candidata reiniciada não processou a outbox exclusiva enquanto a API antiga seguia ativa; "
+                    f"status={processed_outbox_state}"
+                )
+            overlap_financial_state = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT session."State" || '|' || payment."Status" FROM "MachineSessions" session '''
+                f'''JOIN "PaymentTransactions" payment ON payment."Id"=session."TransactionId" '''
+                f'''WHERE session."Id"='{overlap_session_id}'::uuid;''',
+            )
+            if overlap_financial_state != "Refunded|Refunded":
+                raise RehearsalError(
+                    "A outbox candidata terminou, mas a sessão e o pagamento não foram atualizados juntos; "
+                    f"state={overlap_financial_state}"
+                )
+            print("candidate_financial_outbox_processed_during_overlap=yes")
             print("legacy_socket_survives_candidate_restart=yes")
             print("candidate_post_restart_command_relay=acknowledged")
+
+            restart_readiness_code, restart_readiness_body = attempt(
+                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                "http://candidate-api:8080/health/deploy-ready",
+            )
+            try:
+                restart_readiness = json.loads(restart_readiness_body)
+            except json.JSONDecodeError as exc:
+                raise RehearsalError(
+                    "Readiness retornou JSON inválido após reiniciar a candidata: "
+                    f"{restart_readiness_body[-1800:]}"
+                ) from exc
+            if restart_readiness_code != 0 or restart_readiness.get("status") != "Ready":
+                raise RehearsalError(
+                    "A candidata não recuperou readiness com a API antiga saudável: "
+                    f"{restart_readiness_body[-1800:]}"
+                )
 
             run("docker", "kill", names["api"])
             time.sleep(6)

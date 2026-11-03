@@ -647,34 +647,33 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     public async Task ProcessOutboxAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var legacyOverlapActive = !string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"]);
+        var claimableStatus = legacyOverlapActive ? "deferred_legacy_overlap" : "pending";
         var sessionsToBroadcast = new List<MachineSession>();
         var refundedTransactionIds = new HashSet<Guid>();
 
-        // The previous API has no atomic claim for pending rows. While it can still
-        // run, this process must not call Mercado Pago for any shared outbox item.
-        // Candidate-created items use a status the previous binary does not consume.
-        if (!string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"]))
+        // The previous API consumes only Pending rows and cannot claim them atomically.
+        // During overlap, process only candidate-owned deferred rows; the old binary
+        // ignores that status, so it cannot race the candidate for these provider calls.
+        if (!legacyOverlapActive)
         {
-            _logger.LogDebug("Outbox financeiro pausado durante a convivência com a API legada.");
-            return;
+            await _db.OutboxMessages
+                .Where(message => message.Status == "deferred_legacy_overlap")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(message => message.Status, "pending")
+                    .SetProperty(message => message.NextAttemptAt, now)
+                    .SetProperty(message => message.LastError, (string?)null), cancellationToken);
         }
-
-        await _db.OutboxMessages
-            .Where(message => message.Status == "deferred_legacy_overlap")
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(message => message.Status, "pending")
-                .SetProperty(message => message.NextAttemptAt, now)
-                .SetProperty(message => message.LastError, (string?)null), cancellationToken);
 
         await _db.OutboxMessages
             .Where(x => x.Status == "processing" && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
             .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.Status, "pending")
+                .SetProperty(x => x.Status, claimableStatus)
                 .SetProperty(x => x.NextAttemptAt, now)
                 .SetProperty(x => x.LastError, "worker_lease_expired"), cancellationToken);
 
         var messages = await _db.OutboxMessages
-            .Where(x => x.Status == "pending" && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
+            .Where(x => x.Status == claimableStatus && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
             .OrderBy(x => x.CreatedAt)
             .Take(25)
             .ToListAsync(cancellationToken);
@@ -688,7 +687,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             {
                 claimed = await _db.OutboxMessages
                     .Where(x => x.Id == message.Id &&
-                                x.Status == "pending" &&
+                                x.Status == claimableStatus &&
                                 (x.NextAttemptAt == null || x.NextAttemptAt <= claimTime))
                     .ExecuteUpdateAsync(setters => setters
                         .SetProperty(x => x.Status, "processing")
@@ -822,7 +821,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                 }
                 else
                 {
-                    message.Status = "pending";
+                    message.Status = claimableStatus;
                     message.LastError = "provider_operation_failed";
                     message.NextAttemptAt = DateTime.UtcNow.AddSeconds(Math.Min(300, 5 * Math.Pow(2, message.Attempts)));
                 }
@@ -851,11 +850,14 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         {
             using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             var retryAt = DateTime.UtcNow;
+            var retryStatus = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
+                ? "pending"
+                : "deferred_legacy_overlap";
             var released = await _db.OutboxMessages
                 .Where(message => message.Id == outboxId &&
                     message.Status == "processing" && message.NextAttemptAt == leaseExpiresAt)
                 .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(message => message.Status, "pending")
+                    .SetProperty(message => message.Status, retryStatus)
                     .SetProperty(message => message.NextAttemptAt, (DateTime?)retryAt)
                     .SetProperty(message => message.LastError, (string?)null), cleanupTimeout.Token);
 

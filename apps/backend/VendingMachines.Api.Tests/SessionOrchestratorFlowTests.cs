@@ -558,7 +558,28 @@ public sealed class SessionOrchestratorFlowTests
     }
 
     [Fact]
-    public async Task LegacyApiOverlap_DefersCandidateFinancialOutboxWithoutCallingProvider()
+    public async Task LegacyApiOverlap_ProcessesCandidateOwnedDeferredOutboxWithoutCompetingWithLegacyWorker()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.AwaitingDeliveryResult,
+            legacyApiConfigured: true);
+        await scenario.SetProviderPaymentIdAsync("mock_overlap_refund");
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Fact]
+    public async Task LegacyApiOverlap_KeepsFailedCandidateOutboxInLegacyIgnoredStatusForRetry()
     {
         await using var scenario = await TestScenario.CreatePaidAsync(
             MachineSessionStates.AwaitingDeliveryResult,
@@ -566,13 +587,47 @@ public sealed class SessionOrchestratorFlowTests
         await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
 
         await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
-        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
 
         var outbox = await scenario.SingleOutboxAsync("refund_payment");
         Assert.Equal("deferred_legacy_overlap", outbox.Status);
+        Assert.Equal("provider_operation_failed", outbox.LastError);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.True(outbox.NextAttemptAt > DateTime.UtcNow);
         Assert.Equal(0, scenario.ProviderRequestCount);
         var session = await scenario.ReloadSessionAsync();
         Assert.Equal(MachineSessionStates.RefundPending, session.State);
+    }
+
+    [Fact]
+    public async Task LegacyApiOverlap_ReclaimsExpiredOutboxLeaseWithoutExposingItToLegacyWorker()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.AwaitingDeliveryResult,
+            legacyApiConfigured: true);
+        await scenario.SetProviderPaymentIdAsync("mock_expired_overlap_refund");
+        scenario.Db.OutboxMessages.Add(new OutboxMessage
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            SessionId = scenario.SessionId,
+            TransactionId = scenario.TransactionId,
+            MessageType = "refund_payment",
+            PayloadJson = "{}",
+            Status = "processing",
+            Attempts = 0,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-3),
+            NextAttemptAt = DateTime.UtcNow.AddMinutes(-1)
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
     }
 
     [Fact]
