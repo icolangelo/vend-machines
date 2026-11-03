@@ -14,6 +14,7 @@ on:
       - "docs/roadmap-producao.md"
       - "docs/operacao-suporte.md"
       - "docs/backup-restore-rehearsal.md"
+      - "docs/partial-production-rollout.md"
       - "docs/deploy-preflight.sql"
       - "docs/payment-sensitive-data-preflight.sql"
       - "docs/payment-sensitive-data-redaction.sql"
