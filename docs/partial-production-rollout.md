@@ -2,6 +2,12 @@
 
 Este preflight é somente leitura. Ele não envia comandos MDB, não cria sessões, não altera configuração, não aplica migrations e não inicia publicação. Seu objetivo é confirmar que a candidata consegue atender enquanto a API anterior continua dona de conexões existentes.
 
+## Smoke privado em modo passivo
+
+Para apenas subir a imagem candidata e verificar o processo, o launcher inicia em modo passivo por padrão e injeta `Deployment__PassiveMode=true`, sem exigir a origem legada. Se iniciar o container diretamente, configure essa variável explicitamente. O launcher recusa um arquivo de runtime que tente definir `Deployment__PassiveMode`, para evitar conflito ou override acidental. Nesse modo a API não executa `DbInitializer`, não registra nenhum worker em background e permite somente `GET /`, `GET /health` e `GET /health/ready`; todas as rotas de aplicação, Swagger e WebSockets, incluindo `/telemetria`, retornam `503`. O healthcheck do container usa somente `GET /health` em modo passivo para confirmar que o processo responde, mesmo sem migrations aplicadas. `/health/ready` faz apenas conexão e leitura da tabela de migrations; o launcher exige `200` nesse endpoint antes de declarar o smoke passivo aprovado. Se retornar `503` por banco inacessível ou migrations pendentes, o launcher para somente a candidata e não tenta aplicar migrations. `/health/deploy-ready` fica bloqueado intencionalmente porque esse modo não significa prontidão para cutover.
+
+Esse smoke confirma somente que o container e a conexão/readiness de banco funcionam. Não permite testar dashboard, APIs comerciais, relay ou tráfego de máquinas, e não substitui o preflight de convivência descrito abaixo. Para testar a candidata como API de aplicação, use uma cópia isolada restaurada do banco e a validação de release completa. Nunca desligue o modo passivo numa instância ligada ao banco comercial até cumprir os gates de backup, migration e operação da seção seguinte. O launcher exige a flag `--active-overlap` para iniciar workers e aceitar rotas comerciais; essa flag é somente um seletor técnico e não substitui nenhuma aprovação ou evidência operacional.
+
 ## Configuração da candidata
 
 1. Mantenha a API anterior ativa e sem reinício enquanto ela possuir WebSockets de máquinas.
@@ -42,7 +48,7 @@ Qualquer divergência, `401/403`, readiness bloqueado, rota inacessível, redire
 
 O workflow de verificação constrói e testa a imagem backend sem publicá-la em um registry nem iniciar um serviço. Somente depois dos gates de sobreposição e release, ele anexa `candidate-backend-image-<SHA>` à execução aprovada. O pacote contém `backend-image.tar.gz`, `image-ref.txt`, `image-id.txt`, `platform.txt`, `source-sha.txt`, `README.txt`, `Verify-BackendImageArtifact.ps1`, `start-private-backend-candidate.sh`, `verify-candidate-artifact-pair.py` e `SHA256SUMS`.
 
-Use os dois artefatos da mesma execução concluída com sucesso. Antes de revisar ou aplicar qualquer SQL, rode `python3 ./verify-candidate-artifact-pair.py --image-artifact-dir '<diretório da imagem>' --release-package-dir '<diretório do pacote operacional>' --expected-source-sha '<SHA Git completo>'`. O verificador valida os manifests/checksums dos dois pacotes, confirma a igualdade do SHA completo e rejeita arquivos extras na imagem, caminhos inesperados, checksums inválidos e divergência entre os pacotes. Em Windows com Docker, `Verify-BackendImageArtifact.ps1` também confere a plataforma antes de carregar a imagem. No host Linux Docker, o launcher repete a comparação dos artefatos antes de `docker load`, confere o ID da imagem carregada e exige rede/runtime privados. O arquivo de runtime precisa ficar fora do repositório, dos diretórios dos artefatos e do pacote operacional, legível somente pelo operador (`chmod 600`). O launcher inicia um container com nome exclusivo, sem restart automático, publica apenas em `127.0.0.1:<porta>:8080` e espera até três minutos pelo health check. Não altera rota pública, não remove containers existentes e não aplica migrations. Antes de usá-lo, conclua o ensaio SQL isolado, obtenha backup restaurável, rode o preflight SQL e aplique apenas as migrations aprovadas do mesmo SHA; a API recusa iniciar com migrations pendentes. A origem legada precisa apontar diretamente ao processo antigo pela rede privada. Após o health check, execute o preflight administrativo somente leitura contra o SHA completo antes de encaminhar tráfego.
+Use os dois artefatos da mesma execução concluída com sucesso. Antes de revisar ou aplicar qualquer SQL, rode `python3 ./verify-candidate-artifact-pair.py --image-artifact-dir '<diretório da imagem>' --release-package-dir '<diretório do pacote operacional>' --expected-source-sha '<SHA Git completo>'`. O verificador valida os manifests/checksums dos dois pacotes, confirma a igualdade do SHA completo e rejeita arquivos extras na imagem, caminhos inesperados, checksums inválidos e divergência entre os pacotes. Em Windows com Docker, `Verify-BackendImageArtifact.ps1` também confere a plataforma antes de carregar a imagem. No host Linux Docker, o launcher repete a comparação dos artefatos antes de `docker load`, confere o ID da imagem carregada e exige rede/runtime privados. O arquivo de runtime precisa ficar fora do repositório, dos diretórios dos artefatos e do pacote operacional, legível somente pelo operador (`chmod 600`). Sem `--active-overlap`, o launcher sobe por padrão no modo passivo descrito acima. Só para convivência funcional, depois dos gates operacionais, passe explicitamente `--active-overlap --legacy-api-origin http://<API antiga privada>:8080`; isso desliga o modo passivo e ativa workers. O launcher inicia um container com nome exclusivo, sem restart automático, publica apenas em `127.0.0.1:<porta>:8080` e espera até três minutos pelo health check. Não altera rota pública, não remove containers existentes e não aplica migrations. Antes de usar o modo ativo, conclua o ensaio SQL isolado, obtenha backup restaurável, rode o preflight SQL e aplique apenas as migrations aprovadas do mesmo SHA; a API recusa iniciar com migrations pendentes. A origem legada precisa apontar diretamente ao processo antigo pela rede privada. Após o health check ativo, execute o preflight administrativo somente leitura contra o SHA completo antes de encaminhar tráfego.
 
 Antes de extrair, compare o SHA-256 de **cada arquivo ZIP** com o `digest` exibido nos metadados dos artefatos da execução GitHub Actions aprovada. Confirme também que os dois artefatos vieram da mesma execução e têm o SHA completo esperado no nome. O digest deve ser obtido dos metadados do GitHub, separadamente do arquivo baixado; os manifests internos não substituem essa verificação externa.
 
@@ -71,9 +77,30 @@ bash ./start-private-backend-candidate.sh \
   --expected-source-sha '<SHA Git completo>' \
   --docker-network '<rede privada existente>' \
   --runtime-env-file '<arquivo privado fora do repositório>' \
-  --legacy-api-origin 'http://<API antiga privada>:8080' \
   --host-port 18080
 ```
+
+### Conferência depois do início passivo
+
+Guarde o nome exato `container=` impresso pelo launcher e confira no mesmo host, sem configurar rota ou DNS. A porta publicada deve mostrar somente `127.0.0.1`; a política de restart deve ser `no`. Substitua o nome do container pelo valor impresso:
+
+```bash
+candidate='vend-machines-backend-candidate-<SHA completo em minúsculas>'
+docker port "$candidate" 8080/tcp
+docker inspect --format 'restart={{if .HostConfig.RestartPolicy.Name}}{{.HostConfig.RestartPolicy.Name}}{{else}}no{{end}}' "$candidate"
+```
+
+Faça GETs locais e registre os códigos HTTP. O modo passivo exige `200` em `/health`, `503` em `/health/deploy-ready`, `/api/machines` e `/telemetria`, e `200` em `/health/ready` para aprovar a Etapa A completa. O readiness de banco só lê a conexão e o histórico de migrations. Se retornar `503` — inclusive por indisponibilidade do banco ou migrations pendentes — registre apenas o motivo sanitizado, marque a Etapa A como não aprovada e não aplique migrations neste passo. As três rotas bloqueadas devem continuar em `503`; se alguma responder com outro código, interrompa a Etapa A e pare somente a candidata pelo nome exato.
+
+```bash
+base='http://127.0.0.1:18080'
+for path in /health /health/ready /health/deploy-ready /api/machines /telemetria; do
+  code=$(curl --max-time 5 --silent --show-error --output /dev/null --write-out '%{http_code}' "$base$path") || code='falha-de-conexao'
+  printf '%s %s\n' "$path" "$code"
+done
+```
+
+Confirme também que a API antiga permaneceu saudável antes, durante e depois. Não publique corpos de resposta, tokens, arquivos de runtime, URLs privadas ou identificadores de máquinas no registro compartilhado. O launcher já confirma modo passivo, healthcheck do container e bloqueio das três rotas; esta conferência registra também o readiness do banco e a associação da porta publicada. O comando de início passivo não precisa da origem privada da API antiga.
 
 ## Efeitos da candidata no banco compartilhado
 

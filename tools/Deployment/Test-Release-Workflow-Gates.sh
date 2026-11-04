@@ -667,6 +667,7 @@ require_contains "$verify_workflow" 'name: candidate-release-package-${{ github.
 require_contains "$verify_workflow" 'name: Export verified backend image artifact'
 require_contains "$verify_workflow" 'name: Test backend image artifact verifier'
 require_contains "$verify_workflow" 'name: Test private backend candidate launcher'
+require_contains "$verify_workflow" '--active-overlap --legacy-api-origin'
 require_contains "$verify_workflow" 'SOURCE_SHA: ${{ github.sha }}'
 require_contains "$verify_workflow" 'image_ref="vend-machines-backend:${SOURCE_SHA}"'
 require_contains "$verify_workflow" 'docker save "$image_ref"'

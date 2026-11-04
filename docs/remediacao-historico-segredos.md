@@ -55,3 +55,6 @@ Em 03/11/2026, repeti a varredura de histórico no clone/worktree atual com a me
 
 
 Em 03/11/2026, a reauditoria do snapshot `codex/production-readiness-snapshot` com a mesma imagem fixada e `--log-opts=--all` examinou 120 commits / 21,92 MB e manteve seis achados históricos, com redação habilitada e sem rede. A verificação `--no-git` da árvore atual examinou 12,18 MB e não encontrou achados. Isso atualiza o alcance local após os commits recentes, mas não inclui PR refs, forks, caches ou clones externos não buscados; não houve consulta a secret manager, rotação nem reescrita.
+
+
+Em 04/11/2026, uma nova varredura redigida com a imagem Gitleaks fixada no workflow e `--log-opts=--all` examinou 204 commits / aproximadamente 25,36 MB das referências locais disponíveis e encontrou novamente seis ocorrências. O scanner não exibiu os valores; não revoguei credenciais, não consultei o secret manager e não reescrevi referências. A contagem é de ocorrências, não de credenciais únicas, e o resultado não cobre PR refs, forks, caches ou clones externos não buscados. A rotação coordenada pelo titular e a limpeza das referências acordadas continuam obrigatórias.

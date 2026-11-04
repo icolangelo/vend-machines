@@ -294,6 +294,30 @@ public sealed class DatabaseDataServiceScopeTests
             SoldAt = DateTime.UtcNow.AddDays(-30).AddMinutes(-1)
         });
 
+        var futureSession = new MachineSession
+        {
+            Id = Guid.NewGuid(), CompanyId = companyId, MachineId = belowTarget.Id,
+            State = MachineSessionStates.Completed, ClosedAt = DateTime.UtcNow
+        };
+        var futureTransaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(), CompanyId = companyId, MachineId = belowTarget.Id,
+            Amount = 100m, Status = "Approved"
+        };
+        scenario.Db.MachineSessions.Add(futureSession);
+        scenario.Db.PaymentTransactions.Add(futureTransaction);
+        scenario.Db.SaleRecords.Add(new SaleRecord
+        {
+            CompanyId = companyId,
+            MachineId = belowTarget.Id,
+            SessionId = futureSession.Id,
+            TransactionId = futureTransaction.Id,
+            ItemNumber = 3,
+            Quantity = 50,
+            GrossAmount = 100m,
+            SoldAt = DateTime.UtcNow.AddMinutes(5)
+        });
+
         await scenario.Db.SaveChangesAsync();
 
         var results = new DatabaseDataService(scenario.Db).GetMachines(companyId).ToDictionary(machine => machine.Id);
