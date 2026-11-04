@@ -3,7 +3,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from threading import Thread
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 import unittest
 
 
@@ -14,9 +17,26 @@ COMMIT = "a" * 40
 
 class Handler(BaseHTTPRequestHandler):
     legacy_count = 2
+    legacy_count_sequence = None
+    legacy_reads = 0
+    current_legacy_count = 2
+    legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
+    legacy_machine_id_sequence = None
+    current_legacy_machine_ids = legacy_machine_ids
+    current_last_seen_at = {}
+    advance_last_seen_each_snapshot = True
     redirect_health = False
     followed_redirect = False
     source_commit = COMMIT
+    health_clock_offset_seconds = 0
+
+    def date_time_string(self, timestamp=None):
+        import time
+
+        if timestamp is None:
+            timestamp = time.time()
+        timestamp += type(self).health_clock_offset_seconds
+        return super().date_time_string(timestamp)
 
     def do_GET(self):
         if self.path == "/health" and type(self).redirect_health:
@@ -32,19 +52,60 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/health":
-            payload = {"status": "Healthy"}
+            server_now = datetime.now(timezone.utc) + timedelta(
+                seconds=type(self).health_clock_offset_seconds
+            )
+            payload = {
+                "status": "Healthy",
+                "timestamp": server_now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            }
         elif self.path in {"/health/ready", "/health/deploy-ready"}:
             payload = {"status": "Ready", "sourceCommit": type(self).source_commit}
-        elif self.path == "/api/admin/legacy-machine-connections":
+        elif urlsplit(self.path).path == "/api/admin/legacy-machine-connections":
+            query = parse_qs(urlsplit(self.path).query)
+            page = int(query.get("page", ["1"])[0])
+            page_size = int(query.get("pageSize", ["50"])[0])
+            sequence = type(self).legacy_count_sequence
+            id_sequence = type(self).legacy_machine_id_sequence
+            if page == 1 and id_sequence:
+                index = min(type(self).legacy_reads, len(id_sequence) - 1)
+                type(self).current_legacy_machine_ids = id_sequence[index]
+                type(self).current_legacy_count = len(type(self).current_legacy_machine_ids)
+                type(self).legacy_reads += 1
+            elif page == 1 and sequence:
+                index = min(type(self).legacy_reads, len(sequence) - 1)
+                type(self).current_legacy_count = sequence[index]
+                type(self).current_legacy_machine_ids = type(self).legacy_machine_ids[:type(self).current_legacy_count]
+                type(self).legacy_reads += 1
+            elif page == 1:
+                type(self).current_legacy_count = type(self).legacy_count
+                type(self).current_legacy_machine_ids = type(self).legacy_machine_ids[:type(self).current_legacy_count]
+            if page == 1:
+                snapshot_time = datetime.now(timezone.utc)
+                for machine_id in type(self).current_legacy_machine_ids:
+                    if type(self).advance_last_seen_each_snapshot:
+                        type(self).current_last_seen_at[machine_id] = snapshot_time
+                    else:
+                        type(self).current_last_seen_at.setdefault(machine_id, snapshot_time)
+            start = (page - 1) * page_size
+            current_ids = type(self).current_legacy_machine_ids
             payload = {
-                "totalItems": type(self).legacy_count,
+                "totalItems": type(self).current_legacy_count,
+                "totalPages": max(1, (type(self).current_legacy_count + page_size - 1) // page_size),
+                "items": [
+                    {
+                        "machineId": machine_id,
+                        "lastSeenAt": type(self).current_last_seen_at[machine_id].isoformat().replace("+00:00", "Z"),
+                    }
+                    for machine_id in current_ids[start:start + page_size]
+                ],
                 "relay": {"configured": True, "healthy": True},
             }
         elif self.path == "/api/admin/worker-health":
             payload = {
                 "queueMetrics": {
                     "machineConnections": {
-                        "legacyRelay": {"eligibleConnections": type(self).legacy_count, "healthy": True},
+                        "legacyRelay": {"eligibleConnections": type(self).current_legacy_count, "healthy": True},
                         "readinessGate": {"unroutable": 0},
                     }
                 }
@@ -81,9 +142,18 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
 
     def setUp(self):
         Handler.legacy_count = 2
+        Handler.legacy_count_sequence = None
+        Handler.legacy_reads = 0
+        Handler.current_legacy_count = 2
+        Handler.legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
+        Handler.legacy_machine_id_sequence = None
+        Handler.current_legacy_machine_ids = Handler.legacy_machine_ids
+        Handler.current_last_seen_at = {}
+        Handler.advance_last_seen_each_snapshot = True
         Handler.redirect_health = False
         Handler.followed_redirect = False
         Handler.source_commit = COMMIT
+        Handler.health_clock_offset_seconds = 0
 
     def run_preflight(self, *extra_args):
         import os
@@ -114,7 +184,140 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("overlap_runtime_preflight=passed", result.stdout)
         self.assertIn("legacy_connections_preserved=2", result.stdout)
+        self.assertRegex(result.stdout, r"legacy_machine_set_sha256=[a-f0-9]{64}")
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_blocks_when_machine_set_changes_without_connection_count_drop(self):
+        Handler.legacy_machine_id_sequence = [
+            [str(UUID(int=1)), str(UUID(int=2))],
+            [str(UUID(int=1)), str(UUID(int=3))],
+        ]
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.5",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("conjunto de máquinas legadas mudou", result.stderr)
+        self.assertNotIn(str(UUID(int=1)), result.stdout + result.stderr)
+
+    def test_reads_all_pages_and_fingerprints_complete_machine_set(self):
+        Handler.legacy_machine_ids = [str(UUID(int=index + 1)) for index in range(205)]
+        Handler.legacy_count = len(Handler.legacy_machine_ids)
+        Handler.current_legacy_machine_ids = Handler.legacy_machine_ids
+        Handler.current_legacy_count = len(Handler.legacy_machine_ids)
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("legacy_connections_preserved=205", result.stdout)
+
+    def test_blocks_when_local_clock_is_out_of_sync_with_api(self):
+        Handler.health_clock_offset_seconds = 120
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("diferença entre o relógio da API e o relógio local", result.stderr)
+        self.assertIn("máximo permitido: 30s", result.stderr)
+
+    def test_reports_api_clock_skew_for_each_sample(self):
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"api_clock_skew_seconds=[+-]?\d+\.\d")
+
+    def test_observes_legacy_connections_repeatedly_for_requested_window(self):
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.3",
+            "--sample-interval-seconds",
+            "0.02",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("observation_samples=1\n", result.stdout)
+        self.assertIn("observation_seconds=0.3", result.stdout)
+        self.assertRegex(result.stdout, r"observed_at_utc=\d{4}-\d{2}-\d{2}T[^ ]+Z")
+
+    def test_blocks_when_persisted_last_seen_stops_advancing(self):
+        Handler.advance_last_seen_each_snapshot = False
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.15",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LastSeenAt não avançou durante a janela", result.stderr)
+        self.assertIn("pings persistidos de toda a frota", result.stderr)
+
+    def test_blocks_when_persisted_last_seen_is_older_than_limit(self):
+        Handler.advance_last_seen_each_snapshot = False
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=10)
+        Handler.current_last_seen_at = {
+            machine_id: stale_time for machine_id in Handler.legacy_machine_ids
+        }
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0",
+            "--maximum-last-seen-age-seconds",
+            "0.05",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LastSeenAt excedeu 0.05s", result.stderr)
+        self.assertIn("presença da frota não está fresca", result.stderr)
+
+    def test_requires_sample_interval_to_leave_presence_expiry_margin(self):
+        result = self.run_preflight(
+            "--observation-seconds",
+            "120",
+            "--sample-interval-seconds",
+            "16",
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("intervalo entre amostras precisa deixar margem", result.stderr)
+
+    def test_blocks_when_legacy_connections_drop_during_observation(self):
+        Handler.legacy_count_sequence = [2, 1]
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.5",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Foram observadas 1 conexões legadas", result.stderr)
+
+    def test_rejects_negative_observation_duration(self):
+        result = self.run_preflight("--observation-seconds", "-1")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("finito e não negativo", result.stderr)
+
+    def test_rejects_non_finite_observation_and_request_timeouts(self):
+        for option, value in (
+            ("--observation-seconds", "nan"),
+            ("--sample-interval-seconds", "inf"),
+            ("--timeout-seconds", "nan"),
+            ("--maximum-clock-skew-seconds", "inf"),
+            ("--maximum-last-seen-age-seconds", "nan"),
+        ):
+            with self.subTest(option=option, value=value):
+                result = self.run_preflight(option, value)
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("finito", result.stderr)
 
     def test_blocks_when_no_legacy_machine_connection_is_observed(self):
         Handler.legacy_count = 0

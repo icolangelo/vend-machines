@@ -14,20 +14,31 @@ Este preflight é somente leitura. Ele não envia comandos MDB, não cria sessõ
 Execute de uma máquina autorizada a consultar a candidata e a API antiga. O token precisa pertencer a um administrador de plataforma. Sem variável de ambiente, o script solicita o token com entrada oculta; não o coloque no comando, em arquivo ou em histórico de shell. `--expected-commit` é obrigatório e deve receber o SHA Git completo, com 40 caracteres hexadecimais; o script compara o valor inteiro informado pelos endpoints de readiness. `--minimum-legacy-connections` também é obrigatório: informe a quantidade esperada de sockets conforme a fonte operacional da frota; não use `1` por conveniência quando houver mais máquinas conectadas:
 
 ```powershell
-python tools/Deployment/Validate-TelemetryOverlapReadiness.py `
+python ./tools/Deployment/Validate-TelemetryOverlapReadiness.py `
   --api-base-url 'http://candidate-api:8080' `
   --expected-commit '<sha da candidata>' `
-  --minimum-legacy-connections '<quantidade esperada de sockets legados>'
+  --minimum-legacy-connections '<quantidade esperada de sockets legados>' `
+  --maximum-clock-skew-seconds 30 `
+  --maximum-last-seen-age-seconds 75 `
+  --observation-seconds 120 `
+  --sample-interval-seconds 15
 ```
+
+O preflight compara `/health.timestamp` com o relógio UTC local e falha se a diferença exceder o padrão de 30 segundos. Isso detecta relógio local sem NTP ou diferença entre a API e a máquina operadora; confirme `w32tm /query /status` (Windows) ou `timedatectl status` (Linux) antes de iniciar. O limite deixa margem abaixo da janela de presença de 90 segundos. Cada amostra registra o desvio observado.
+
+Com `--observation-seconds` maior que zero, o script repete todas as consultas de readiness, relay e conexões até o fim da janela e falha na primeira amostra abaixo do mínimo informado. Zero mantém uma única amostra. A janela indicada de 120 segundos cobre a expiração de presença da API (90 segundos) e a persistência do `LastSeenAt` (até 60 segundos); aumente-a caso o intervalo normal de ping do firmware seja maior. Em cada amostra, o script exige que o `LastSeenAt` de cada máquina tenha no máximo 75 segundos, abaixo do limite de presença de 90 segundos. Também exige que cada `LastSeenAt` avance ao menos uma vez durante a janela, detectando estagnação no final da observação. O intervalo entre amostras deve deixar margem suficiente para observar a expiração de presença. O script busca todas as páginas administrativas, exige IDs de máquina únicos e confirma que o conjunto permaneça idêntico. Assim, uma conexão listada com presença antiga, um ping parado ou uma reconexão mascarada por uma contagem igual não bastam para aprovar o preflight. Os IDs não são impressos; a saída registra a impressão SHA-256 do conjunto ao concluir. Cada amostra também registra SHA candidato, horário UTC e quantidade observada, sem emitir comandos MDB ou criar sessões.
 
 O verificador consulta `/health`, `/health/ready`, `/health/deploy-ready`, `/api/admin/legacy-machine-connections` e `/api/admin/worker-health`. Não segue redirects. Só retorna sucesso quando:
 
 - os endpoints de saúde estão prontos e informam o SHA esperado;
 - a lista administrativa observa pelo menos o mínimo informado de conexões legadas;
+- os mesmos IDs de máquina permanecem conectados durante toda a janela, sem substituição mascarada por uma contagem igual;
+- o `LastSeenAt` persistido permanece com no máximo 75 segundos de idade em cada amostra e avança ao menos uma vez para cada máquina durante a janela;
 - o relay está configurado e saudável;
 - a contagem do relay coincide nos dois diagnósticos e a candidata reporta zero conexões online sem rota.
 
 Qualquer divergência, `401/403`, readiness bloqueado, rota inacessível, redirect ou contagem abaixo do mínimo encerra o preflight com código diferente de zero. Corrija a causa e repita a leitura; não desative o gate para prosseguir. O token não é impresso pelo script.
+
 
 ## Operações que ficam indisponíveis para sockets legados
 
