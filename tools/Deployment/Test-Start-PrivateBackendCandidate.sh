@@ -55,11 +55,43 @@ bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
-  --legacy-api-origin http://previous-api:8080 \
   > "$temporary_directory/success.log"
 grep -q 'Health check aprovado' "$temporary_directory/success.log"
 grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
+grep -q -- '--env Deployment__PassiveMode=true' "$DOCKER_TEST_LOG"
+! grep -q -- 'Telemetry__LegacyApiBaseUrl=' "$DOCKER_TEST_LOG"
 ! grep -q -- '--restart' "$DOCKER_TEST_LOG"
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  --active-overlap \
+  --legacy-api-origin http://previous-api:8080 \
+  > "$temporary_directory/active.log"
+grep -q 'Modo ativo de convivência explicitamente solicitado' "$temporary_directory/active.log"
+grep -q -- '--env Deployment__PassiveMode=false' "$DOCKER_TEST_LOG"
+grep -q -- '--env Telemetry__LegacyApiBaseUrl=http://previous-api:8080' "$DOCKER_TEST_LOG"
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+printf 'Deployment__PassiveMode=false\n' >> "$temporary_directory/runtime.env"
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  >/dev/null 2>&1; then
+  echo 'O launcher aceitou que o arquivo runtime sobrescrevesse o modo passivo.' >&2
+  exit 1
+fi
+[[ ! -s "$DOCKER_TEST_LOG" ]]
+sed -i '/^Deployment__PassiveMode=/d' "$temporary_directory/runtime.env"
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -176,4 +208,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 1 início isolado, parada após health falho e 6 recusas antes do início.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), parada após health falho e 7 recusas antes do início.'

@@ -258,7 +258,7 @@ jobs:
             'A configuração, os segredos e os dados de runtime não são incluídos; injete-os somente no ambiente isolado da candidata.' \
             'Em Windows, antes de carregar, execute: ./Verify-BackendImageArtifact.ps1 -ArtifactPath . -ExpectedSourceSha <SHA completo>.' \
             'Confirme que imagem e migrations correspondem ao mesmo SHA: python3 ./verify-candidate-artifact-pair.py --image-artifact-dir <diretório da imagem> --release-package-dir <diretório do pacote operacional> --expected-source-sha <SHA completo>.' \
-            'Em um host Linux Docker, após preflight SQL, backup restaurável e aplicação aprovada das migrations, inicie em loopback com bash ./start-private-backend-candidate.sh --artifact-dir . --release-package-dir <diretório do pacote operacional do mesmo SHA> --expected-source-sha <SHA completo> --docker-network <rede privada> --runtime-env-file <arquivo privado> --legacy-api-origin http://<api antiga privada>:8080.' \
+            'Em um host Linux Docker, após preflight SQL, backup restaurável e aplicação aprovada das migrations, inicie a convivência ativa em loopback com bash ./start-private-backend-candidate.sh --artifact-dir . --release-package-dir <diretório do pacote operacional do mesmo SHA> --expected-source-sha <SHA completo> --docker-network <rede privada> --runtime-env-file <arquivo privado> --active-overlap --legacy-api-origin http://<api antiga privada>:8080.' \
             > "$output_directory/README.txt"
           docker save "$image_ref" | gzip --no-name -1 > "$output_directory/backend-image.tar.gz"
           gzip -t "$output_directory/backend-image.tar.gz"
