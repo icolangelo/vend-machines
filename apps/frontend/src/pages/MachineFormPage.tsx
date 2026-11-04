@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen } from "lucide-react";
+import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen, KeyRound, Copy, ShieldAlert } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "@/contexts/useAuth";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -26,7 +27,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
     getMachine,
     createMachine,
@@ -36,6 +37,8 @@ import {
     getTelemetryConnections,
     requestMdbStatus,
     startTelemetrySession,
+    rotateTelemetryCredential,
+    revokeTelemetryCredential,
     type TelemetryConnection,
 } from "@/lib/api";
 import { type Location } from "@/data/mockData";
@@ -44,7 +47,7 @@ import { getMdbStatusDetail } from "@/lib/mdbStatus";
 const machineFormSchema = z.object({
     id: z.string().optional(),
     grupoId: z.number().min(0, "Grupo ID não pode ser negativo").optional(),
-    serialNumber: z.string().min(1, "Serial Number é obrigatório"),
+    serialNumber: z.string().min(1, "Número de série é obrigatório"),
     modelo: z.string().min(1, "Modelo é obrigatório"),
     locationId: z.string().min(1, "Selecione uma localização"),
     firmwareVersion: z.string().optional(),
@@ -89,22 +92,42 @@ const machineFormSchema = z.object({
     ftpDirectoryPath: z.string().default("/evadts/"),
     mercadoPagoEnabled: z.boolean().default(false),
     autoOpenSessionEnabled: z.boolean().default(false),
+    minimumSalesTarget30d: z.number().int().min(1, "Informe uma meta maior que zero").max(10000000, "A meta excede o limite permitido").nullable().optional(),
 });
 
-type MachineFormValues = z.infer<typeof machineFormSchema>;
+type MachineFormInput = z.input<typeof machineFormSchema>;
+type MachineFormValues = z.output<typeof machineFormSchema>;
 
 export default function MachineFormPage() {
     const navigate = useNavigate();
     const { id } = useParams();
     const isEditMode = !!id;
+    const { user } = useAuth();
+    const canManageMachine = user?.role === "Admin" || user?.role === "PlatformAdmin";
     const [isMpIntegrationActive, setIsMpIntegrationActive] = useState(false);
     const [locations, setLocations] = useState<Location[]>([]);
+    const [locationsLoading, setLocationsLoading] = useState(true);
+    const [locationsLoaded, setLocationsLoaded] = useState(false);
+    const [locationsLoadError, setLocationsLoadError] = useState(false);
+    const [integrationLoadError, setIntegrationLoadError] = useState(false);
+    const [integrationLoading, setIntegrationLoading] = useState(true);
+    const [mdbConnectionLoading, setMdbConnectionLoading] = useState(isEditMode);
+    const [mdbConnectionLoadError, setMdbConnectionLoadError] = useState(false);
+    const [machineLoading, setMachineLoading] = useState(isEditMode);
+    const [machineLoaded, setMachineLoaded] = useState(!isEditMode);
+    const [machineLoadError, setMachineLoadError] = useState(false);
+    const [machineNotFound, setMachineNotFound] = useState(false);
+    const [machineLocationName, setMachineLocationName] = useState("");
     const [mdbConnection, setMdbConnection] = useState<TelemetryConnection | null>(null);
     const [mdbBusy, setMdbBusy] = useState(false);
+    const [credentialBusy, setCredentialBusy] = useState(false);
+    const [deviceCredential, setDeviceCredential] = useState<string | null>(null);
 
-    const form = useForm<MachineFormValues>({
+    const form = useForm<MachineFormInput, unknown, MachineFormValues>({
         resolver: zodResolver(machineFormSchema),
         defaultValues: {
+            serialNumber: "",
+            modelo: "",
             useGsm: false,
             useWifi: false,
             useEthernet: false,
@@ -121,76 +144,129 @@ export default function MachineFormPage() {
         },
     });
 
-    const { watch } = form;
+    const { watch, setValue, reset } = form;
+    const getValues = form.getValues;
     const useGsm = watch("useGsm");
     const useWifi = watch("useWifi");
     const useEthernet = watch("useEthernet");
 
-    useEffect(() => {
-        // Buscar se integração está ativa
-        getIntegration().then(data => {
+    const loadIntegration = useCallback(async () => {
+        setIntegrationLoading(true);
+        setIntegrationLoadError(false);
+        try {
+            const data = await getIntegration();
             setIsMpIntegrationActive(data.isActive);
-        }).catch(err => {
-            console.error("Erro ao buscar integracao para a maquina:", err);
-        });
-
-        getLocations().then(data => {
-            setLocations(data);
-            if (!isEditMode && data.length > 0) {
-                form.setValue("locationId", data[0].id);
-            }
-        }).catch(err => {
-            console.error("Erro ao buscar localizações para a máquina:", err);
-            toast.error("Erro ao carregar localizações.");
-        });
+        } catch {
+            setIntegrationLoadError(true);
+        } finally {
+            setIntegrationLoading(false);
+        }
     }, []);
 
-    useEffect(() => {
-        if (isEditMode && id) {
-            getMachine(id).then(machine => {
-                if (machine) {
-                    form.reset({
-                        id: machine.id,
-                        serialNumber: machine.serialNumber,
-                        modelo: machine.name,
-                        locationId: machine.locationId || locations.find(location => location.name === machine.clientName)?.id || "",
-                        useWifi: true,
-                        ativo: machine.status === "online",
-                        isDhcpEnabled: true,
-                        useHttps: true,
-                        ftpServerPort: 21,
-                        ftpDirectoryPath: "/evadts/",
-                        evaBaudRateOption: "0",
-                        mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
-                        autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
-                    });
-                }
-            }).catch(err => {
-                console.error("Erro ao buscar detalhes da máquina:", err);
-            });
+    const loadLocations = useCallback(async () => {
+        setLocationsLoading(true);
+        setLocationsLoadError(false);
+        try {
+            const data = await getLocations();
+            setLocations(data);
+            setLocationsLoaded(true);
+            if (!isEditMode && data.length > 0) setValue("locationId", data[0].id);
+        } catch {
+            setLocationsLoadError(true);
+        } finally {
+            setLocationsLoading(false);
         }
-    }, [id, isEditMode, form, locations]);
+    }, [isEditMode, setValue]);
+
+    const loadMachine = useCallback(async () => {
+        if (!isEditMode || !id) return;
+        setMachineLoading(true);
+        setMachineLoaded(false);
+        setMachineLoadError(false);
+        setMachineNotFound(false);
+        try {
+            const machine = await getMachine(id);
+            if (!machine) {
+                setMachineNotFound(true);
+                return;
+            }
+            setMachineLocationName(machine.clientName);
+            reset({
+                id: machine.id,
+                serialNumber: machine.serialNumber,
+                modelo: machine.name,
+                locationId: machine.locationId || "",
+                useWifi: true,
+                ativo: machine.isActive !== false,
+                isDhcpEnabled: true,
+                useHttps: true,
+                ftpServerPort: 21,
+                ftpDirectoryPath: "/evadts/",
+                evaBaudRateOption: "0",
+                mercadoPagoEnabled: machine.mercadoPagoEnabled || false,
+                autoOpenSessionEnabled: machine.autoOpenSessionEnabled || false,
+                minimumSalesTarget30d: machine.minimumSalesTarget30d ?? undefined,
+            });
+            setMachineLoaded(true);
+        } catch {
+            setMachineLoadError(true);
+        } finally {
+            setMachineLoading(false);
+        }
+    }, [id, isEditMode, reset]);
 
     useEffect(() => {
+        void loadIntegration();
+        void loadLocations();
+    }, [loadIntegration, loadLocations]);
+
+    useEffect(() => { void loadMachine(); }, [loadMachine]);
+
+    useEffect(() => {
+        if (!isEditMode || !machineLoaded || !locationsLoaded || getValues("locationId")) return;
+        const legacyLocation = locations.find(location => location.name === machineLocationName);
+        if (legacyLocation) setValue("locationId", legacyLocation.id);
+    }, [getValues, isEditMode, locations, locationsLoaded, machineLoaded, machineLocationName, setValue]);
+
+    const loadMdbConnection = useCallback(async () => {
         if (!isEditMode || !id) return;
-        getTelemetryConnections()
-            .then(items => setMdbConnection(items.find(item => item.machineId === id) ?? null))
-            .catch(() => setMdbConnection(null));
+        setMdbConnectionLoading(true);
+        setMdbConnectionLoadError(false);
+        try {
+            const items = await getTelemetryConnections();
+            setMdbConnection(items.find(item => item.machineId === id) ?? null);
+        } catch {
+            setMdbConnectionLoadError(true);
+        } finally {
+            setMdbConnectionLoading(false);
+        }
     }, [id, isEditMode]);
 
+    useEffect(() => { void loadMdbConnection(); }, [loadMdbConnection]);
+
+    const canSaveMachine = canManageMachine &&
+        locationsLoaded && !locationsLoading && !locationsLoadError && locations.length > 0 &&
+        (!isEditMode || (machineLoaded && !machineLoading && !machineLoadError && !machineNotFound));
+
     function onSubmit(data: MachineFormValues) {
+        if (!canSaveMachine) return;
         console.log("Form Submitted:", data);
         
         const selectedLocation = locations.find(location => location.id === data.locationId);
+        if (!selectedLocation) {
+            toast.error("Selecione uma localização válida antes de salvar a máquina.");
+            return;
+        }
         const machineData = {
             name: data.modelo,
             serialNumber: data.serialNumber,
-            status: data.ativo ? "online" as const : "offline" as const,
+            isActive: data.ativo,
             locationId: data.locationId,
-            location: selectedLocation?.name || "Localização principal",
-            clientName: selectedLocation?.name || "",
+            location: selectedLocation.name,
+            clientName: selectedLocation.name,
             mercadoPagoEnabled: data.mercadoPagoEnabled,
             autoOpenSessionEnabled: data.autoOpenSessionEnabled,
+            minimumSalesTarget30d: data.minimumSalesTarget30d ?? null,
         };
 
         const savePromise = isEditMode && id
@@ -209,13 +285,11 @@ export default function MachineFormPage() {
     }
 
     async function refreshMdbConnection() {
-        if (!id) return;
-        const items = await getTelemetryConnections();
-        setMdbConnection(items.find(item => item.machineId === id) ?? null);
+        await loadMdbConnection();
     }
 
     async function handleMdbStatusRequest() {
-        if (!id) return;
+        if (!id || !canManageMachine) return;
         setMdbBusy(true);
         try {
             const result = await requestMdbStatus(id);
@@ -235,7 +309,7 @@ export default function MachineFormPage() {
     }
 
     async function handleOpenSession() {
-        if (!id) return;
+        if (!id || !canManageMachine) return;
         setMdbBusy(true);
         try {
             await startTelemetrySession(id);
@@ -246,6 +320,42 @@ export default function MachineFormPage() {
         } finally {
             setMdbBusy(false);
         }
+    }
+
+    async function handleRotateDeviceCredential() {
+        if (!id || !canManageMachine) return;
+        setCredentialBusy(true);
+        try {
+            const result = await rotateTelemetryCredential(id);
+            setDeviceCredential(result.credential);
+            toast.success("Credencial gerada. Copie e provisione no dispositivo agora.");
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setCredentialBusy(false);
+        }
+    }
+
+    async function handleRevokeDeviceCredential() {
+        if (!id || !canManageMachine) return;
+        if (!window.confirm("Revogar a credencial desconectará a máquina atual. Continuar?")) return;
+        setCredentialBusy(true);
+        try {
+            await revokeTelemetryCredential(id);
+            setDeviceCredential(null);
+            toast.success("Credencial revogada.");
+            await refreshMdbConnection();
+        } catch (error) {
+            toast.error((error as Error).message);
+        } finally {
+            setCredentialBusy(false);
+        }
+    }
+
+    async function handleCopyDeviceCredential() {
+        if (!deviceCredential) return;
+        await navigator.clipboard.writeText(deviceCredential);
+        toast.success("Credencial copiada.");
     }
 
     return (
@@ -275,21 +385,55 @@ export default function MachineFormPage() {
                                     </p>
                                 </div>
                             </div>
-                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2">
+                            <Button onClick={form.handleSubmit(onSubmit)} className="gap-2" disabled={!canSaveMachine}>
                                 <Save className="w-4 h-4" />
                                 Salvar Equipamento
                             </Button>
                         </div>
 
-                        <div className="bg-card border rounded-lg shadow-sm">
+                        {locationsLoading && <p role="status" className="rounded-md border bg-card p-3 text-sm text-muted-foreground">Carregando localizações...</p>}
+                        {locationsLoadError && (
+                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                <span>Não foi possível carregar as localizações. A máquina não poderá ser salva até que uma localização válida seja carregada.</span>
+                                <Button variant="outline" onClick={() => void loadLocations()} disabled={locationsLoading}>Tentar novamente</Button>
+                            </div>
+                        )}
+                        {locationsLoaded && locations.length === 0 && !locationsLoadError && (
+                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                                <span>Cadastre uma localização antes de associar e salvar esta máquina.</span>
+                                <Button variant="outline" onClick={() => navigate("/locations")}>Cadastrar localização</Button>
+                            </div>
+                        )}
+
+                        {isEditMode && machineLoading ? (
+                            <div role="status" className="flex min-h-60 items-center justify-center rounded-lg border bg-card p-6 text-muted-foreground">
+                                Carregando os dados da máquina...
+                            </div>
+                        ) : isEditMode && machineLoadError ? (
+                            <div role="alert" className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Não foi possível carregar os dados da máquina. O formulário de edição está bloqueado para evitar sobrescrever informações.</p>
+                                <Button variant="outline" onClick={() => void loadMachine()} disabled={machineLoading}>Tentar novamente</Button>
+                            </div>
+                        ) : isEditMode && machineNotFound ? (
+                            <div role="alert" className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Máquina não encontrada. Nenhuma alteração pode ser salva.</p>
+                                <Button variant="outline" onClick={() => navigate("/machines")}>Voltar para máquinas</Button>
+                            </div>
+                        ) : (
+                        <div className="bg-card border rounded-lg shadow-xs">
                             <Form {...form}>
                                 <form onSubmit={form.handleSubmit(onSubmit)} className="p-6">
+                                    {!canManageMachine && (
+                                        <p role="status" className="mb-6 rounded-md border bg-muted p-3 text-sm text-muted-foreground">
+                                            Modo somente leitura: apenas administradores podem alterar a máquina ou operar sessões MDB.
+                                        </p>
+                                    )}
                                     <Tabs defaultValue="hardware" className="w-full">
                                         <TabsList className="mb-6 bg-muted/50 p-1 rounded-md inline-flex w-full overflow-x-auto justify-start border">
-                                            <TabsTrigger value="hardware" className="gap-2"><Microchip className="w-4 h-4" /> Hardware</TabsTrigger>
+                                            <TabsTrigger value="hardware" className="gap-2"><Microchip className="w-4 h-4" /> Equipamento</TabsTrigger>
                                             <TabsTrigger value="rede" className="gap-2"><Network className="w-4 h-4" /> Rede</TabsTrigger>
                                             <TabsTrigger value="servidor" className="gap-2"><Server className="w-4 h-4" /> Servidor</TabsTrigger>
-                                            <TabsTrigger value="vending" className="gap-2"><ArrowLeftRight className="w-4 h-4" /> Vending</TabsTrigger>
+                                            <TabsTrigger value="vending" className="gap-2"><ArrowLeftRight className="w-4 h-4" /> Telemetria</TabsTrigger>
                                             <TabsTrigger value="ftp" className="gap-2"><HardDriveDownload className="w-4 h-4" /> FTP</TabsTrigger>
                                         </TabsList>
 
@@ -298,7 +442,7 @@ export default function MachineFormPage() {
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                                 <FormField control={form.control} name="serialNumber" render={({ field }) => (
                                                     <FormItem>
-                                                        <FormLabel>Serial Number *</FormLabel>
+                                                        <FormLabel>Número de série *</FormLabel>
                                                         <FormControl><Input placeholder="Ex: SN-123456" {...field} /></FormControl>
                                                         <FormMessage />
                                                     </FormItem>
@@ -333,6 +477,28 @@ export default function MachineFormPage() {
                                                     <FormItem>
                                                         <FormLabel>Versão Firmware</FormLabel>
                                                         <FormControl><Input placeholder="Ex: v1.2.3" {...field} /></FormControl>
+                                                        <FormMessage />
+                                                    </FormItem>
+                                                )} />
+                                            </div>
+
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 rounded-md border p-4 bg-muted/10">
+                                                <FormField control={form.control} name="minimumSalesTarget30d" render={({ field }) => (
+                                                    <FormItem>
+                                                        <FormLabel>Meta mínima de vendas em 30 dias</FormLabel>
+                                                        <FormControl>
+                                                            <Input
+                                                                type="number"
+                                                                min={1}
+                                                                max={10000000}
+                                                                step={1}
+                                                                inputMode="numeric"
+                                                                placeholder="Deixe vazio para não monitorar"
+                                                                value={field.value ?? ""}
+                                                                onChange={event => field.onChange(event.target.value === "" ? undefined : Number(event.target.value))}
+                                                            />
+                                                        </FormControl>
+                                                        <p className="text-xs text-muted-foreground">Máquinas abaixo desta meta aparecem na triagem. O cálculo usa unidades entregues nos últimos 30 dias; sem meta configurada, a máquina não é classificada.</p>
                                                         <FormMessage />
                                                     </FormItem>
                                                 )} />
@@ -400,7 +566,14 @@ export default function MachineFormPage() {
                                             {/* CONFIGURAÇÃO DE PAGAMENTO */}
                                             <div className="p-4 border rounded-md bg-muted/10 mt-6">
                                                 <h3 className="text-sm font-semibold mb-4 text-foreground">Configuração de Pagamento</h3>
-                                                {isMpIntegrationActive ? (
+                                                {integrationLoading ? (
+                                                    <p role="status" className="text-sm text-muted-foreground">Verificando integração do Mercado Pago...</p>
+                                                ) : integrationLoadError ? (
+                                                    <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                                        <span>Não foi possível confirmar se a integração do Mercado Pago está ativa.</span>
+                                                        <Button type="button" variant="outline" size="sm" onClick={() => void loadIntegration()} disabled={integrationLoading}>Tentar novamente</Button>
+                                                    </div>
+                                                ) : isMpIntegrationActive ? (
                                                     <FormField control={form.control} name="mercadoPagoEnabled" render={({ field }) => (
                                                         <FormItem className="flex flex-row items-center space-x-3 space-y-0">
                                                             <FormControl>
@@ -509,13 +682,13 @@ export default function MachineFormPage() {
                                             
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
                                                 <FormField control={form.control} name="clientId" render={({ field }) => (
-                                                    <FormItem><FormLabel>Client ID</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>ID do cliente</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="machineId" render={({ field }) => (
-                                                    <FormItem><FormLabel>Machine ID</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>ID da máquina</FormLabel><FormControl><Input {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="webQueryIntervalMs" render={({ field }) => (
-                                                    <FormItem><FormLabel>Intervalo Poll (ms)</FormLabel><FormControl><Input type="number" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>Intervalo de consulta (ms)</FormLabel><FormControl><Input type="number" {...field} onChange={e => field.onChange(parseInt(e.target.value))} /></FormControl></FormItem>
                                                 )} />
                                             </div>
 
@@ -529,6 +702,43 @@ export default function MachineFormPage() {
 
                                         {/* ABA VENDING */}
                                         <TabsContent value="vending" className="space-y-6 animate-in fade-in-50 duration-300">
+                                            {isEditMode && (
+                                                <div className="p-4 border rounded-md bg-background space-y-3">
+                                                    <div className="flex items-start gap-3">
+                                                        <KeyRound className="w-5 h-5 mt-0.5 text-muted-foreground" />
+                                                        <div>
+                                                            <h3 className="text-sm font-semibold text-foreground">Credencial de telemetria</h3>
+                                                            <p className="text-xs text-muted-foreground mt-1">
+                                                                Gere uma credencial individual para esta máquina. Ela aparece somente após a rotação e deve ser provisionada no dispositivo.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    {deviceCredential && (
+                                                        <div className="flex flex-col sm:flex-row gap-2">
+                                                            <Input value={deviceCredential} readOnly className="font-mono text-xs" aria-label="Credencial gerada" />
+                                                            <Button type="button" variant="outline" onClick={handleCopyDeviceCredential}>
+                                                                <Copy className="w-4 h-4 mr-2" /> Copiar
+                                                            </Button>
+                                                        </div>
+                                                    )}
+                                                    {!canManageMachine && (
+                                                        <p className="text-xs text-amber-700 flex items-center gap-2">
+                                                            <ShieldAlert className="w-4 h-4" /> Apenas administradores podem alterar a credencial.
+                                                        </p>
+                                                    )}
+                                                    {canManageMachine && (
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <Button type="button" size="sm" onClick={handleRotateDeviceCredential} disabled={credentialBusy}>
+                                                                <KeyRound className="w-4 h-4 mr-2" />
+                                                                {credentialBusy ? "Processando..." : "Gerar/rotacionar"}
+                                                            </Button>
+                                                            <Button type="button" size="sm" variant="outline" onClick={handleRevokeDeviceCredential} disabled={credentialBusy}>
+                                                                Revogar credencial
+                                                            </Button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                             <div className="p-4 border rounded-md bg-muted/10 space-y-4">
                                                 <div>
                                                     <h3 className="text-sm font-semibold text-foreground">Sessão MDB</h3>
@@ -554,25 +764,46 @@ export default function MachineFormPage() {
 
                                                 {isEditMode && (
                                                     <div className="p-4 border rounded-md bg-background space-y-3">
+                                                        {mdbConnectionLoadError && (
+                                                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                                                <span>{mdbConnection ? "Não foi possível atualizar a conexão MDB. O último estado carregado permanece visível." : "Não foi possível consultar a conexão MDB; o estado da máquina é desconhecido."}</span>
+                                                                <Button type="button" variant="outline" size="sm" onClick={() => void loadMdbConnection()} disabled={mdbConnectionLoading}>Tentar novamente</Button>
+                                                            </div>
+                                                        )}
+                                                        {mdbConnectionLoading && !mdbConnection && <p role="status" className="text-sm text-muted-foreground">Consultando a conexão MDB...</p>}
                                                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                                                             <div className="flex gap-3">
                                                                 <Activity className="w-5 h-5 mt-0.5 text-muted-foreground" />
                                                                 <div>
                                                                     <div className="flex items-center gap-2 flex-wrap">
                                                                         <span className="text-sm font-semibold">
-                                                                            {getMdbStatusDetail(mdbConnection?.mdbStatus).label}
+                                                                            {mdbConnection
+                                                                                ? getMdbStatusDetail(mdbConnection.mdbStatus).label
+                                                                                : mdbConnectionLoadError
+                                                                                    ? "Falha ao consultar conexão MDB"
+                                                                                    : mdbConnectionLoading
+                                                                                        ? "Consultando conexão MDB"
+                                                                                        : "Máquina sem conexão de telemetria"}
                                                                         </span>
                                                                         <Badge variant={mdbConnection?.mdbStatusFresh ? "default" : "outline"}>
-                                                                            {mdbConnection?.mdbStatusFresh ? "Atual" : "Desatualizado"}
+                                                                            {mdbConnection
+                                                                                ? mdbConnection.mdbStatusFresh ? "Atual" : "Desatualizado"
+                                                                                : mdbConnectionLoadError ? "Indisponível" : mdbConnectionLoading ? "Consultando" : "Sem conexão"}
                                                                         </Badge>
                                                                     </div>
                                                                     <p className="text-xs text-muted-foreground mt-1">
-                                                                        {getMdbStatusDetail(mdbConnection?.mdbStatus).description}
+                                                                        {mdbConnection
+                                                                            ? getMdbStatusDetail(mdbConnection.mdbStatus).description
+                                                                            : mdbConnectionLoadError
+                                                                                ? "Não foi possível obter o estado de conexão e MDB da máquina."
+                                                                                : mdbConnectionLoading
+                                                                                    ? "Aguarde a resposta da API."
+                                                                                    : "Nenhuma conexão de telemetria ativa foi encontrada para esta máquina."}
                                                                     </p>
                                                                     <p className="text-xs text-muted-foreground mt-1">
                                                                         Última atualização: {mdbConnection?.mdbStatusUpdatedAt
                                                                             ? new Date(mdbConnection.mdbStatusUpdatedAt).toLocaleString("pt-BR")
-                                                                            : "—"}
+                                                                            : mdbConnectionLoadError ? "Não consultada" : "—"}
                                                                     </p>
                                                                 </div>
                                                             </div>
@@ -581,7 +812,7 @@ export default function MachineFormPage() {
                                                                     type="button"
                                                                     variant="outline"
                                                                     size="sm"
-                                                                    disabled={mdbBusy || !mdbConnection?.online || !mdbConnection?.monitoringEnabled}
+                                                                    disabled={!canManageMachine || mdbBusy || !mdbConnection?.online || !mdbConnection?.monitoringEnabled}
                                                                     onClick={handleMdbStatusRequest}
                                                                 >
                                                                     <RefreshCw className={`w-4 h-4 mr-2 ${mdbBusy ? "animate-spin" : ""}`} />
@@ -592,6 +823,7 @@ export default function MachineFormPage() {
                                                                         type="button"
                                                                         size="sm"
                                                                         disabled={
+                                                                            !canManageMachine ||
                                                                             mdbBusy ||
                                                                             !mdbConnection?.online ||
                                                                             !mdbConnection?.monitoringEnabled ||
@@ -612,14 +844,14 @@ export default function MachineFormPage() {
 
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                                 <FormField control={form.control} name="evaSecurityPassword" render={({ field }) => (
-                                                    <FormItem><FormLabel>EVA Security</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
+                                                    <FormItem><FormLabel>Segurança EVA</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="evaPasscode" render={({ field }) => (
-                                                    <FormItem><FormLabel>EVA Passcode</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
+                                                <FormItem><FormLabel>Senha EVA</FormLabel><FormControl><Input type="password" {...field} /></FormControl></FormItem>
                                                 )} />
                                                 <FormField control={form.control} name="evaBaudRateOption" render={({ field }) => (
                                                     <FormItem>
-                                                        <FormLabel>Baud Rate</FormLabel>
+                                                        <FormLabel>Taxa de transmissão</FormLabel>
                                                         <Select onValueChange={field.onChange} defaultValue={field.value}>
                                                             <FormControl><SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger></FormControl>
                                                             <SelectContent>
@@ -633,7 +865,7 @@ export default function MachineFormPage() {
                                             <FormField control={form.control} name="evaLowSpeedStartup" render={({ field }) => (
                                                 <FormItem className="flex flex-row items-center space-x-3 space-y-0 p-4 border rounded-md">
                                                     <FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl>
-                                                    <FormLabel className="font-semibold cursor-pointer">Low Speed Startup (2400-init)</FormLabel>
+                                                    <FormLabel className="font-semibold cursor-pointer">Inicialização em baixa velocidade (2400 bps)</FormLabel>
                                                 </FormItem>
                                             )} />
                                         </TabsContent>
@@ -677,6 +909,7 @@ export default function MachineFormPage() {
                                 </form>
                             </Form>
                         </div>
+                        )}
                     </main>
                 </div>
             </div>
