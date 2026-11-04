@@ -81,8 +81,6 @@ builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
 builder.Services.AddSingleton<PasswordResetEmailQueue>();
 builder.Services.AddSingleton<IPasswordResetEmailQueue>(services =>
     services.GetRequiredService<PasswordResetEmailQueue>());
-if (!passiveDeploymentMode)
-    builder.Services.AddHostedService(services => services.GetRequiredService<PasswordResetEmailQueue>());
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
@@ -252,25 +250,12 @@ if (!useSqlite)
 {
     builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString!));
     builder.Services.AddSingleton<PostgresTelemetryPanelEventBus>();
-    if (!passiveDeploymentMode)
-        builder.Services.AddHostedService<TelemetryPanelEventRelay>();
 }
 builder.Services.AddSingleton<TelemetryPanelHub>();
 builder.Services.AddSingleton(_ => new BackgroundWorkerHealthRegistry(includeTelemetryPanelEventRelay: !useSqlite));
 builder.Services.AddSingleton<ShutdownWriteRequestGate>();
 builder.Services.AddScoped<DeploymentReadinessService>();
 builder.Services.AddTelemetryConnectionOperations();
-// Registre antes do manager para que o shutdown drene os sockets antes de remover o lease do nó.
-if (!passiveDeploymentMode)
-{
-    builder.Services.AddHostedService(sp => new TelemetryConnectionLeaseWorker(
-        sp.GetRequiredService<IServiceScopeFactory>(),
-        sp.GetRequiredService<TelemetryConnectionManager>().NodeId,
-        sp.GetRequiredService<TelemetryConnectionManager>().GetActiveMachineConnectionsForLease,
-        sp.GetRequiredService<ILogger<TelemetryConnectionLeaseWorker>>(),
-        sp.GetRequiredService<BackgroundWorkerHealthRegistry>()));
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
-}
 builder.Services.AddScoped<SessionOrchestrator>();
 builder.Services.AddScoped<IDeviceTelemetryMessageHandler>(sp => sp.GetRequiredService<SessionOrchestrator>());
 builder.Services.AddSingleton<DeviceMessageInboxAdmissionGate>();
@@ -283,21 +268,10 @@ builder.Services.AddHttpClient("TelemetryLegacyOwner", client => client.Timeout 
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<LegacyTelemetryRequestRelay>();
 builder.Services.AddScoped<MercadoPagoWebhookProcessor>();
-if (!passiveDeploymentMode)
-{
-    builder.Services.AddHostedService<MercadoPagoWebhookWorker>();
-    builder.Services.AddHostedService<MercadoPagoReconciliationWorker>();
-}
 builder.Services.AddScoped<OperationalAlertSyncService>();
-if (!passiveDeploymentMode)
-    builder.Services.AddHostedService<OperationalAlertWorker>();
 builder.Services.Configure<MdbStatusOptions>(builder.Configuration.GetSection("MdbStatus"));
 builder.Services.AddScoped<MdbStatusRequestService>();
-if (!passiveDeploymentMode)
-{
-    builder.Services.AddHostedService<TelemetryDeadlineWorker>();
-    builder.Services.AddHostedService<MdbStatusPollingWorker>();
-}
+builder.Services.AddDeploymentBackgroundWorkers(passiveDeploymentMode, includePostgresTelemetryPanelRelay: !useSqlite);
 
 var app = builder.Build();
 
