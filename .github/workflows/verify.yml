@@ -229,6 +229,10 @@ jobs:
       - name: Build telemetry simulator
         run: dotnet build tools/VendingMachines.Simulator/VendingMachines.Simulator.csproj --configuration Release
 
+      - name: Verify backend Production startup with isolated PostgreSQL under the candidate resource cap
+        shell: pwsh
+        run: ./tools/Database/Test-BackendImagePostgresSmoke.ps1 -Image vend-machines-backend:verify -SegmentsDirectory artifacts -PostgresImage postgres:17-alpine
+
       - name: Build encryption rotation tool
         run: dotnet build tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj --configuration Release
 

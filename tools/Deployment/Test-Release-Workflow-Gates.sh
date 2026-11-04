@@ -128,6 +128,7 @@ require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/DeviceMessag
 runtime_image_test="$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh"
 require_contains "$verify_workflow" 'bash tools/Deployment/Test-BackendRuntimeImage.sh vend-machines-backend:verify'
 require_contains "$workflow" 'bash tools/Deployment/Test-BackendRuntimeImage.sh "$BACKEND_IMAGE_TAG"'
+require_contains "$verify_workflow" './tools/Database/Test-BackendImagePostgresSmoke.ps1 -Image vend-machines-backend:verify -SegmentsDirectory artifacts -PostgresImage postgres:17-alpine'
 require_contains "$runtime_image_test" 'Data Source=/tmp/production-must-not-use-sqlite.db'
 require_contains "$runtime_image_test" 'Host=127.0.0.1;Database=machines;Username=service;Password=synthetic;SSL Mode=Require'
 require_contains "$runtime_image_test" 'Host=YOUR_NEON_HOST;Database=machines;Username=service;Password=synthetic;SSL Mode=Require'
