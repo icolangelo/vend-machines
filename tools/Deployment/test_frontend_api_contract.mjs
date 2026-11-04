@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   findContractMismatches,
+  findNewContractMismatches,
   loadFrontendSourcesFromGitRef,
   loadFrontendSourcesFromWorkingTree,
   materializeControllersFromGitRef,
@@ -222,5 +223,33 @@ test("ignores routes declared only by unreferenced exported client helpers", () 
   } finally {
     rmSync(join(directory, "MachinesController.cs"), { force: true });
     rmdirSync(directory);
+  }
+});
+
+test("delta contract check tolerates existing gaps but rejects newly introduced missing routes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "frontend-api-contract-delta-"));
+  try {
+    writeFileSync(join(directory, "ProductsController.cs"), `
+      [Route("api/[controller]")]
+      public class ProductsController : ControllerBase
+      {
+        [HttpGet] public IActionResult Get() => Ok();
+      }
+    `);
+    const baseSources = [
+      { filename: "apps/frontend/src/lib/api.ts", text: 'export function listProducts() { return authFetch(`${API_BASE_URL}/products`); }' },
+      { filename: "apps/frontend/src/pages/Products.tsx", text: 'import { listProducts } from "@/lib/api"; listProducts(); authFetch(`${API_BASE_URL}/products/types/${"id"}`, { method: "DELETE" });' },
+    ];
+    const existingGap = findNewContractMismatches(baseSources, baseSources, directory);
+    assert.deepEqual(existingGap, []);
+
+    const changedSources = baseSources.map(source => ({ ...source }));
+    changedSources[1] = {
+      ...changedSources[1],
+      text: `${changedSources[1].text}\nauthFetch(\`${"${API_BASE_URL}"}/products/${"${id}"}\`, { method: "DELETE" });`,
+    };
+    assert.deepEqual(findNewContractMismatches(changedSources, baseSources, directory), ["DELETE /products/{}"]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -171,6 +171,20 @@ export function findContractMismatches(frontendSources, controllerDirectoryPath,
   return [...requests].filter(request => !routes.has(request)).sort();
 }
 
+export function findNewContractMismatches(frontendSources, baseFrontendSources, controllerDirectoryPath) {
+  const mismatchesFor = sources => {
+    const clients = sources.filter(source => /(^|\/)(api|authClient)\.tsx?$/.test(source.filename.replaceAll("\\", "/")));
+    const usedFunctions = referencedClientFunctions(clients, sources);
+    const productionSources = sources.filter(source =>
+      !source.filename.replaceAll("\\", "/").includes("/test/") &&
+      !/\.(test|spec)\.tsx?$/.test(source.filename));
+    return findContractMismatches(productionSources, controllerDirectoryPath, usedFunctions);
+  };
+
+  const baseMismatches = new Set(mismatchesFor(baseFrontendSources));
+  return mismatchesFor(frontendSources).filter(request => !baseMismatches.has(request));
+}
+
 export function materializeControllersFromGitRef(
   ref,
   repoRoot = repositoryRoot,
@@ -241,21 +255,23 @@ function main() {
   const args = process.argv.slice(2);
   let backendRef = null;
   let frontendRef = null;
+  let frontendBaseRef = null;
   if (args.length > 0) {
     if (args.length % 2 !== 0) {
-      console.error("Uso: node CheckFrontendApiContract.mjs [--backend-ref <ref-git>] [--frontend-ref <ref-git>]");
+      console.error("Uso: node CheckFrontendApiContract.mjs [--backend-ref <ref-git>] [--frontend-ref <ref-git>] [--frontend-base-ref <ref-git>]");
       process.exitCode = 2;
       return;
     }
     for (let index = 0; index < args.length; index += 2) {
       const [option, ref] = args.slice(index, index + 2);
-      if (!ref || !["--backend-ref", "--frontend-ref"].includes(option)) {
-        console.error("Uso: node CheckFrontendApiContract.mjs [--backend-ref <ref-git>] [--frontend-ref <ref-git>]");
+      if (!ref || !["--backend-ref", "--frontend-ref", "--frontend-base-ref"].includes(option)) {
+        console.error("Uso: node CheckFrontendApiContract.mjs [--backend-ref <ref-git>] [--frontend-ref <ref-git>] [--frontend-base-ref <ref-git>]");
         process.exitCode = 2;
         return;
       }
       if (option === "--backend-ref") backendRef = ref;
-      else frontendRef = ref;
+      else if (option === "--frontend-ref") frontendRef = ref;
+      else frontendBaseRef = ref;
     }
   }
 
@@ -282,18 +298,34 @@ function main() {
     const productionSources = allFrontendSources.filter(source =>
       !source.filename.replaceAll("\\", "/").includes("/test/") &&
       !/\.(test|spec)\.tsx?$/.test(source.filename));
-    const mismatches = findContractMismatches(productionSources, selectedControllerDirectory, usedClientFunctions);
+    let mismatches = findContractMismatches(productionSources, selectedControllerDirectory, usedClientFunctions);
+    let existingBaselineMismatches = 0;
+    if (frontendBaseRef) {
+      const baseFrontendSources = loadFrontendSourcesFromGitRef(frontendBaseRef);
+      mismatches = findNewContractMismatches(allFrontendSources, baseFrontendSources, selectedControllerDirectory);
+      const baseClients = baseFrontendSources.filter(source => /(^|\\|\/)(api|authClient)\.tsx?$/.test(source.filename));
+      const baseUsedFunctions = referencedClientFunctions(baseClients, baseFrontendSources);
+      const baseProductionSources = baseFrontendSources.filter(source =>
+        !source.filename.replaceAll("\\", "/").includes("/test/") &&
+        !/\.(test|spec)\.tsx?$/.test(source.filename));
+      existingBaselineMismatches = findContractMismatches(baseProductionSources, selectedControllerDirectory, baseUsedFunctions).length;
+    }
     if (mismatches.length > 0) {
       const target = backendRef ? `API em ${backendRef}` : "API atual";
       const source = frontendRef ? `frontend em ${frontendRef}` : "frontend atual";
-      console.error(`Contrato ${source}/API incompatível com a ${target}: ${mismatches.length} rota(s) sem método correspondente:`);
+      const delta = frontendBaseRef ? ` introduzida desde ${frontendBaseRef}` : "";
+      console.error(`Contrato ${source}/API incompatível com a ${target}: ${mismatches.length} rota(s)${delta} sem método correspondente:`);
       for (const mismatch of mismatches) console.error(`- ${mismatch}`);
       process.exitCode = 1;
       return;
     }
     const target = backendRef ? `API em ${backendRef}` : "controllers atuais";
     const source = frontendRef ? `frontend em ${frontendRef}` : "frontend atual";
-    console.log(`Contrato ${source}/API verificado: todos os métodos e rotas usados pelo cliente existem nos ${target}.`);
+    if (frontendBaseRef) {
+      console.log(`Compatibilidade incremental ${source}/API ${target} verificada: nenhuma nova rota incompatível desde ${frontendBaseRef}; ${existingBaselineMismatches} incompatibilidade(s) preexistente(s) permanecem na base.`);
+    } else {
+      console.log(`Contrato ${source}/API verificado: todos os métodos e rotas usados pelo cliente existem nos ${target}.`);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "erro desconhecido";
     console.error(`Não foi possível carregar a referência selecionada: ${message}`);

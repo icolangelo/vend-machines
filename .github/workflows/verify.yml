@@ -346,7 +346,7 @@ jobs:
           if [[ -z "$backend_ref" || "$backend_ref" =~ ^0+$ ]]; then
             backend_ref="$(git rev-parse "${GITHUB_SHA}^")"
           fi
-          node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
+          node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref" --frontend-base-ref "$backend_ref"
 
       - name: Audit dependencies
         if: steps.frontend-target.outputs.changed == 'true'
