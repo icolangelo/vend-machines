@@ -54,6 +54,7 @@ case "$1" in
     [[ "$actual_status" == "$expected_status" ]]
     ;;
   stop) [[ "${DOCKER_TEST_STOP_FAIL:-0}" != 1 ]] ;;
+  kill) [[ "${DOCKER_TEST_KILL_FAIL:-0}" != 1 ]] ;;
   *) exit 9 ;;
 esac
 DOCKER
@@ -142,6 +143,42 @@ fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 grep -q 'não confirmou Deployment__PassiveMode=true' "$temporary_directory/passive-mode-failure.log"
 unset DOCKER_TEST_PASSIVE_MODE
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_PASSIVE_MODE=false
+export DOCKER_TEST_STOP_FAIL=1
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-kill-fallback.log" 2>&1; then
+  echo 'O launcher informou sucesso após ativar o fallback de parada.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q '^kill ' "$DOCKER_TEST_LOG"
+grep -q 'container candidato foi encerrado' "$temporary_directory/passive-kill-fallback.log"
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_KILL_FAIL=1
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-stop-failure.log" 2>&1; then
+  echo 'O launcher informou sucesso mesmo sem confirmar a parada da candidata passiva.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q '^kill ' "$DOCKER_TEST_LOG"
+grep -q 'falharam a parada graciosa e o encerramento forçado' "$temporary_directory/passive-stop-failure.log"
+unset DOCKER_TEST_PASSIVE_MODE DOCKER_TEST_STOP_FAIL DOCKER_TEST_KILL_FAIL
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -274,4 +311,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), bloqueios passivos verificados, parada após probe/health falho e 7 recusas antes do início.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), bloqueios passivos verificados, fallback docker kill após parada graciosa falha e 7 recusas antes do início.'
