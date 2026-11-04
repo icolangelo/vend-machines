@@ -94,3 +94,65 @@ assert_startup_rejects \
   'A configuração MercadoPago:ClientSecret é obrigatória fora do ambiente de desenvolvimento.' \
   --env 'ConnectionStrings__DefaultConnection=Host=db.production.internal;Database=machines;Username=service;Password=synthetic;SSL Mode=Require' \
   --env 'Jwt__Key=UniqueRuntimeValidationJwtKey2026Synthetic'
+
+passive_container="vend-machines-passive-runtime-test-$$"
+docker run --detach \
+  --name "$passive_container" \
+  --network none \
+  --health-interval 1s \
+  --health-timeout 2s \
+  --health-start-period 1s \
+  --health-retries 5 \
+  --env ASPNETCORE_ENVIRONMENT=Production \
+  --env DOTNET_ENVIRONMENT=Production \
+  --env 'ConnectionStrings__DefaultConnection=Host=db.passive.invalid;Database=machines;Username=service;Password=synthetic;SSL Mode=Require;Timeout=1' \
+  --env 'Encryption__Key=RuntimePassiveEncryptionCurrentKey2026' \
+  --env 'Encryption__LegacyKey=RuntimePassiveEncryptionLegacyKey2026' \
+  --env Encryption__WriteLegacyFormat=false \
+  --env 'Jwt__Key=UniqueRuntimeValidationJwtKey2026Synthetic' \
+  --env 'MercadoPago__ClientId=UniqueRuntimeValidationMercadoPagoClientSynthetic' \
+  --env 'MercadoPago__ClientSecret=UniqueRuntimeValidationMercadoPagoSecretSynthetic' \
+  --env 'MercadoPago__WebhookSecret=UniqueRuntimeValidationWebhookSecretSynthetic' \
+  --env 'MercadoPago__WebhookUrl=https://payments.passive.invalid/api/webhooks/mercadopago' \
+  --env 'Cors__AllowedOrigins__0=https://passive.invalid' \
+  --env 'WebSockets__AllowedOrigins__0=https://passive.invalid' \
+  --env Deployment__PassiveMode=true \
+  "$image" >/dev/null
+
+passive_health='starting'
+for _ in $(seq 1 30); do
+  passive_health=$(docker inspect --format '{{.State.Health.Status}}' "$passive_container" 2>/dev/null || printf 'unavailable')
+  case "$passive_health" in
+    healthy) break ;;
+    unhealthy|unavailable) break ;;
+  esac
+  sleep 1
+done
+if [[ "$passive_health" != 'healthy' ]]; then
+  docker logs "$passive_container" >&2 || true
+  docker rm -f "$passive_container" >/dev/null 2>&1 || true
+  echo "::error::A imagem não permaneceu saudável em modo passivo ($passive_health)."
+  exit 1
+fi
+
+assert_passive_status() {
+  local path="$1"
+  local expected_status="$2"
+  if ! docker exec "$passive_container" bash -ec \
+    'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET %s HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n" "$1" >&3; IFS= read -r status <&3; [[ "$status" == *" $2 "* ]]' \
+    -- "$path" "$expected_status"; then
+    docker logs "$passive_container" >&2 || true
+    docker rm -f "$passive_container" >/dev/null 2>&1 || true
+    echo "::error::Modo passivo respondeu status inesperado para $path (esperado $expected_status)."
+    exit 1
+  fi
+}
+
+assert_passive_status / 200
+assert_passive_status /health 200
+assert_passive_status /health/ready 503
+assert_passive_status /health/deploy-ready 503
+assert_passive_status /api/machines 503
+assert_passive_status /telemetria 503
+docker rm -f "$passive_container" >/dev/null
+echo 'Imagem backend inicializou sem alcançar o banco em modo passivo; probes HTTP e bloqueio das rotas de aplicação confirmados.'
