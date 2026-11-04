@@ -1,14 +1,15 @@
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir: './',
+  testDir: './e2e',
+  testMatch: '**/*.e2e.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: 'http://127.0.0.1:8088',
     trace: 'on-first-retry',
   },
   projects: [
@@ -25,4 +26,10 @@ export default defineConfig({
       use: { ...devices['Desktop Safari'] },
     },
   ],
+  webServer: {
+    command: 'npm run dev -- --host 127.0.0.1 --port 8088 --strictPort',
+    url: 'http://127.0.0.1:8088',
+    reuseExistingServer: false,
+    env: { VITE_API_URL: 'http://127.0.0.1:5118/api', VITE_IS_TEST_ENVIRONMENT: 'false' },
+  },
 });
