@@ -10,9 +10,24 @@ artifact_directory="$temporary_directory/artifact"
 release_directory="$temporary_directory/release"
 bin_directory="$temporary_directory/bin"
 mkdir -p "$artifact_directory" "$release_directory" "$bin_directory"
+docker_root_directory="$temporary_directory/docker-root"
+mkdir -p "$docker_root_directory"
 source_sha='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 image_id="sha256:$(printf 'b%.0s' {1..64})"
-printf 'fixture-image-bytes\n' > "$artifact_directory/backend-image.tar.gz"
+write_image_archive() {
+  python3 - "$artifact_directory/backend-image.tar.gz" <<'PY'
+import io
+import sys
+import tarfile
+
+with tarfile.open(sys.argv[1], "w:gz") as archive:
+    payload = b"synthetic image layer"
+    member = tarfile.TarInfo("fixture-layer.tar")
+    member.size = len(payload)
+    archive.addfile(member, io.BytesIO(payload))
+PY
+}
+write_image_archive
 printf '%s\n' "$image_id" > "$artifact_directory/image-id.txt"
 printf 'vend-machines-backend:%s\n' "$source_sha" > "$artifact_directory/image-ref.txt"
 printf 'linux/amd64\n' > "$artifact_directory/platform.txt"
@@ -32,7 +47,13 @@ cat > "$bin_directory/docker" <<'DOCKER'
 set -euo pipefail
 printf '%s\n' "$*" >> "$DOCKER_TEST_LOG"
 case "$1" in
-  info) printf 'linux/x86_64\n' ;;
+  info)
+    if [[ "$*" == *DockerRootDir* ]]; then
+      printf '%s\n' "$DOCKER_TEST_ROOT_DIR"
+    else
+      printf 'linux/x86_64\n'
+    fi
+    ;;
   network) exit 0 ;;
   container) exit 1 ;;
   load) exit 0 ;;
@@ -61,9 +82,51 @@ esac
 DOCKER
 chmod 755 "$bin_directory/docker"
 
+cat > "$bin_directory/nproc" <<'NPROC'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${DOCKER_TEST_CPU_COUNT:-8}"
+NPROC
+cat > "$bin_directory/awk" <<'AWK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *MemAvailable:* ]]; then
+  printf '%s\n' "$(( ${DOCKER_TEST_MEM_AVAILABLE_KB:-8388608} / 1024 ))"
+else
+  exec /usr/bin/awk "$@"
+fi
+AWK
+cat > "$bin_directory/df" <<'DF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'Filesystem 1M-blocks Used Available Use%% Mounted on\n'
+printf 'synthetic 200000 1 %s 1%% /docker\n' "${DOCKER_TEST_DISK_AVAILABLE_MIB:-200000}"
+DF
+chmod 755 "$bin_directory/nproc" "$bin_directory/awk" "$bin_directory/df"
+
 export PATH="$bin_directory:$PATH"
 export DOCKER_TEST_IMAGE_ID="$image_id"
 export DOCKER_TEST_LOG="$temporary_directory/docker.log"
+export DOCKER_TEST_ROOT_DIR="$docker_root_directory"
+
+resource_arguments=(
+  --candidate-cpus 0.25
+  --candidate-memory-mib 256
+  --reserve-host-cpus 0.25
+  --reserve-host-memory-mib 512
+  --reserve-docker-disk-mib 512
+  --candidate-db-max-pool-size 5
+)
+run_candidate_with_resources() {
+  bash "$launcher" \
+    --artifact-dir "$artifact_directory" \
+    --release-package-dir "$release_directory" \
+    --expected-source-sha "$source_sha" \
+    --docker-network private-network \
+    --runtime-env-file "$temporary_directory/runtime.env" \
+    "${resource_arguments[@]}" \
+    "$@"
+}
 
 bash "$launcher" \
   --artifact-dir "$artifact_directory" \
@@ -71,13 +134,58 @@ bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/success.log"
 grep -q 'Health check e readiness passivos aprovados' "$temporary_directory/success.log"
 grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 grep -q -- '--env Deployment__PassiveMode=true' "$DOCKER_TEST_LOG"
+grep -q -- '--env Database__MaximumPoolSize=5' "$DOCKER_TEST_LOG"
+grep -q -- '--cpus 0.25 --memory 256m' "$DOCKER_TEST_LOG"
+grep -q -- '--memory-swap 256m' "$DOCKER_TEST_LOG"
 ! grep -q -- 'Telemetry__LegacyApiBaseUrl=' "$DOCKER_TEST_LOG"
 ! grep -q -- '--restart' "$DOCKER_TEST_LOG"
 grep -q '/health/ready 200' "$DOCKER_TEST_LOG"
+
+for capacity_case in cpu memory disk; do
+  rm -f "$DOCKER_TEST_LOG"
+  : > "$DOCKER_TEST_LOG"
+  case "$capacity_case" in
+    cpu) export DOCKER_TEST_CPU_COUNT=0 ;;
+    memory) export DOCKER_TEST_MEM_AVAILABLE_KB=$((700 * 1024)) ;;
+    disk) export DOCKER_TEST_DISK_AVAILABLE_MIB=512 ;;
+  esac
+  if run_candidate_with_resources > "$temporary_directory/capacity-$capacity_case.log" 2>&1; then
+    echo "O launcher aceitou capacidade insuficiente de $capacity_case." >&2
+    exit 1
+  fi
+  ! grep -q '^load ' "$DOCKER_TEST_LOG"
+  case "$capacity_case" in
+    cpu) grep -q 'limite de CPU da candidata somado' "$temporary_directory/capacity-$capacity_case.log" ;;
+    memory) grep -q 'memória disponível não comporta' "$temporary_directory/capacity-$capacity_case.log" ;;
+    disk) grep -q 'espaço livre no Docker não comporta' "$temporary_directory/capacity-$capacity_case.log" ;;
+  esac
+  unset DOCKER_TEST_CPU_COUNT DOCKER_TEST_MEM_AVAILABLE_KB DOCKER_TEST_DISK_AVAILABLE_MIB
+done
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/missing-resource-budget.log" 2>&1; then
+  echo 'O launcher aceitou iniciar sem orçamento explícito de recursos.' >&2
+  exit 1
+fi
+grep -q -- '--candidate-cpus' "$temporary_directory/missing-resource-budget.log"
+[[ ! -s "$DOCKER_TEST_LOG" ]]
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -87,6 +195,12 @@ bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --active-overlap \
   --legacy-api-origin http://previous-api:8080 \
   > "$temporary_directory/active.log"
@@ -104,6 +218,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-route-failure.log" 2>&1; then
   echo 'O launcher aceitou rota comercial habilitada em modo passivo.' >&2
   exit 1
@@ -121,6 +241,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-deploy-ready-failure.log" 2>&1; then
   echo 'O launcher aceitou readiness de deploy liberada em modo passivo.' >&2
   exit 1
@@ -138,6 +264,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-readiness-failure.log" 2>&1; then
   echo 'O launcher aceitou readiness de banco/migrations bloqueada em modo passivo.' >&2
   exit 1
@@ -158,6 +290,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-mode-failure.log" 2>&1; then
   echo 'O launcher aceitou Deployment__PassiveMode diferente de true.' >&2
   exit 1
@@ -176,6 +314,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-kill-fallback.log" 2>&1; then
   echo 'O launcher informou sucesso após ativar o fallback de parada.' >&2
   exit 1
@@ -193,6 +337,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-stop-failure.log" 2>&1; then
   echo 'O launcher informou sucesso mesmo sem confirmar a parada da candidata passiva.' >&2
   exit 1
@@ -211,6 +361,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou que o arquivo runtime sobrescrevesse o modo passivo.' >&2
   exit 1
@@ -228,6 +384,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou migrations de outro SHA.' >&2
@@ -243,6 +405,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou um arquivo de runtime legível por grupo/outros.' >&2
@@ -261,6 +429,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/artifact-alias/nested/secret-runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou runtime dentro do artefato via diretório simbólico.' >&2
@@ -280,6 +454,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/release-alias/nested/secret-runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou runtime dentro do pacote operacional via diretório simbólico.' >&2
@@ -295,6 +475,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://api.vendmachine.com.br:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou a origem pública da API.' >&2
@@ -309,6 +495,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou um artefato com checksum inválido.' >&2
@@ -316,7 +508,7 @@ if bash "$launcher" \
 fi
 ! grep -q '^load ' "$DOCKER_TEST_LOG"
 
-printf 'fixture-image-bytes\n' > "$artifact_directory/backend-image.tar.gz"
+write_image_archive
 (cd "$artifact_directory" && sha256sum backend-image.tar.gz image-id.txt image-ref.txt platform.txt source-sha.txt README.txt Verify-BackendImageArtifact.ps1 start-private-backend-candidate.sh verify-candidate-artifact-pair.py > SHA256SUMS)
 : > "$DOCKER_TEST_LOG"
 export DOCKER_TEST_HEALTH_STATUS=unhealthy
@@ -326,6 +518,12 @@ if bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
+  --candidate-cpus 0.25 \
+  --candidate-memory-mib 256 \
+  --reserve-host-cpus 0.25 \
+  --reserve-host-memory-mib 512 \
+  --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou health check unhealthy.' >&2
@@ -333,4 +531,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), readiness passiva exigida, rotas bloqueadas, parada segura/fallback verificados e recusas antes do início.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), orçamentos CPU/memória/disco/conexões exigidos, limites configurados, insuficiência recusada antes de carregar imagem, readiness e rotas passivas, parada segura/fallback verificados.'

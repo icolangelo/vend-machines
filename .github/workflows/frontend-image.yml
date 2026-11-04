@@ -34,7 +34,7 @@ jobs:
           SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
           SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          SECRET_SCAN_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SECRET_SCAN_DEFAULT_BRANCH: ${{ startsWith(github.ref, 'refs/heads/codex/') && 'develop' || github.event.repository.default_branch }}
         run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
 
       - name: Test secret scan commit range selection

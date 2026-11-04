@@ -39,16 +39,16 @@ class SecretScanRangeTests(unittest.TestCase):
         git(repo, "commit", "-m", message)
         return git(repo, "rev-parse", "HEAD")
 
-    def test_new_branch_scans_every_commit_since_default_branch(self) -> None:
+    def test_new_branch_scans_every_commit_since_release_base(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = self.make_repo(temporary)
             base = self.commit(repo, "base.txt", "synthetic base", "base")
-            git(repo, "update-ref", "refs/remotes/origin/main", base)
+            git(repo, "update-ref", "refs/remotes/origin/develop", base)
             first = self.commit(repo, "first.txt", "synthetic first", "first branch change")
             head = self.commit(repo, "second.txt", "synthetic second", "second branch change")
 
             scan_range = determine_range(
-                repo, "push", head, "", "0" * 40, "main")
+                repo, "push", head, "", "0" * 40, "develop")
 
             self.assertEqual(f"{base}..{head}", scan_range)
             self.assertEqual([first, head], git(repo, "rev-list", "--reverse", scan_range).splitlines())
@@ -60,7 +60,7 @@ class SecretScanRangeTests(unittest.TestCase):
             head = self.commit(repo, "second.txt", "synthetic second", "second")
 
             scan_range = determine_range(
-                repo, "push", head, "", "0" * 40, "main")
+                repo, "push", head, "", "0" * 40, "develop")
 
             self.assertEqual(head, scan_range)
             self.assertEqual([first, head], git(repo, "rev-list", "--reverse", scan_range).splitlines())

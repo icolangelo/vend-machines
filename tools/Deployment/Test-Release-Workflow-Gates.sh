@@ -141,6 +141,15 @@ require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/Deploymen
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/DeploymentReadinessService.cs" 'unresolved_session_closures'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/TelemetryController.cs" 'LockForSessionStartAsync(cancellationToken)'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'AddTelemetryConnectionOperations'
+require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'LegacyOwnerStartupGuard.EnsureReadyBeforeWorkersAsync'
+db_init_line="$(grep -nF 'DbInitializer.Initialize(context, app.Environment.IsDevelopment());' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+legacy_owner_guard_line="$(grep -nF 'LegacyOwnerStartupGuard.EnsureReadyBeforeWorkersAsync' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+app_run_line="$(grep -nF 'app.Run();' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+if [[ -z "$db_init_line" || -z "$legacy_owner_guard_line" || -z "$app_run_line" ]] ||
+  (( db_init_line >= legacy_owner_guard_line || legacy_owner_guard_line >= app_run_line )); then
+  echo "O guard do owner legado deve executar depois da checagem do banco e antes do início dos hosted workers." >&2
+  exit 1
+fi
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/TelemetryConnectionServiceCollectionExtensions.cs" 'AddSingleton<ITelemetryCommandSender>'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/TelemetryControllerIsolationTests.cs" 'ManualCommandIsNotSentWhileDeploymentAdmissionIsPaused'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/TelemetryCommandAdmissionTests.cs" 'PauseWaitsForAdmittedManualCommandToFinish'
@@ -187,6 +196,8 @@ require_contains "$repo_root/docs/deploy-preflight.sql" 'session_admission_open'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'ProductionDatabaseConfiguration.Validate'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Data/ProductionDatabaseConfiguration.cs" 'SslMode.VerifyFull'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/ProductionDatabaseConfigurationTests.cs" 'AcceptsExplicitPostgresTlsModes'
+require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/DatabasePoolConfigurationTests.cs" 'AppliesOneMaximumToTheCandidateConnectionString'
+require_contains "$repo_root/apps/backend/VendingMachines.Api/Data/DatabasePoolConfiguration.cs" 'MaximumMaximumPoolSize = 1000'
 require_contains "$workflow" 'Scan-GitChangesForSecrets.sh'
 require_contains "$workflow" '      - "tools/Database/**"'
 require_contains "$verify_workflow" 'Scan-GitChangesForSecrets.sh'
@@ -213,10 +224,10 @@ require_contains "$secret_scan" 'zricethezav/gitleaks@sha256:c00b6bd0aeb3071cbcb
 require_contains "$secret_scan" 'Determine-SecretScanRange.py'
 require_contains "$secret_scan_range" 'merge-base'
 require_contains "$secret_scan_range" 'return head_sha'
-require_contains "$secret_scan_range_test" 'test_new_branch_scans_every_commit_since_default_branch'
+require_contains "$secret_scan_range_test" 'test_new_branch_scans_every_commit_since_release_base'
 require_contains "$secret_scan_range_test" 'test_new_branch_without_default_ref_scans_full_reachable_history'
 for scan_workflow in "$workflow" "$verify_workflow" "$frontend_workflow" "$secret_scan_workflow"; do
-  require_contains "$scan_workflow" 'SECRET_SCAN_DEFAULT_BRANCH:'
+  require_contains "$scan_workflow" "SECRET_SCAN_DEFAULT_BRANCH: \${{ startsWith(github.ref, 'refs/heads/codex/') && 'develop' || github.event.repository.default_branch }}"
   require_contains "$scan_workflow" 'python3 tools/Deployment/test_secret_scan_range.py'
 done
 deploy_scan_line="$(grep -nF 'Scan-GitChangesForSecrets.sh' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
@@ -308,6 +319,19 @@ require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatib
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_mdb_status=correlated'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_session_cancel=physically_closed'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_readiness_blocks_unavailable_legacy_owner=yes'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" '--candidate-cpus CPUS'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" '--candidate-db-max-pool-size CONNECTIONS'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" 'Database__MaximumPoolSize=$candidate_db_max_pool_size'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" 'Database__MaximumPoolSize no arquivo de runtime'
+require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'options.UseNpgsql(boundedNpgsqlDataSource)'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" '--memory "${candidate_memory_mib}m"'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" '--memory-swap "${candidate_memory_mib}m"'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" 'available_memory_mib >= candidate_memory_mib + reserve_host_memory_mib'
+require_contains "$repo_root/tools/Deployment/start-private-backend-candidate.sh" 'available_docker_disk_mib >= estimated_image_mib + reserve_docker_disk_mib'
+require_contains "$repo_root/tools/Deployment/Test-Start-PrivateBackendCandidate.sh" 'DOCKER_TEST_CPU_COUNT=0'
+require_contains "$repo_root/tools/Deployment/Test-Start-PrivateBackendCandidate.sh" 'DOCKER_TEST_MEM_AVAILABLE_KB=$((700 * 1024))'
+require_contains "$repo_root/tools/Deployment/Test-Start-PrivateBackendCandidate.sh" 'DOCKER_TEST_DISK_AVAILABLE_MIB=512'
+require_contains "$repo_root/docs/partial-production-rollout.md" '--reserve-docker-disk-mib'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_command_after_owner_loss=failed_closed'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'overlap_runtime_preflight=passed'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'minimum-legacy-connections'
@@ -685,7 +709,8 @@ require_contains "$verify_workflow" 'start-private-backend-candidate.sh'
 require_contains "$verify_workflow" 'sha256sum --check SHA256SUMS'
 require_contains "$verify_workflow" 'name: Upload verified backend image artifact'
 require_contains "$verify_workflow" 'name: candidate-backend-image-${{ github.sha }}'
-require_contains "$verify_workflow" 'retention-days: 14'
+retention_days_count="$(grep -cF 'retention-days: 30' "$verify_workflow")"
+[[ "$retention_days_count" -eq 2 ]] || fail "Os dois artefatos de candidata precisam de retenção de 30 dias; encontrados: $retention_days_count."
 
 overlap_gate_line="$(grep -nF 'name: Verify previous API overlap while a legacy MDB socket stays connected' "$verify_workflow" | head -n 1 | cut -d: -f1)"
 workflow_gate_line="$(grep -nF 'name: Verify production workflow release gates' "$verify_workflow" | head -n 1 | cut -d: -f1)"

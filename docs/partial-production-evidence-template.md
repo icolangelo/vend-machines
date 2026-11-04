@@ -13,6 +13,20 @@
 - Validade dos artefatos:
 - Conferência de pareamento e checksums: `APROVADA` / `REPROVADA`
 
+## Capacidade do host antes do smoke
+
+Registre referências das medições, sem incluir dados privados. Meça a API atual e os demais serviços durante o pico normal e escolha reservas que os preservem. O launcher recusa iniciar se o orçamento declarado não couber na capacidade observada.
+
+- Data/hora UTC e janela da medição de carga:
+- CPUs disponíveis no host:
+- Teto de CPU da candidata / reserva para os serviços atuais:
+- Memória disponível antes da carga / teto da candidata / reserva dos serviços atuais (MiB):
+- Espaço livre no Docker / tamanho descompactado estimado da imagem / reserva de disco (MiB):
+- Limite simultâneo do PostgreSQL/provedor / pico de conexões da API atual / conexões reservadas a outros serviços e margem:
+- Teto `--candidate-db-max-pool-size` aprovado para o pool compartilhado da candidata:
+- Referência segura de `docker stats`, `MemAvailable` e espaço no Docker:
+- Limites de CPU, memória e conexões PostgreSQL conferidos no container candidato: `SIM` / `NÃO`
+
 ## Etapa A — smoke privado passivo
 
 Esta etapa mantém a API anterior como única API ativa. A candidata deve ser iniciada pelo launcher sem `--active-overlap` e sem alterar rota pública. O modo passivo não executa `DbInitializer`, não registra workers e bloqueia as rotas comerciais e WebSockets. `/health/ready` somente lê o histórico de migrations; uma falha ali não autoriza aplicar migrations neste passo.
