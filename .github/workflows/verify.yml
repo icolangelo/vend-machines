@@ -63,6 +63,13 @@ jobs:
       - name: Test secret scan commit range selection
         run: python3 tools/Deployment/test_secret_scan_range.py
 
+      - name: Test API-only candidate scope gate
+        run: python3 tools/Deployment/test_api_only_candidate.py
+
+      - name: Enforce API-only candidate scope
+        if: startsWith(github.head_ref || github.ref_name, 'codex/api-only-')
+        run: python3 -B tools/Deployment/AssertApiOnlyCandidate.py --base-ref origin/develop --head-ref "$GITHUB_SHA"
+
       - name: Test read-only telemetry overlap preflight
         run: python -B tools/Deployment/test_validate_telemetry_overlap_readiness.py
 

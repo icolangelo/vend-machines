@@ -69,6 +69,12 @@ require_contains "$workflow" 'python -B tools/Deployment/test_backend_docker_con
 require_contains "$verify_workflow" 'python -B tools/Deployment/test_backend_docker_context.py'
 require_contains "$verify_workflow" 'Test read-only telemetry overlap preflight'
 require_contains "$verify_workflow" 'python -B tools/Deployment/test_validate_telemetry_overlap_readiness.py'
+require_contains "$verify_workflow" 'name: Test API-only candidate scope gate'
+require_contains "$verify_workflow" 'python3 tools/Deployment/test_api_only_candidate.py'
+require_contains "$verify_workflow" 'name: Enforce API-only candidate scope'
+require_contains "$verify_workflow" "if: startsWith(github.head_ref || github.ref_name, 'codex/api-only-')"
+require_contains "$verify_workflow" 'AssertApiOnlyCandidate.py --base-ref origin/develop --head-ref "$GITHUB_SHA"'
+require_contains "$repo_root/tools/Deployment/AssertApiOnlyCandidate.py" 'apps/frontend/'
 require_contains "$verify_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$verify_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$verify_workflow" 'id: frontend-target'
