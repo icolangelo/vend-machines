@@ -2,6 +2,12 @@
 
 Este preflight é somente leitura. Ele não envia comandos MDB, não cria sessões, não altera configuração, não aplica migrations e não inicia publicação. Seu objetivo é confirmar que a candidata consegue atender enquanto a API anterior continua dona de conexões existentes.
 
+## Smoke privado em modo passivo
+
+Para apenas subir a imagem candidata e verificar o processo sem tocar no estado da API antiga, configure somente na instância candidata `Deployment__PassiveMode=true`. Nesse modo a API não executa `DbInitializer`, não registra nenhum worker em background e permite somente `GET /`, `GET /health` e `GET /health/ready`; todas as rotas de aplicação, Swagger e WebSockets, incluindo `/telemetria`, retornam `503`. `/health/ready` faz apenas conexão e leitura da tabela de migrations; pode retornar `503` se o banco não estiver acessível ou tiver migrations pendentes. `/health/deploy-ready` fica bloqueado intencionalmente porque esse modo não significa prontidão para cutover.
+
+Esse smoke confirma somente que o container e a conexão/readiness de banco funcionam. Não permite testar dashboard, APIs comerciais, relay ou tráfego de máquinas, e não substitui o preflight de convivência descrito abaixo. Para testar a candidata como API de aplicação, use uma cópia isolada restaurada do banco e a validação de release completa. Nunca desligue o modo passivo numa instância ligada ao banco comercial até cumprir os gates de backup, migration e operação da seção seguinte.
+
 ## Configuração da candidata
 
 1. Mantenha a API anterior ativa e sem reinício enquanto ela possuir WebSockets de máquinas.
