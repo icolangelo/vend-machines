@@ -227,6 +227,15 @@ if ((!active_overlap)); then
     fail 'a candidata não confirmou Deployment__PassiveMode=true; falharam a parada graciosa e o encerramento forçado. Verifique imediatamente o container candidato. A API anterior não foi alterada.'
   fi
 
+  if ! docker exec "$container_name" bash -ec \
+    'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET %s HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n" "$1" >&3; IFS= read -r status <&3; [[ "$status" == *" $2 "* ]]' \
+    -- /health/ready 200; then
+    if stop_candidate_container; then
+      fail 'a candidata passiva não retornou 200 em /health/ready; a parada graciosa foi tentada e o container candidato foi encerrado sem aplicar migrations ou alterar a API anterior.'
+    fi
+    fail 'a candidata passiva não retornou 200 em /health/ready; falharam a parada graciosa e o encerramento forçado. Verifique imediatamente o container candidato. Nenhuma migration foi iniciada pelo launcher.'
+  fi
+
   for passive_path in /health/deploy-ready /api/machines /telemetria; do
     if ! docker exec "$container_name" bash -ec \
       'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET %s HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n" "$1" >&3; IFS= read -r status <&3; [[ "$status" == *" $2 "* ]]' \
@@ -247,5 +256,9 @@ if ((active_overlap)); then
 else
   printf 'Modo passivo: rotas comerciais e WebSockets permanecem bloqueados.\n'
   printf 'Para validar convivência ativa, repita com --active-overlap somente após os gates operacionais.\n'
+  printf 'Readiness passiva de banco/migrations retornou 200.\n'
+  printf 'Health check e readiness passivos aprovados; publicação limitada a loopback, sem configurar rota pública.\n'
 fi
-printf 'Health check aprovado; publicação limitada a loopback, sem configurar rota pública.\n'
+if ((active_overlap)); then
+  printf 'Health check aprovado; publicação limitada a loopback, sem configurar rota pública.\n'
+fi

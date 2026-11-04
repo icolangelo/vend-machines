@@ -47,6 +47,7 @@ case "$1" in
     route="${7:-}"
     expected_status="${8:-}"
     case "$route" in
+      /health/ready) actual_status="${DOCKER_TEST_PASSIVE_READY_STATUS:-200}" ;;
       /health/deploy-ready) actual_status="${DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS:-503}" ;;
       /api/machines|/telemetria) actual_status="${DOCKER_TEST_PASSIVE_APPLICATION_STATUS:-503}" ;;
       *) exit 8 ;;
@@ -71,11 +72,12 @@ bash "$launcher" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
   > "$temporary_directory/success.log"
-grep -q 'Health check aprovado' "$temporary_directory/success.log"
+grep -q 'Health check e readiness passivos aprovados' "$temporary_directory/success.log"
 grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 grep -q -- '--env Deployment__PassiveMode=true' "$DOCKER_TEST_LOG"
 ! grep -q -- 'Telemetry__LegacyApiBaseUrl=' "$DOCKER_TEST_LOG"
 ! grep -q -- '--restart' "$DOCKER_TEST_LOG"
+grep -q '/health/ready 200' "$DOCKER_TEST_LOG"
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -126,6 +128,26 @@ fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 grep -q 'respondeu fora de 503 em /health/deploy-ready' "$temporary_directory/passive-deploy-ready-failure.log"
 unset DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_PASSIVE_READY_STATUS=503
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-readiness-failure.log" 2>&1; then
+  echo 'O launcher aceitou readiness de banco/migrations bloqueada em modo passivo.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q 'não retornou 200 em /health/ready' "$temporary_directory/passive-readiness-failure.log"
+! grep -q '^load ' "$DOCKER_TEST_LOG"
+! grep -q '/health/deploy-ready 503' "$DOCKER_TEST_LOG"
+! grep -q '/api/machines 503' "$DOCKER_TEST_LOG"
+unset DOCKER_TEST_PASSIVE_READY_STATUS
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -311,4 +333,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), bloqueios passivos verificados, fallback docker kill após parada graciosa falha e 7 recusas antes do início.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), readiness passiva exigida, rotas bloqueadas, parada segura/fallback verificados e recusas antes do início.'
