@@ -56,6 +56,7 @@ class AssembleReleasePackageTests(unittest.TestCase):
             )
 
             self.assertTrue((package / "partial-production-rollout.md").is_file())
+            self.assertTrue((package / "partial-production-evidence-template.md").is_file())
             self.assertTrue((package / "telemetry-continuity-architecture.md").is_file())
             self.assertTrue((package / "Validate-TelemetryOverlapReadiness.py").is_file())
 

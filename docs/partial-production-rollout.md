@@ -102,4 +102,6 @@ Para cancelamentos de sockets legados, todas as chamadas da aplicação devem pa
 
 Guarde, sem token nem valores de configuração secreta, a data, SHA candidata, saída do preflight, quantidade de conexões antigas observadas e confirmação operacional de que os pings continuaram chegando à API anterior durante a leitura. Compare a contagem à fonte de operação da frota; não aceite simplesmente qualquer valor maior que zero se houver mais máquinas conectadas.
 
+Use a cópia de [registro de validação privada da candidata](partial-production-evidence-template.md) para preservar evidências agregadas da execução. Não registre tokens, URLs privadas, IDs de máquinas, payload MDB ou dados de clientes. O registro organiza resultados; ele não autoriza sozinho a troca de rota.
+
 Este resultado comprova apenas prontidão, alcance de rede e presença observada no momento da consulta. Não prova o comportamento de firmware/MDB físico, entrega de pagamentos, nem tolerância a uma falha abrupta real. Não encerre nem reinicie a API anterior enquanto houver conexões, sessões, comandos, mensagens ou operações financeiras atribuídas a ela. Se a API candidata ainda não tiver passado pela validação física com os firmwares suportados, mantenha o tráfego MDB no caminho atual.

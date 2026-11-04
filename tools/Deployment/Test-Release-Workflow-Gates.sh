@@ -269,6 +269,7 @@ require_contains "$temporary_dir/build-job" 'name: Upload SHA-matched release pa
 require_contains "$temporary_dir/build-job" 'name: release-package-${{ github.sha }}'
 require_contains "$temporary_dir/build-job" 'path: artifacts/release-package/'
 require_contains "$verify_workflow" '      - "docs/deploy-seguro.md"'
+require_contains "$verify_workflow" '      - "docs/partial-production-evidence-template.md"'
 release_package_builder="$repo_root/tools/Deployment/assemble_release_package.py"
 require_contains "$release_package_builder" 'SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")'
 require_contains "$release_package_builder" 'MIGRATION_FILES = ('

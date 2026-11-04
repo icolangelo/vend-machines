@@ -16,6 +16,7 @@ on:
       - "docs/backup-restore-rehearsal.md"
       - "docs/deploy-seguro.md"
       - "docs/partial-production-rollout.md"
+      - "docs/partial-production-evidence-template.md"
       - "docs/deploy-preflight.sql"
       - "docs/payment-sensitive-data-preflight.sql"
       - "docs/payment-sensitive-data-redaction.sql"
