@@ -10,12 +10,18 @@ Uso:
     --expected-source-sha SHA40 \
     --docker-network NETWORK \
     --runtime-env-file FILE \
+    --candidate-cpus CPUS \
+    --candidate-memory-mib MIB \
+    --reserve-host-cpus CPUS \
+    --reserve-host-memory-mib MIB \
+    --reserve-docker-disk-mib MIB \
     [--active-overlap] \
     [--legacy-api-origin URL] \
     [--host-port PORT]
 
 Por padrão inicia em modo passivo (somente health/readiness). Use --active-overlap
 apenas após os gates operacionais; nesse modo --legacy-api-origin é obrigatório.
+Exige orçamento explícito de CPU, memória e reservas de host; limita a candidata.
 Inicia a imagem verificada em container separado, publicada somente em loopback.
 Não aplica migrations, não adiciona rota pública e não remove containers existentes.
 USAGE
@@ -40,6 +46,11 @@ docker_network=''
 runtime_env_file=''
 legacy_api_origin=''
 host_port='18080'
+candidate_cpus=''
+candidate_memory_mib=''
+reserve_host_cpus=''
+reserve_host_memory_mib=''
+reserve_docker_disk_mib=''
 active_overlap=0
 
 while (($# > 0)); do
@@ -49,6 +60,11 @@ while (($# > 0)); do
     --expected-source-sha) (($# >= 2)) || { usage >&2; exit 2; }; expected_source_sha=$2; shift 2 ;;
     --docker-network) (($# >= 2)) || { usage >&2; exit 2; }; docker_network=$2; shift 2 ;;
     --runtime-env-file) (($# >= 2)) || { usage >&2; exit 2; }; runtime_env_file=$2; shift 2 ;;
+    --candidate-cpus) (($# >= 2)) || { usage >&2; exit 2; }; candidate_cpus=$2; shift 2 ;;
+    --candidate-memory-mib) (($# >= 2)) || { usage >&2; exit 2; }; candidate_memory_mib=$2; shift 2 ;;
+    --reserve-host-cpus) (($# >= 2)) || { usage >&2; exit 2; }; reserve_host_cpus=$2; shift 2 ;;
+    --reserve-host-memory-mib) (($# >= 2)) || { usage >&2; exit 2; }; reserve_host_memory_mib=$2; shift 2 ;;
+    --reserve-docker-disk-mib) (($# >= 2)) || { usage >&2; exit 2; }; reserve_docker_disk_mib=$2; shift 2 ;;
     --legacy-api-origin) (($# >= 2)) || { usage >&2; exit 2; }; legacy_api_origin=$2; shift 2 ;;
     --active-overlap) active_overlap=1; shift ;;
     --host-port) (($# >= 2)) || { usage >&2; exit 2; }; host_port=$2; shift 2 ;;
@@ -59,6 +75,13 @@ done
 
 [[ "$expected_source_sha" =~ ^[A-Fa-f0-9]{40}$ ]] || fail 'informe o SHA Git completo esperado (40 caracteres hexadecimais).'
 [[ -n "$artifact_dir" && -n "$release_package_dir" && -n "$docker_network" && -n "$runtime_env_file" ]] || { usage >&2; exit 2; }
+[[ "$candidate_cpus" =~ ^[0-9]+([.][0-9]{1,2})?$ ]] || fail '--candidate-cpus deve ser um número positivo com até duas casas decimais.'
+[[ "$reserve_host_cpus" =~ ^[0-9]+([.][0-9]{1,2})?$ ]] || fail '--reserve-host-cpus deve ser um número positivo com até duas casas decimais.'
+awk -v value="$candidate_cpus" 'BEGIN { exit !(value > 0 && value <= 64) }' || fail '--candidate-cpus precisa estar entre 0 e 64.'
+awk -v value="$reserve_host_cpus" 'BEGIN { exit !(value > 0 && value <= 64) }' || fail '--reserve-host-cpus precisa estar entre 0 e 64.'
+[[ "$candidate_memory_mib" =~ ^[0-9]+$ ]] && ((candidate_memory_mib >= 256 && candidate_memory_mib <= 1048576)) || fail '--candidate-memory-mib precisa estar entre 256 e 1048576.'
+[[ "$reserve_host_memory_mib" =~ ^[0-9]+$ ]] && ((reserve_host_memory_mib >= 1 && reserve_host_memory_mib <= 1048576)) || fail '--reserve-host-memory-mib precisa estar entre 1 e 1048576.'
+[[ "$reserve_docker_disk_mib" =~ ^[0-9]+$ ]] && ((reserve_docker_disk_mib >= 1 && reserve_docker_disk_mib <= 1048576)) || fail '--reserve-docker-disk-mib precisa estar entre 1 e 1048576.'
 if ((active_overlap)) && [[ -z "$legacy_api_origin" ]]; then
   fail '--legacy-api-origin é obrigatório com --active-overlap.'
 fi
@@ -175,6 +198,39 @@ daemon_platform=${daemon_platform/linux\/x86_64/linux\/amd64}
 daemon_platform=${daemon_platform/linux\/aarch64/linux\/arm64}
 [[ "$artifact_platform" =~ ^linux/(amd64|arm64)$ && "$artifact_platform" == "$daemon_platform" ]] || fail 'plataforma do artefato não corresponde ao daemon Docker.'
 
+available_cpus=$(nproc 2>/dev/null) || fail 'não foi possível medir os CPUs disponíveis no host.'
+awk -v candidate="$candidate_cpus" -v reserve="$reserve_host_cpus" -v available="$available_cpus" \
+  'BEGIN { exit !(candidate + reserve <= available + 0.000001) }' || \
+  fail 'o limite de CPU da candidata somado à reserva da API atual excede os CPUs disponíveis no host.'
+available_memory_mib=$(awk '$1 == "MemAvailable:" { print int($2 / 1024); found=1; exit } END { if (!found) exit 1 }' /proc/meminfo 2>/dev/null) || \
+  fail 'não foi possível medir a memória disponível no host.'
+((available_memory_mib >= candidate_memory_mib + reserve_host_memory_mib)) || \
+  fail 'a memória disponível não comporta o limite da candidata e a reserva definida para os serviços atuais.'
+docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null) || fail 'não foi possível determinar o diretório de armazenamento Docker.'
+[[ -n "$docker_root" && -d "$docker_root" ]] || fail 'o diretório de armazenamento Docker não está acessível localmente.'
+available_docker_disk_mib=$(df -Pm "$docker_root" 2>/dev/null | awk 'END { if (NR >= 2 && $4 ~ /^[0-9]+$/) print $4; else exit 1 }') || \
+  fail 'não foi possível medir o espaço livre no armazenamento Docker.'
+estimated_image_mib=$(python3 - "$artifact_dir/backend-image.tar.gz" <<'PY'
+import sys
+import tarfile
+
+try:
+    with tarfile.open(sys.argv[1], "r:*") as archive:
+        total_bytes = sum(member.size for member in archive.getmembers())
+    if total_bytes <= 0:
+        raise ValueError("imagem vazia")
+    print((total_bytes + 1024 * 1024 - 1) // (1024 * 1024))
+except (OSError, tarfile.TarError, ValueError):
+    raise SystemExit(1)
+PY
+) || fail 'não foi possível estimar o espaço necessário para carregar a imagem candidata.'
+((available_docker_disk_mib >= estimated_image_mib + reserve_docker_disk_mib)) || \
+  fail 'o espaço livre no Docker não comporta a imagem candidata e a reserva de disco definida.'
+printf 'Orçamento validado: CPU candidata=%s + reserva=%s de %s disponíveis; memória=%s disponível, %s candidata, %s reservada (MiB); Docker=%s livre, imagem=%s estimada e %s reservada (MiB).\n' \
+  "$candidate_cpus" "$reserve_host_cpus" "$available_cpus" "$available_memory_mib" \
+  "$candidate_memory_mib" "$reserve_host_memory_mib" "$available_docker_disk_mib" \
+  "$estimated_image_mib" "$reserve_docker_disk_mib"
+
 docker network inspect "$docker_network" >/dev/null 2>&1 || fail 'a rede Docker informada não existe ou não está acessível.'
 container_name="vend-machines-backend-candidate-${expected_source_sha,,}"
 if docker container inspect "$container_name" >/dev/null 2>&1; then
@@ -197,6 +253,9 @@ fi
 docker run --detach \
   --name "$container_name" \
   --network "$docker_network" \
+  --cpus "$candidate_cpus" \
+  --memory "${candidate_memory_mib}m" \
+  --memory-swap "${candidate_memory_mib}m" \
   --publish "127.0.0.1:${host_port}:8080" \
   --env-file "$runtime_env_file" \
   "${docker_env_args[@]}" \

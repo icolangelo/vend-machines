@@ -70,7 +70,11 @@ if ($ActualArtifactSha256 -ne $ExpectedArtifactSha256) { throw 'Digest do ZIP di
 
 Se qualquer digest divergir, o artefato estiver expirado, ou os nomes/execuções/SHA não coincidirem, não extraia nem use os arquivos; obtenha o par novamente ou gere uma execução aprovada para o SHA revisado. Extraia cada ZIP em diretório vazio separado e então execute o verificador de pareamento.
 
-Com backup, migrations e preflight SQL aprovados, execute no host Linux e numa rede Docker que alcance a API antiga. O comando não contém segredos; o runtime é lido do arquivo privado:
+Antes de iniciar a candidata no mesmo host da API atual, meça o consumo da API e dos demais serviços durante o pico normal com `docker stats`, confira `nproc`, `MemAvailable` em `/proc/meminfo` e espaço livre no diretório informado por `docker info --format '{{.DockerRootDir}}'`. Defina um teto de CPU/memória para a candidata e uma reserva que cubra o pico medido da API atual, os demais serviços e o sistema operacional. Defina também uma reserva de disco para as operações normais do host. Não use valores de exemplo sem comparar com essas medições. O launcher falha antes de carregar a imagem se o teto mais a reserva exceder os CPUs disponíveis, a memória disponível for menor que teto mais reserva, ou o espaço livre do Docker não comportar o tamanho descompactado estimado da imagem mais a reserva. O container recebe `--cpus` e `--memory`, limitando quanto pode consumir; isso reduz competição, mas não substitui acompanhar a API antiga durante o smoke.
+
+`docker load` acontece antes de aplicar os limites ao container e pode consumir CPU e I/O enquanto importa a imagem. Faça o carregamento fora do pico, acompanhe a API antiga e os pings da frota, e interrompa antes de iniciar a candidata se houver degradação ou a reserva operacional não estiver comprovada. Se o host não tiver capacidade suficiente para os dois processos, não rode a candidata nele.
+
+Com as reservas dimensionadas, execute primeiro o smoke passivo no host Linux e numa rede Docker privada. Não é necessário aplicar migrations nem configurar a origem antiga para esse smoke. Os gates de backup, migrations e preflight continuam obrigatórios antes de usar `--active-overlap`. O comando não contém segredos; o runtime é lido do arquivo privado:
 
 ```bash
 bash ./start-private-backend-candidate.sh \
@@ -79,6 +83,11 @@ bash ./start-private-backend-candidate.sh \
   --expected-source-sha '<SHA Git completo>' \
   --docker-network '<rede privada existente>' \
   --runtime-env-file '<arquivo privado fora do repositório>' \
+  --candidate-cpus '<CPUs máximos medidos para a candidata>' \
+  --candidate-memory-mib '<memória máxima em MiB para a candidata>' \
+  --reserve-host-cpus '<CPUs que devem permanecer para os serviços atuais>' \
+  --reserve-host-memory-mib '<memória em MiB a preservar para os serviços atuais>' \
+  --reserve-docker-disk-mib '<espaço em MiB a preservar no armazenamento Docker>' \
   --host-port 18080
 ```
 
@@ -90,7 +99,10 @@ Guarde o nome exato `container=` impresso pelo launcher e confira no mesmo host,
 candidate='vend-machines-backend-candidate-<SHA completo em minúsculas>'
 docker port "$candidate" 8080/tcp
 docker inspect --format 'restart={{if .HostConfig.RestartPolicy.Name}}{{.HostConfig.RestartPolicy.Name}}{{else}}no{{end}}' "$candidate"
+docker inspect --format 'cpu_nano={{.HostConfig.NanoCpus}} memory_bytes={{.HostConfig.Memory}} memory_swap_bytes={{.HostConfig.MemorySwap}}' "$candidate"
 ```
+
+Confirme que os valores de CPU/memória correspondem ao orçamento declarado e que `memory_swap_bytes` é igual ao limite de memória; isso confirma que a candidata não tem swap adicional configurado.
 
 Faça GETs locais e registre os códigos HTTP. O modo passivo exige `200` em `/health`, `503` em `/health/deploy-ready`, `/api/machines` e `/telemetria`, e `200` em `/health/ready` para aprovar a Etapa A completa. O readiness de banco só lê a conexão e o histórico de migrations. Se retornar `503` — inclusive por indisponibilidade do banco ou migrations pendentes — registre apenas o motivo sanitizado, marque a Etapa A como não aprovada e não aplique migrations neste passo. As três rotas bloqueadas devem continuar em `503`; se alguma responder com outro código, interrompa a Etapa A e pare somente a candidata pelo nome exato.
 
