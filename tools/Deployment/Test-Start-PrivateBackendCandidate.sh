@@ -40,6 +40,10 @@ case "$1" in
   run) printf 'container-id\n' ;;
   inspect) printf '%s\n' "${DOCKER_TEST_HEALTH_STATUS:-healthy}" ;;
   exec)
+    if [[ "$#" == 5 ]]; then
+      [[ "${DOCKER_TEST_PASSIVE_MODE:-true}" == true ]]
+      exit
+    fi
     route="${7:-}"
     expected_status="${8:-}"
     case "$route" in
@@ -121,6 +125,23 @@ fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 grep -q 'respondeu fora de 503 em /health/deploy-ready' "$temporary_directory/passive-deploy-ready-failure.log"
 unset DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_PASSIVE_MODE=false
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-mode-failure.log" 2>&1; then
+  echo 'O launcher aceitou Deployment__PassiveMode diferente de true.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q 'não confirmou Deployment__PassiveMode=true' "$temporary_directory/passive-mode-failure.log"
+unset DOCKER_TEST_PASSIVE_MODE
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"

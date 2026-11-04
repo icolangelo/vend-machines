@@ -213,6 +213,13 @@ if [[ "$health_status" != 'healthy' ]]; then
 fi
 
 if ((!active_overlap)); then
+  if ! docker exec "$container_name" bash -ec '[[ "${Deployment__PassiveMode:-false}" == true ]]'; then
+    if docker stop --time 45 "$container_name" >/dev/null 2>&1; then
+      fail 'a candidata não confirmou Deployment__PassiveMode=true; o container candidato foi parado sem alterar a API anterior.'
+    fi
+    fail 'a candidata não confirmou Deployment__PassiveMode=true e não foi possível confirmar a parada do container; verifique-o imediatamente. A API anterior não foi alterada.'
+  fi
+
   for passive_path in /health/deploy-ready /api/machines /telemetria; do
     if ! docker exec "$container_name" bash -ec \
       'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET %s HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n" "$1" >&3; IFS= read -r status <&3; [[ "$status" == *" $2 "* ]]' \
