@@ -10,9 +10,12 @@ Uso:
     --expected-source-sha SHA40 \
     --docker-network NETWORK \
     --runtime-env-file FILE \
-    --legacy-api-origin URL \
+    [--active-overlap] \
+    [--legacy-api-origin URL] \
     [--host-port PORT]
 
+Por padrão inicia em modo passivo (somente health/readiness). Use --active-overlap
+apenas após os gates operacionais; nesse modo --legacy-api-origin é obrigatório.
 Inicia a imagem verificada em container separado, publicada somente em loopback.
 Não aplica migrations, não adiciona rota pública e não remove containers existentes.
 USAGE
@@ -30,6 +33,7 @@ docker_network=''
 runtime_env_file=''
 legacy_api_origin=''
 host_port='18080'
+active_overlap=0
 
 while (($# > 0)); do
   case "$1" in
@@ -39,6 +43,7 @@ while (($# > 0)); do
     --docker-network) (($# >= 2)) || { usage >&2; exit 2; }; docker_network=$2; shift 2 ;;
     --runtime-env-file) (($# >= 2)) || { usage >&2; exit 2; }; runtime_env_file=$2; shift 2 ;;
     --legacy-api-origin) (($# >= 2)) || { usage >&2; exit 2; }; legacy_api_origin=$2; shift 2 ;;
+    --active-overlap) active_overlap=1; shift ;;
     --host-port) (($# >= 2)) || { usage >&2; exit 2; }; host_port=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; fail "argumento desconhecido: $1" ;;
@@ -46,7 +51,10 @@ while (($# > 0)); do
 done
 
 [[ "$expected_source_sha" =~ ^[A-Fa-f0-9]{40}$ ]] || fail 'informe o SHA Git completo esperado (40 caracteres hexadecimais).'
-[[ -n "$artifact_dir" && -n "$release_package_dir" && -n "$docker_network" && -n "$runtime_env_file" && -n "$legacy_api_origin" ]] || { usage >&2; exit 2; }
+[[ -n "$artifact_dir" && -n "$release_package_dir" && -n "$docker_network" && -n "$runtime_env_file" ]] || { usage >&2; exit 2; }
+if ((active_overlap)) && [[ -z "$legacy_api_origin" ]]; then
+  fail '--legacy-api-origin é obrigatório com --active-overlap.'
+fi
 [[ "$host_port" =~ ^[0-9]{1,5}$ ]] && ((10#$host_port >= 1 && 10#$host_port <= 65535)) || fail 'a porta local precisa estar entre 1 e 65535.'
 
 artifact_dir=$(cd -- "$artifact_dir" 2>/dev/null && pwd -P) || fail 'diretório do artefato não encontrado.'
@@ -64,6 +72,7 @@ runtime_file_mode=$(stat -c '%a' -- "$runtime_env_file" 2>/dev/null) || fail 'n�
 [[ "$runtime_file_mode" =~ ^[0-7]{3,4}$ ]] || fail 'permissões do arquivo de runtime inválidas.'
 (( (8#$runtime_file_mode & 077) == 0 )) || fail 'o arquivo de runtime precisa negar leitura e escrita para grupo e outros (por exemplo, chmod 600).'
 
+if [[ -n "$legacy_api_origin" ]]; then
 python3 - "$legacy_api_origin" <<'PY' || fail 'a origem legada deve ser uma URL HTTP privada direta, sem credenciais, caminho, query ou fragmento.'
 import ipaddress
 import sys
@@ -98,9 +107,13 @@ if (
 ):
     raise SystemExit(1)
 PY
+fi
 
 [[ "$(grep -c '^ASPNETCORE_ENVIRONMENT=Production$' "$runtime_env_file" || true)" == 1 ]] || fail 'ASPNETCORE_ENVIRONMENT=Production precisa estar definido exatamente uma vez no arquivo privado de runtime.'
 [[ "$(grep -c '^DOTNET_ENVIRONMENT=Production$' "$runtime_env_file" || true)" == 1 ]] || fail 'DOTNET_ENVIRONMENT=Production precisa estar definido exatamente uma vez no arquivo privado de runtime.'
+if grep -Eiq '^Deployment__PassiveMode=' "$runtime_env_file"; then
+  fail 'não defina Deployment__PassiveMode no arquivo de runtime; o launcher controla esse modo explicitamente.'
+fi
 
 python3 "$artifact_dir/verify-candidate-artifact-pair.py" \
   --image-artifact-dir "$artifact_dir" \
@@ -165,12 +178,21 @@ docker load --input "$artifact_dir/backend-image.tar.gz" >/dev/null || fail 'nã
 loaded_image_id=$(docker image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null) || fail 'imagem com a referência esperada não foi carregada.'
 [[ "${loaded_image_id,,}" == "${image_id,,}" ]] || fail 'o ID da imagem carregada diverge do manifesto.'
 
+passive_mode=true
+if ((active_overlap)); then
+  passive_mode=false
+fi
+docker_env_args=(--env "Deployment__PassiveMode=$passive_mode")
+if [[ -n "$legacy_api_origin" ]]; then
+  docker_env_args+=(--env "Telemetry__LegacyApiBaseUrl=$legacy_api_origin")
+fi
+
 docker run --detach \
   --name "$container_name" \
   --network "$docker_network" \
   --publish "127.0.0.1:${host_port}:8080" \
   --env-file "$runtime_env_file" \
-  --env "Telemetry__LegacyApiBaseUrl=$legacy_api_origin" \
+  "${docker_env_args[@]}" \
   "$image_ref" >/dev/null || fail 'Docker não conseguiu iniciar a candidata privada.'
 
 health_status='starting'
@@ -192,5 +214,11 @@ fi
 
 printf 'Candidata iniciada: container=%s sha=%s endpoint=http://127.0.0.1:%s\n' \
   "$container_name" "$expected_source_sha" "$host_port"
+if ((active_overlap)); then
+  printf 'Modo ativo de convivência explicitamente solicitado.\n'
+  printf 'Execute Validate-TelemetryOverlapReadiness.py antes de encaminhar tráfego.\n'
+else
+  printf 'Modo passivo: rotas comerciais e WebSockets permanecem bloqueados.\n'
+  printf 'Para validar convivência ativa, repita com --active-overlap somente após os gates operacionais.\n'
+fi
 printf 'Health check aprovado; publicação limitada a loopback, sem configurar rota pública.\n'
-printf 'Execute Validate-TelemetryOverlapReadiness.py antes de encaminhar tráfego.\n'
