@@ -15,6 +15,50 @@ namespace VendingMachines.Api.Tests;
 public sealed class PasswordRecoveryAuditTests
 {
     [Fact]
+    public async Task SelfServicePasswordRecoveryIsGenericAndRevokesTokenWhenEmailDeliveryFails()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa ativa", ActivationStatus = CompanyActivationStatuses.Active };
+        var user = new User
+        {
+            Id = Guid.NewGuid(), Name = "Operador", Email = "operator@example.com",
+            NormalizedEmail = "operator@example.com", Role = AppRoles.Operator,
+            CompanyId = company.Id, Company = company, IsActive = true,
+            EmailVerifiedAt = DateTime.UtcNow, PasswordHash = "old-password-hash"
+        };
+        db.Companies.Add(company);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var sender = new RecordingAccountEmailSender(shouldSend: true);
+        var controller = new AuthController(db, null!, null!, null!, accountEmailSender: sender);
+        var unknownResult = Assert.IsType<AcceptedResult>(await controller.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = "unknown@example.com" }, CancellationToken.None));
+        var sentResult = Assert.IsType<AcceptedResult>(await controller.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = " OPERATOR@example.com " }, CancellationToken.None));
+        Assert.Equal(unknownResult.Value!.GetType().GetProperty("message")!.GetValue(unknownResult.Value),
+            sentResult.Value!.GetType().GetProperty("message")!.GetValue(sentResult.Value));
+        Assert.Single(sender.PasswordResets);
+        Assert.Null(sentResult.Value.GetType().GetProperty("resetToken"));
+        var stored = await db.PasswordResetTokens.SingleAsync();
+        Assert.Equal(OneTimeTokens.Hash(sender.PasswordResets[0].Token), stored.TokenHash);
+        Assert.Equal(user.Id, stored.CreatedByUserId);
+
+        var failingSender = new RecordingAccountEmailSender(shouldSend: false);
+        var failingController = new AuthController(db, null!, null!, null!, accountEmailSender: failingSender);
+        var failedDeliveryResult = Assert.IsType<AcceptedResult>(await failingController.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = user.Email }, CancellationToken.None));
+        Assert.Equal(unknownResult.Value.GetType().GetProperty("message")!.GetValue(unknownResult.Value),
+            failedDeliveryResult.Value!.GetType().GetProperty("message")!.GetValue(failedDeliveryResult.Value));
+        var latestToken = await db.PasswordResetTokens.OrderByDescending(token => token.CreatedAt).FirstAsync();
+        Assert.NotNull(latestToken.RevokedAt);
+    }
+
+    [Fact]
     public async Task AccountLinksAreEmailedWithoutReturningTokensAndFailedDeliveryKeepsManualResetFallback()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
