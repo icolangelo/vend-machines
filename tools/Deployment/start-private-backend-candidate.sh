@@ -212,6 +212,19 @@ if [[ "$health_status" != 'healthy' ]]; then
   fail "a candidata não ficou saudável (estado: $health_status) e não foi possível confirmar a parada do container; verifique-o imediatamente. A API anterior não foi alterada."
 fi
 
+if ((!active_overlap)); then
+  for passive_path in /health/deploy-ready /api/machines /telemetria; do
+    if ! docker exec "$container_name" bash -ec \
+      'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET %s HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n" "$1" >&3; IFS= read -r status <&3; [[ "$status" == *" $2 "* ]]' \
+      -- "$passive_path" 503; then
+      if docker stop --time 45 "$container_name" >/dev/null 2>&1; then
+        fail "a candidata passiva respondeu fora de 503 em $passive_path; o container candidato foi parado sem alterar a API anterior."
+      fi
+      fail "a candidata passiva não confirmou o bloqueio de $passive_path e não foi possível confirmar a parada do container; verifique-o imediatamente. A API anterior não foi alterada."
+    fi
+  done
+fi
+
 printf 'Candidata iniciada: container=%s sha=%s endpoint=http://127.0.0.1:%s\n' \
   "$container_name" "$expected_source_sha" "$host_port"
 if ((active_overlap)); then
