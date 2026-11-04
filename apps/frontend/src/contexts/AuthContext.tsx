@@ -11,6 +11,7 @@ import {
   subscribeToAuthState,
   type AuthSession,
   type AuthUser,
+  type RegistrationResult,
 } from "@/lib/authClient";
 
 export type User = AuthUser;
@@ -30,7 +31,7 @@ interface AuthContextType {
     password: string,
     companyName: string,
     companyCnpj: string,
-  ) => Promise<void>;
+  ) => Promise<RegistrationResult>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -104,18 +105,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     companyCnpj: string,
   ) => {
     if (isTestEnv()) {
-      setAuthSession(createMockSession({
+      const session = createMockSession({
         id: "usr-admin-registered",
         name,
         email,
         role: "Admin",
         companyId: "11111111-1111-1111-1111-111111111111",
         companyName,
-      }));
-      return;
+      });
+      setAuthSession(session);
+      return { kind: "session", session };
     }
 
-    await registerSession({
+    return registerSession({
       name,
       email,
       cpf,

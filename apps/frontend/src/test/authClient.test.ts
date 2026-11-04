@@ -3,6 +3,7 @@ import {
   authenticatedFetch,
   clearAuthSession,
   loginSession,
+  registerSession,
   setAuthSession,
   SessionExpiredError,
   subscribeToAuthState,
@@ -47,6 +48,52 @@ describe("authClient", () => {
     }));
     expect(sessionStorage.getItem("token")).toBeNull();
     expect(localStorage.getItem("token")).toBeNull();
+  });
+
+  it("aceita o retorno de cadastro pendente da API atual sem criar sessão", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      status: "Pending",
+      message: "Cadastro recebido. Confirme seu e-mail.",
+      verificationEmailSent: true,
+    }, 202));
+
+    const result = await registerSession({
+      name: "Maria da Silva",
+      email: "maria@example.com",
+      cpf: "52998224725",
+      password: "senha-segura-123",
+      companyName: "Empresa Teste",
+      companyCnpj: "11222333000181",
+      acceptedPrivacyPolicy: true,
+    });
+
+    expect(result).toEqual({
+      kind: "pending",
+      status: "Pending",
+      message: "Cadastro recebido. Confirme seu e-mail.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/auth/register"), expect.objectContaining({ method: "POST" }));
+  });
+
+  it("mantém compatibilidade com a API antiga que retorna sessão no cadastro", async () => {
+    const session = createSession("registration-token");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(session));
+    const observedTokens: Array<string | null> = [];
+    const unsubscribe = subscribeToAuthState(value => observedTokens.push(value?.token ?? null));
+
+    const result = await registerSession({
+      name: "Maria da Silva",
+      email: "maria@example.com",
+      cpf: "52998224725",
+      password: "senha-segura-123",
+      companyName: "Empresa Teste",
+      companyCnpj: "11222333000181",
+      acceptedPrivacyPolicy: true,
+    });
+
+    expect(result).toEqual({ kind: "session", session });
+    expect(observedTokens).toEqual(["registration-token"]);
+    unsubscribe();
   });
 
   it("compartilha uma única renovação entre requisições simultâneas", async () => {

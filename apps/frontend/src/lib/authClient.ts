@@ -19,6 +19,10 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export type RegistrationResult =
+  | { kind: "session"; session: AuthSession }
+  | { kind: "pending"; status?: string; message: string };
+
 export type AuthStateReason = "updated" | "expired" | "logout";
 type AuthStateListener = (session: AuthSession | null, reason: AuthStateReason) => void;
 
@@ -75,8 +79,37 @@ export async function registerSession(payload: {
   companyName: string;
   companyCnpj: string;
   acceptedPrivacyPolicy: boolean;
-}): Promise<AuthSession> {
-  return postAuthSession("register", payload);
+}): Promise<RegistrationResult> {
+  const response = await fetch(`${API_BASE_URL}/auth/register`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const error = await readError(response, "Não foi possível enviar o cadastro.");
+    throw new Error(error);
+  }
+
+  const result: unknown = await response.json();
+  if (isAuthSession(result)) {
+    applySession(result, "updated");
+    return { kind: "session", session: result };
+  }
+
+  if (result && typeof result === "object") {
+    const pending = result as { status?: unknown; message?: unknown };
+    if (typeof pending.message === "string" && pending.message.trim()) {
+      return {
+        kind: "pending",
+        ...(typeof pending.status === "string" ? { status: pending.status } : {}),
+        message: pending.message,
+      };
+    }
+  }
+
+  throw new Error("A API recebeu o cadastro, mas retornou uma resposta inesperada. Tente entrar ou contate o suporte.");
 }
 
 export async function logoutSession(): Promise<void> {
@@ -132,6 +165,16 @@ async function postAuthSession(path: string, body: unknown): Promise<AuthSession
   const session = (await response.json()) as AuthSession;
   applySession(session, "updated");
   return session;
+}
+
+function isAuthSession(value: unknown): value is AuthSession {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Partial<AuthSession>;
+  const user = session.user as Partial<AuthUser> | null | undefined;
+  return typeof session.token === "string" && session.token.length > 0 &&
+    typeof session.expiresAt === "string" && Date.parse(session.expiresAt) > Date.now() &&
+    !!user && typeof user.id === "string" && typeof user.name === "string" &&
+    typeof user.email === "string" && typeof user.role === "string";
 }
 
 async function ensureFreshSession(): Promise<AuthSession | null> {

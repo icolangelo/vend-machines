@@ -28,6 +28,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [registrationNotice, setRegistrationNotice] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { login, register, token, sessionMessage, clearSessionMessage } = useAuth();
   const navigate = useNavigate();
@@ -77,6 +78,7 @@ export default function Login() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setRegistrationNotice("");
 
     // Validações básicas no front
     if (regCpf.length !== 14) {
@@ -103,8 +105,13 @@ export default function Login() {
     setIsSubmitting(true);
 
     try {
-      await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
-      navigate("/dashboard");
+      const result = await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
+      if (result.kind === "session") {
+        navigate("/dashboard");
+      } else {
+        setRegistrationNotice(result.message);
+        setIsRegistering(false);
+      }
     } catch (err: unknown) {
       setError(getErrorMessage(err, "Ocorreu um erro ao tentar se cadastrar. Tente novamente."));
     } finally {
@@ -115,6 +122,7 @@ export default function Login() {
   const handleToggleMode = () => {
     setIsRegistering(!isRegistering);
     setError("");
+    setRegistrationNotice("");
   };
 
   return (
@@ -149,6 +157,12 @@ export default function Login() {
                 : "Insira suas credenciais de acesso abaixo."}
             </p>
           </div>
+
+          {registrationNotice && (
+            <div role="status" className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+              {registrationNotice}
+            </div>
+          )}
 
           {isRegistering ? (
             /* Formulário de Cadastro */
