@@ -115,6 +115,7 @@ resource_arguments=(
   --reserve-host-cpus 0.25
   --reserve-host-memory-mib 512
   --reserve-docker-disk-mib 512
+  --candidate-db-max-pool-size 5
 )
 run_candidate_with_resources() {
   bash "$launcher" \
@@ -138,10 +139,12 @@ bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/success.log"
 grep -q 'Health check e readiness passivos aprovados' "$temporary_directory/success.log"
 grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 grep -q -- '--env Deployment__PassiveMode=true' "$DOCKER_TEST_LOG"
+grep -q -- '--env Database__MaximumPoolSize=5' "$DOCKER_TEST_LOG"
 grep -q -- '--cpus 0.25 --memory 256m' "$DOCKER_TEST_LOG"
 grep -q -- '--memory-swap 256m' "$DOCKER_TEST_LOG"
 ! grep -q -- 'Telemetry__LegacyApiBaseUrl=' "$DOCKER_TEST_LOG"
@@ -197,6 +200,7 @@ bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --active-overlap \
   --legacy-api-origin http://previous-api:8080 \
   > "$temporary_directory/active.log"
@@ -219,6 +223,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-route-failure.log" 2>&1; then
   echo 'O launcher aceitou rota comercial habilitada em modo passivo.' >&2
   exit 1
@@ -241,6 +246,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-deploy-ready-failure.log" 2>&1; then
   echo 'O launcher aceitou readiness de deploy liberada em modo passivo.' >&2
   exit 1
@@ -263,6 +269,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-readiness-failure.log" 2>&1; then
   echo 'O launcher aceitou readiness de banco/migrations bloqueada em modo passivo.' >&2
   exit 1
@@ -288,6 +295,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-mode-failure.log" 2>&1; then
   echo 'O launcher aceitou Deployment__PassiveMode diferente de true.' >&2
   exit 1
@@ -311,6 +319,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-kill-fallback.log" 2>&1; then
   echo 'O launcher informou sucesso após ativar o fallback de parada.' >&2
   exit 1
@@ -333,6 +342,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   > "$temporary_directory/passive-stop-failure.log" 2>&1; then
   echo 'O launcher informou sucesso mesmo sem confirmar a parada da candidata passiva.' >&2
   exit 1
@@ -356,6 +366,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou que o arquivo runtime sobrescrevesse o modo passivo.' >&2
   exit 1
@@ -378,6 +389,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou migrations de outro SHA.' >&2
@@ -398,6 +410,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou um arquivo de runtime legível por grupo/outros.' >&2
@@ -421,6 +434,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou runtime dentro do artefato via diretório simbólico.' >&2
@@ -445,6 +459,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou runtime dentro do pacote operacional via diretório simbólico.' >&2
@@ -465,6 +480,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://api.vendmachine.com.br:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou a origem pública da API.' >&2
@@ -484,6 +500,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou um artefato com checksum inválido.' >&2
@@ -506,6 +523,7 @@ if bash "$launcher" \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
+  --candidate-db-max-pool-size 5 \
   --legacy-api-origin http://previous-api:8080 \
   >/dev/null 2>&1; then
   echo 'O launcher aceitou health check unhealthy.' >&2
@@ -513,4 +531,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), orçamento CPU/memória/disco exigido, insuficiência recusada antes de carregar imagem, readiness e rotas passivas, parada segura/fallback verificados.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), orçamentos CPU/memória/disco/conexões exigidos, limites configurados, insuficiência recusada antes de carregar imagem, readiness e rotas passivas, parada segura/fallback verificados.'

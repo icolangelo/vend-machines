@@ -106,6 +106,10 @@ var useSqlite = DevelopmentDatabaseConfiguration.ShouldUseSqlite(
     builder.Environment.IsDevelopment(),
     explicitlyRequestedSqlite,
     connectionString);
+var maximumDatabasePoolSize = builder.Configuration.GetValue<int?>("Database:MaximumPoolSize");
+var boundedNpgsqlDataSource = !useSqlite && maximumDatabasePoolSize.HasValue
+    ? NpgsqlDataSource.Create(DatabasePoolConfiguration.ApplyMaximumPoolSize(connectionString, maximumDatabasePoolSize.Value))
+    : null;
 
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
@@ -115,6 +119,10 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             ? connectionString
             : (builder.Configuration.GetConnectionString("SqliteConnection") ?? "Data Source=vending.db");
         options.UseSqlite(sqliteConn);
+    }
+    else if (boundedNpgsqlDataSource is not null)
+    {
+        options.UseNpgsql(boundedNpgsqlDataSource);
     }
     else
     {
@@ -248,7 +256,10 @@ builder.Services.AddSingleton(webSocketOriginPolicy);
 builder.Services.AddSingleton<WebSocketTicketService>();
 if (!useSqlite)
 {
-    builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString!));
+    if (boundedNpgsqlDataSource is not null)
+        builder.Services.AddSingleton(boundedNpgsqlDataSource);
+    else
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString!));
     builder.Services.AddSingleton<PostgresTelemetryPanelEventBus>();
 }
 builder.Services.AddSingleton<TelemetryPanelHub>();

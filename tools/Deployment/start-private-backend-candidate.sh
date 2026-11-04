@@ -12,6 +12,7 @@ Uso:
     --runtime-env-file FILE \
     --candidate-cpus CPUS \
     --candidate-memory-mib MIB \
+    --candidate-db-max-pool-size CONNECTIONS \
     --reserve-host-cpus CPUS \
     --reserve-host-memory-mib MIB \
     --reserve-docker-disk-mib MIB \
@@ -48,6 +49,7 @@ legacy_api_origin=''
 host_port='18080'
 candidate_cpus=''
 candidate_memory_mib=''
+candidate_db_max_pool_size=''
 reserve_host_cpus=''
 reserve_host_memory_mib=''
 reserve_docker_disk_mib=''
@@ -62,6 +64,7 @@ while (($# > 0)); do
     --runtime-env-file) (($# >= 2)) || { usage >&2; exit 2; }; runtime_env_file=$2; shift 2 ;;
     --candidate-cpus) (($# >= 2)) || { usage >&2; exit 2; }; candidate_cpus=$2; shift 2 ;;
     --candidate-memory-mib) (($# >= 2)) || { usage >&2; exit 2; }; candidate_memory_mib=$2; shift 2 ;;
+    --candidate-db-max-pool-size) (($# >= 2)) || { usage >&2; exit 2; }; candidate_db_max_pool_size=$2; shift 2 ;;
     --reserve-host-cpus) (($# >= 2)) || { usage >&2; exit 2; }; reserve_host_cpus=$2; shift 2 ;;
     --reserve-host-memory-mib) (($# >= 2)) || { usage >&2; exit 2; }; reserve_host_memory_mib=$2; shift 2 ;;
     --reserve-docker-disk-mib) (($# >= 2)) || { usage >&2; exit 2; }; reserve_docker_disk_mib=$2; shift 2 ;;
@@ -80,6 +83,7 @@ done
 awk -v value="$candidate_cpus" 'BEGIN { exit !(value > 0 && value <= 64) }' || fail '--candidate-cpus precisa estar entre 0 e 64.'
 awk -v value="$reserve_host_cpus" 'BEGIN { exit !(value > 0 && value <= 64) }' || fail '--reserve-host-cpus precisa estar entre 0 e 64.'
 [[ "$candidate_memory_mib" =~ ^[0-9]+$ ]] && ((candidate_memory_mib >= 256 && candidate_memory_mib <= 1048576)) || fail '--candidate-memory-mib precisa estar entre 256 e 1048576.'
+[[ "$candidate_db_max_pool_size" =~ ^[0-9]+$ ]] && ((candidate_db_max_pool_size >= 1 && candidate_db_max_pool_size <= 1000)) || fail '--candidate-db-max-pool-size precisa estar entre 1 e 1000 conexões.'
 [[ "$reserve_host_memory_mib" =~ ^[0-9]+$ ]] && ((reserve_host_memory_mib >= 1 && reserve_host_memory_mib <= 1048576)) || fail '--reserve-host-memory-mib precisa estar entre 1 e 1048576.'
 [[ "$reserve_docker_disk_mib" =~ ^[0-9]+$ ]] && ((reserve_docker_disk_mib >= 1 && reserve_docker_disk_mib <= 1048576)) || fail '--reserve-docker-disk-mib precisa estar entre 1 e 1048576.'
 if ((active_overlap)) && [[ -z "$legacy_api_origin" ]]; then
@@ -143,6 +147,9 @@ fi
 [[ "$(grep -c '^DOTNET_ENVIRONMENT=Production$' "$runtime_env_file" || true)" == 1 ]] || fail 'DOTNET_ENVIRONMENT=Production precisa estar definido exatamente uma vez no arquivo privado de runtime.'
 if grep -Eiq '^Deployment__PassiveMode=' "$runtime_env_file"; then
   fail 'não defina Deployment__PassiveMode no arquivo de runtime; o launcher controla esse modo explicitamente.'
+fi
+if grep -Eiq '^Database__MaximumPoolSize=' "$runtime_env_file"; then
+  fail 'não defina Database__MaximumPoolSize no arquivo de runtime; o launcher controla esse limite explicitamente.'
 fi
 
 python3 "$artifact_dir/verify-candidate-artifact-pair.py" \
@@ -246,6 +253,7 @@ if ((active_overlap)); then
   passive_mode=false
 fi
 docker_env_args=(--env "Deployment__PassiveMode=$passive_mode")
+docker_env_args+=(--env "Database__MaximumPoolSize=$candidate_db_max_pool_size")
 if [[ -n "$legacy_api_origin" ]]; then
   docker_env_args+=(--env "Telemetry__LegacyApiBaseUrl=$legacy_api_origin")
 fi
@@ -309,6 +317,7 @@ fi
 
 printf 'Candidata iniciada: container=%s sha=%s endpoint=http://127.0.0.1:%s\n' \
   "$container_name" "$expected_source_sha" "$host_port"
+printf 'Pool máximo da candidata ao PostgreSQL: %s conexões compartilhadas entre EF Core e telemetria.\n' "$candidate_db_max_pool_size"
 if ((active_overlap)); then
   printf 'Modo ativo de convivência explicitamente solicitado.\n'
   printf 'Execute Validate-TelemetryOverlapReadiness.py antes de encaminhar tráfego.\n'
