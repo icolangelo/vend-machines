@@ -144,6 +144,15 @@ require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/Deploymen
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/DeploymentReadinessService.cs" 'unresolved_session_closures'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/TelemetryController.cs" 'LockForSessionStartAsync(cancellationToken)'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'AddTelemetryConnectionOperations'
+require_contains "$repo_root/apps/backend/VendingMachines.Api/Program.cs" 'LegacyOwnerStartupGuard.EnsureReadyBeforeWorkersAsync'
+db_init_line="$(grep -nF 'DbInitializer.Initialize(context, app.Environment.IsDevelopment());' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+legacy_owner_guard_line="$(grep -nF 'LegacyOwnerStartupGuard.EnsureReadyBeforeWorkersAsync' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+app_run_line="$(grep -nF 'app.Run();' "$repo_root/apps/backend/VendingMachines.Api/Program.cs" | head -n 1 | cut -d: -f1)"
+if [[ -z "$db_init_line" || -z "$legacy_owner_guard_line" || -z "$app_run_line" ]] ||
+  (( db_init_line >= legacy_owner_guard_line || legacy_owner_guard_line >= app_run_line )); then
+  echo "O guard do owner legado deve executar depois da checagem do banco e antes do início dos hosted workers." >&2
+  exit 1
+fi
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/TelemetryConnectionServiceCollectionExtensions.cs" 'AddSingleton<ITelemetryCommandSender>'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/TelemetryControllerIsolationTests.cs" 'ManualCommandIsNotSentWhileDeploymentAdmissionIsPaused'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/TelemetryCommandAdmissionTests.cs" 'PauseWaitsForAdmittedManualCommandToFinish'

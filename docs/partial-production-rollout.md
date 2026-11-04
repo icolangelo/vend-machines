@@ -8,6 +8,8 @@ Para apenas subir a imagem candidata e verificar o processo, o launcher inicia e
 
 Esse smoke confirma somente que o container e a conexão/readiness de banco funcionam. Não permite testar dashboard, APIs comerciais, relay ou tráfego de máquinas, e não substitui o preflight de convivência descrito abaixo. Para testar a candidata como API de aplicação, use uma cópia isolada restaurada do banco e a validação de release completa. Nunca desligue o modo passivo numa instância ligada ao banco comercial até cumprir os gates de backup, migration e operação da seção seguinte. O launcher exige a flag `--active-overlap` para iniciar workers e aceitar rotas comerciais; essa flag é somente um seletor técnico e não substitui nenhuma aprovação ou evidência operacional.
 
+Na inicialização ativa, depois de validar o schema e antes de o host iniciar qualquer worker, a API verifica se todo socket recente tem owner/lease/rota válidos ou pertence ao conjunto legado encaminhável. Se houver máquinas ainda conectadas à API anterior, a configuração de relay privado precisa estar presente e `GET /health` da API anterior deve responder saudável. Qualquer socket recente sem rota válida, relay ausente ou API anterior indisponível faz a candidata encerrar o startup antes de iniciar workers ou aceitar tráfego; a API anterior continua ativa. Isso é uma barreira adicional, não substitui o preflight de 120 segundos nem os gates de backup, migrations e operação.
+
 ## Configuração da candidata
 
 1. Mantenha a API anterior ativa e sem reinício enquanto ela possuir WebSockets de máquinas.

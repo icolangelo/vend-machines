@@ -291,6 +291,10 @@ if (!passiveDeploymentMode)
             throw new InvalidOperationException(
                 "Telemetry:RequireDeviceCredentials exige credenciais válidas provisionadas para todas as máquinas ativas.");
         }
+        await LegacyOwnerStartupGuard.EnsureReadyBeforeWorkersAsync(
+            context,
+            services.GetRequiredService<LegacyTelemetryRequestRelay>(),
+            CancellationToken.None);
         // Não limpe o estado de toda a frota no startup. Durante uma troca gradual,
         // outra instância ainda pode manter WebSockets ativos; a limpeza global faria
         // essas máquinas parecerem indisponíveis até o próximo heartbeat. Cada conexão
