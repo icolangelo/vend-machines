@@ -12,6 +12,7 @@ using VendingMachines.Api.Data;
 using VendingMachines.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+var passiveDeploymentMode = builder.Configuration.GetValue<bool>("Deployment:PassiveMode");
 var aspNetCoreEnvironment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")?.Trim();
 var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")?.Trim();
 var rejectDevelopmentEnvironment = builder.Configuration.GetValue<bool>("VendingMachines:RejectDevelopmentEnvironment");
@@ -80,7 +81,8 @@ builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
 builder.Services.AddSingleton<PasswordResetEmailQueue>();
 builder.Services.AddSingleton<IPasswordResetEmailQueue>(services =>
     services.GetRequiredService<PasswordResetEmailQueue>());
-builder.Services.AddHostedService(services => services.GetRequiredService<PasswordResetEmailQueue>());
+if (!passiveDeploymentMode)
+    builder.Services.AddHostedService(services => services.GetRequiredService<PasswordResetEmailQueue>());
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
@@ -250,7 +252,8 @@ if (!useSqlite)
 {
     builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString!));
     builder.Services.AddSingleton<PostgresTelemetryPanelEventBus>();
-    builder.Services.AddHostedService<TelemetryPanelEventRelay>();
+    if (!passiveDeploymentMode)
+        builder.Services.AddHostedService<TelemetryPanelEventRelay>();
 }
 builder.Services.AddSingleton<TelemetryPanelHub>();
 builder.Services.AddSingleton(_ => new BackgroundWorkerHealthRegistry(includeTelemetryPanelEventRelay: !useSqlite));
@@ -258,13 +261,16 @@ builder.Services.AddSingleton<ShutdownWriteRequestGate>();
 builder.Services.AddScoped<DeploymentReadinessService>();
 builder.Services.AddTelemetryConnectionOperations();
 // Registre antes do manager para que o shutdown drene os sockets antes de remover o lease do nó.
-builder.Services.AddHostedService(sp => new TelemetryConnectionLeaseWorker(
-    sp.GetRequiredService<IServiceScopeFactory>(),
-    sp.GetRequiredService<TelemetryConnectionManager>().NodeId,
-    sp.GetRequiredService<TelemetryConnectionManager>().GetActiveMachineConnectionsForLease,
-    sp.GetRequiredService<ILogger<TelemetryConnectionLeaseWorker>>(),
-    sp.GetRequiredService<BackgroundWorkerHealthRegistry>()));
-builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
+if (!passiveDeploymentMode)
+{
+    builder.Services.AddHostedService(sp => new TelemetryConnectionLeaseWorker(
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<TelemetryConnectionManager>().NodeId,
+        sp.GetRequiredService<TelemetryConnectionManager>().GetActiveMachineConnectionsForLease,
+        sp.GetRequiredService<ILogger<TelemetryConnectionLeaseWorker>>(),
+        sp.GetRequiredService<BackgroundWorkerHealthRegistry>()));
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<TelemetryConnectionManager>());
+}
 builder.Services.AddScoped<SessionOrchestrator>();
 builder.Services.AddScoped<IDeviceTelemetryMessageHandler>(sp => sp.GetRequiredService<SessionOrchestrator>());
 builder.Services.AddSingleton<DeviceMessageInboxAdmissionGate>();
@@ -277,20 +283,28 @@ builder.Services.AddHttpClient("TelemetryLegacyOwner", client => client.Timeout 
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton<LegacyTelemetryRequestRelay>();
 builder.Services.AddScoped<MercadoPagoWebhookProcessor>();
-builder.Services.AddHostedService<MercadoPagoWebhookWorker>();
-  builder.Services.AddHostedService<MercadoPagoReconciliationWorker>();
-  builder.Services.AddScoped<OperationalAlertSyncService>();
-  builder.Services.AddHostedService<OperationalAlertWorker>();
+if (!passiveDeploymentMode)
+{
+    builder.Services.AddHostedService<MercadoPagoWebhookWorker>();
+    builder.Services.AddHostedService<MercadoPagoReconciliationWorker>();
+}
+builder.Services.AddScoped<OperationalAlertSyncService>();
+if (!passiveDeploymentMode)
+    builder.Services.AddHostedService<OperationalAlertWorker>();
 builder.Services.Configure<MdbStatusOptions>(builder.Configuration.GetSection("MdbStatus"));
 builder.Services.AddScoped<MdbStatusRequestService>();
-builder.Services.AddHostedService<TelemetryDeadlineWorker>();
-builder.Services.AddHostedService<MdbStatusPollingWorker>();
+if (!passiveDeploymentMode)
+{
+    builder.Services.AddHostedService<TelemetryDeadlineWorker>();
+    builder.Services.AddHostedService<MdbStatusPollingWorker>();
+}
 
 var app = builder.Build();
 
-// Seed Database
-using (var scope = app.Services.CreateScope())
+// Passive candidate instances must not initialize or otherwise touch the shared database at startup.
+if (!passiveDeploymentMode)
 {
+    using var scope = app.Services.CreateScope();
     var services = scope.ServiceProvider;
     var logger = services.GetRequiredService<ILogger<Program>>();
     try
@@ -314,6 +328,10 @@ using (var scope = app.Services.CreateScope())
         throw; // Impede o app de subir com banco desatualizado
     }
 }
+else
+{
+    app.Logger.LogWarning("API iniciada em modo passivo: workers, inicialização do banco e rotas de aplicação permanecem desativados.");
+}
 
 // Configure the HTTP request pipeline.
 // Só confia em cabeçalhos encaminhados quando os IPs do proxy foram configurados explicitamente.
@@ -321,6 +339,8 @@ if (forwardedHeadersOptions is not null)
 {
     app.UseForwardedHeaders(forwardedHeadersOptions);
 }
+
+app.UseMiddleware<VendingMachines.Api.Middlewares.PassiveDeploymentModeMiddleware>(passiveDeploymentMode);
 
 if (app.Environment.IsDevelopment())
 {

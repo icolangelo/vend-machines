@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
 using VendingMachines.Api.Data;
 using VendingMachines.Api.Services;
 using Xunit;
@@ -27,7 +28,10 @@ public sealed class ApiReadinessEndpointTests
             await db.Database.ExecuteSqlRawAsync("INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ({0}, {1})", migration, "10.0.0");
 
         using var lifetime = new TestApplicationLifetime();
-        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, CancellationToken.None);
+        var passiveConfiguration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Deployment:PassiveMode"] = "true" })
+            .Build();
+        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, passiveConfiguration, CancellationToken.None);
         await using var body = new MemoryStream();
         var context = new DefaultHttpContext();
         using var responseServices = new ServiceCollection()
@@ -43,6 +47,7 @@ public sealed class ApiReadinessEndpointTests
         body.Position = 0;
         using var json = await JsonDocument.ParseAsync(body);
         Assert.Equal("Ready", json.RootElement.GetProperty("status").GetString());
+        Assert.Equal("Passive", json.RootElement.GetProperty("mode").GetString());
         Assert.Equal("Connected", json.RootElement.GetProperty("database").GetString());
     }
 
@@ -61,7 +66,7 @@ public sealed class ApiReadinessEndpointTests
             await db.Database.ExecuteSqlRawAsync("INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ({0}, {1})", migration, "10.0.0");
 
         using var lifetime = new TestApplicationLifetime();
-        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, CancellationToken.None);
+        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, new ConfigurationBuilder().Build(), CancellationToken.None);
         var context = await ExecuteResultAsync(result);
 
         Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
@@ -80,7 +85,7 @@ public sealed class ApiReadinessEndpointTests
         using var lifetime = new TestApplicationLifetime();
         lifetime.BeginStopping();
 
-        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, CancellationToken.None);
+        var result = await ApiReadinessEndpoint.HandleAsync(db, lifetime, new ConfigurationBuilder().Build(), CancellationToken.None);
         var context = await ExecuteResultAsync(result);
 
         Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);

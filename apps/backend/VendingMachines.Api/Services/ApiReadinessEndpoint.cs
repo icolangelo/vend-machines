@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using VendingMachines.Api.Data;
@@ -10,6 +11,7 @@ public static class ApiReadinessEndpoint
     public static async Task<IResult> HandleAsync(
         AppDbContext db,
         IHostApplicationLifetime lifetime,
+        IConfiguration configuration,
         CancellationToken cancellationToken)
     {
         var sourceCommit = ReleaseMetadata.GetSourceCommit(Environment.GetEnvironmentVariable("APP_REVISION"));
@@ -28,6 +30,7 @@ public static class ApiReadinessEndpoint
             return Results.Ok(new
             {
                 status = "Ready",
+                mode = configuration.GetValue<bool>("Deployment:PassiveMode") ? "Passive" : "Active",
                 database = "Connected",
                 sourceCommit,
                 timestamp = DateTime.UtcNow
