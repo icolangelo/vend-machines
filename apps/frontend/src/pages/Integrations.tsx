@@ -70,7 +70,7 @@ export default function Integrations() {
         try {
             setLoading(true);
             const config = await getOauthConfig();
-            const isTest = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true" || config.clientId === "";
+            const isTest = import.meta.env.DEV && import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
             if (isTest) {
                 toast({
@@ -81,6 +81,8 @@ export default function Integrations() {
                     const stateParam = config.state ? `&state=${encodeURIComponent(config.state)}` : "";
                     window.location.href = `${window.location.origin}/?code=dummy_mock_oauth_code_${Date.now()}${stateParam}`;
                 }, 1200);
+            } else if (!config.clientId) {
+                throw new Error("A integração do Mercado Pago ainda não está configurada.");
             } else {
                 const stateParam = config.state ? `&state=${encodeURIComponent(config.state)}` : "";
                 const authUrl = `https://auth.mercadopago.com/authorization?client_id=${config.clientId}&response_type=code&platform_id=mp&redirect_uri=${encodeURIComponent(config.redirectUri)}${stateParam}`;

@@ -17,12 +17,12 @@ import { API_BASE_URL, authenticatedFetch } from "@/lib/authClient";
 
 export { API_BASE_URL } from "@/lib/authClient";
 
-const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+const IS_TEST_ENVIRONMENT = import.meta.env.DEV && import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
 const authFetch = authenticatedFetch;
 
 export async function getMachines(): Promise<Machine[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockMachines;
     }
     const response = await authFetch(`${API_BASE_URL}/machines`);
@@ -161,7 +161,7 @@ export async function createTelemetrySocketTicket(): Promise<{ ticket: string; e
 }
 
 export async function getMachine(id: string): Promise<Machine | null> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockMachines.find(m => m.id === id) || null;
     }
     const response = await authFetch(`${API_BASE_URL}/machines/${id}`);
@@ -170,7 +170,7 @@ export async function getMachine(id: string): Promise<Machine | null> {
 }
 
 export async function createMachine(machine: Partial<Machine>): Promise<Machine> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const newId = `VM-${String(mockMachines.length + 1).padStart(3, '0')}`;
         const selectedLocation = mockClients.find(location => location.id === machine.locationId);
         const newMachine: Machine = {
@@ -203,7 +203,7 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
 }
 
 export async function updateMachine(id: string, machine: Partial<Machine>): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const idx = mockMachines.findIndex(m => m.id === id);
         if (idx > -1) {
             const selectedLocation = mockClients.find(location => location.id === machine.locationId);
@@ -228,7 +228,7 @@ export async function updateMachine(id: string, machine: Partial<Machine>): Prom
 }
 
 export async function getLocations(): Promise<Location[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockClients;
     }
     const response = await authFetch(`${API_BASE_URL}/locations`);
@@ -237,7 +237,7 @@ export async function getLocations(): Promise<Location[]> {
 }
 
 export async function createLocation(name: string): Promise<Location> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const location: Location = {
             id: `loc-${Date.now()}`,
             name,
@@ -262,7 +262,7 @@ export async function createLocation(name: string): Promise<Location> {
 }
 
 export async function updateLocation(id: string, name: string): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const location = mockClients.find(item => item.id === id);
         if (location) {
             location.name = name;
@@ -288,7 +288,7 @@ export async function updateLocation(id: string, name: string): Promise<void> {
 }
 
 export async function deleteLocation(id: string): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const hasMachines = mockMachines.some(machine => machine.locationId === id);
         if (hasMachines) {
             throw new Error("Não é possível excluir uma localização com máquinas vinculadas.");
@@ -313,7 +313,7 @@ export async function getClients(): Promise<Client[]> {
 }
 
 export async function getProducts(): Promise<FullProduct[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products`);
@@ -322,7 +322,7 @@ export async function getProducts(): Promise<FullProduct[]> {
 }
 
 export async function getProductTypes(): Promise<ProductType[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockProductTypes;
     }
     const response = await authFetch(`${API_BASE_URL}/products/types`);
@@ -331,7 +331,7 @@ export async function getProductTypes(): Promise<ProductType[]> {
 }
 
 export async function createProductType(type: Partial<ProductType>): Promise<ProductType> {
-    if (isTestEnv()) return { ...type, id: `pt-${Date.now()}` } as ProductType;
+    if (IS_TEST_ENVIRONMENT) return { ...type, id: `pt-${Date.now()}` } as ProductType;
     const response = await authFetch(`${API_BASE_URL}/products/types`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -342,7 +342,7 @@ export async function createProductType(type: Partial<ProductType>): Promise<Pro
 }
 
 export async function updateProductType(id: string, type: Partial<ProductType>): Promise<ProductType> {
-    if (isTestEnv()) return { ...type, id } as ProductType;
+    if (IS_TEST_ENVIRONMENT) return { ...type, id } as ProductType;
     const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -356,7 +356,7 @@ export async function updateProductType(id: string, type: Partial<ProductType>):
 }
 
 export async function deleteProductType(id: string): Promise<void> {
-    if (isTestEnv()) return;
+    if (IS_TEST_ENVIRONMENT) return;
     const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
         method: "DELETE"
     });
@@ -364,7 +364,7 @@ export async function deleteProductType(id: string): Promise<void> {
 }
 
 export async function createProduct(product: Partial<FullProduct>): Promise<FullProduct> {
-    if (isTestEnv()) return { ...product, id: `p-${Date.now()}` } as FullProduct;
+    if (IS_TEST_ENVIRONMENT) return { ...product, id: `p-${Date.now()}` } as FullProduct;
     const response = await authFetch(`${API_BASE_URL}/products`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -375,7 +375,7 @@ export async function createProduct(product: Partial<FullProduct>): Promise<Full
 }
 
 export async function updateProduct(id: string, product: Partial<FullProduct>): Promise<FullProduct> {
-    if (isTestEnv()) return { ...product, id } as FullProduct;
+    if (IS_TEST_ENVIRONMENT) return { ...product, id } as FullProduct;
     const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -386,7 +386,7 @@ export async function updateProduct(id: string, product: Partial<FullProduct>): 
 }
 
 export async function deleteProduct(id: string): Promise<void> {
-    if (isTestEnv()) return;
+    if (IS_TEST_ENVIRONMENT) return;
     const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
         method: "DELETE"
     });
@@ -394,7 +394,7 @@ export async function deleteProduct(id: string): Promise<void> {
 }
 
 export async function getTopProducts(): Promise<Product[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockTopProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/top`);
@@ -403,7 +403,7 @@ export async function getTopProducts(): Promise<Product[]> {
 }
 
 export async function getBottomProducts(): Promise<Product[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return mockBottomProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/bottom`);
@@ -422,7 +422,7 @@ export interface DashboardStats {
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const totalRevenue = mockMachines.reduce((s, m) => s + m.revenue30d, 0);
         const totalSales = mockMachines.reduce((s, m) => s + m.totalSales30d, 0);
         const online = mockMachines.filter((m) => m.status === "online").length;
@@ -470,7 +470,7 @@ export interface PaginatedUsers {
 }
 
 export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedUsers> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const allMockUsers = Array.from({ length: 45 }, (_, i) => ({
             id: `usr-${i + 1}`,
             name: i === 0 ? "Admin Ivan" : i === 1 ? "João da Silva" : `Usuário Operador ${i + 1}`,
@@ -524,7 +524,7 @@ export interface PaginatedCompanies {
 }
 
 export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedCompanies> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const allMockCompanies = [
             {
                 id: "11111111-1111-1111-1111-111111111111",
@@ -647,7 +647,7 @@ export class PaymentRequestError extends Error {
 }
 
 export async function getGlobalSettings(): Promise<SystemSettings> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const local = localStorage.getItem("mock_global_settings");
         return local ? JSON.parse(local) : { applicationFeePercent: 5.0 };
     }
@@ -657,7 +657,7 @@ export async function getGlobalSettings(): Promise<SystemSettings> {
 }
 
 export async function updateGlobalSettings(settings: SystemSettings): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         localStorage.setItem("mock_global_settings", JSON.stringify(settings));
         return;
     }
@@ -670,7 +670,7 @@ export async function updateGlobalSettings(settings: SystemSettings): Promise<vo
 }
 
 export async function getIntegration(): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const local = localStorage.getItem("mock_mp_integration");
         const companyId = "11111111-1111-1111-1111-111111111111";
         return local ? JSON.parse(local) : {
@@ -686,7 +686,7 @@ export async function getIntegration(): Promise<MercadoPagoIntegration> {
 }
 
 export async function saveIntegration(integration: MercadoPagoIntegration): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         localStorage.setItem("mock_mp_integration", JSON.stringify(integration));
         return;
     }
@@ -699,7 +699,7 @@ export async function saveIntegration(integration: MercadoPagoIntegration): Prom
 }
 
 export async function toggleIntegration(isActive: boolean): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const local = localStorage.getItem("mock_mp_integration");
         if (local) {
             const parsed = JSON.parse(local);
@@ -723,7 +723,7 @@ export interface OauthConfig {
 }
 
 export async function getOauthConfig(): Promise<OauthConfig> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return {
             clientId: "7902965695113613",
             redirectUri: window.location.origin + "/"
@@ -735,7 +735,7 @@ export async function getOauthConfig(): Promise<OauthConfig> {
 }
 
 export async function exchangeOauthCode(code: string, redirectUri: string, state?: string): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const companyId = "11111111-1111-1111-1111-111111111111";
         const mockIntegration: MercadoPagoIntegration = {
             companyId,
@@ -770,7 +770,7 @@ export async function exchangeOauthCode(code: string, redirectUri: string, state
 }
 
 export async function disconnectIntegration(): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         localStorage.removeItem("mock_mp_integration");
         return;
     }
@@ -782,7 +782,7 @@ export async function disconnectIntegration(): Promise<void> {
 }
 
 export async function getCompanyIntegration(companyId: string): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const local = localStorage.getItem("mock_mp_integration");
         if (local) {
             const parsed = JSON.parse(local);
@@ -833,7 +833,7 @@ export async function createPixQrCode(params: {
     applicationFeeWarning?: string | null;
     simulated?: boolean;
 }> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const mockTxId = `tx-${Date.now()}`;
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         const newTx = {
@@ -885,7 +885,7 @@ export async function createPixQrCode(params: {
 }
 
 export async function simulateWebhook(transactionId: string, approved: boolean, sendTelemetryToMachine = true): Promise<void> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         const idx = mockTransactions.findIndex(t => t.id == transactionId);
         if (idx > -1) {
@@ -930,7 +930,7 @@ export async function simulateWebhook(transactionId: string, approved: boolean, 
 }
 
 export async function getTransactions(machineId?: string): Promise<PaymentTransaction[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         return (list as PaymentTransaction[]).filter((transaction) => !machineId || transaction.machineId === machineId);
     }
@@ -941,7 +941,7 @@ export async function getTransactions(machineId?: string): Promise<PaymentTransa
 }
 
 export async function getTransactionLogs(transactionId: string): Promise<TransactionTelemetryLog[]> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         return JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]");
     }
     const response = await authFetch(`${API_BASE_URL}/payments/transactions/${transactionId}/logs`);
@@ -970,7 +970,7 @@ export interface PaginatedAdminLogs {
 }
 
 export async function getAdminLogs(page: number = 1, pageSize: number = 20, search: string = ""): Promise<PaginatedAdminLogs> {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
         const mockItems: AdminLog[] = [
             {
                 id: "1",

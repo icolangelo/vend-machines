@@ -92,7 +92,7 @@ const OauthInterceptor = ({ children }: { children: React.ReactNode }) => {
 };
 
 const App = () => {
-    const isTestEnv = import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+    const isTestEnv = import.meta.env.DEV && import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
     return (
         <QueryClientProvider client={queryClient}>

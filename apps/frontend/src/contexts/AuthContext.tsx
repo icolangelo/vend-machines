@@ -35,7 +35,7 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+const IS_TEST_ENVIRONMENT = import.meta.env.DEV && import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const queryClient = useQueryClient();
@@ -61,7 +61,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = subscribeToAuthState(applyState);
     clearLegacyAuthStorage();
 
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
       setLoading(false);
       return unsubscribe;
     }
@@ -76,7 +76,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [queryClient]);
 
   const login = async (email: string, password: string) => {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
       if (password !== "teste123" && password !== "admin123") {
         throw new Error("Senha incorreta. Por favor, tente novamente.");
       }
@@ -104,7 +104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     companyName: string,
     companyCnpj: string,
   ): Promise<RegistrationResult> => {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
       const session = createMockSession({
         id: "usr-admin-registered",
         name,
@@ -129,7 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    if (isTestEnv()) {
+    if (IS_TEST_ENVIRONMENT) {
       clearAuthSession("logout");
       return;
     }
