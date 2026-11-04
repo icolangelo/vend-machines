@@ -56,4 +56,31 @@ describe("Machine list loading state", () => {
         expect(screen.getByText("Máquina do saguão")).toBeInTheDocument();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
+
+    it("filters restock by the configured compartment threshold instead of a fixed percentage", async () => {
+        api.getMachines.mockResolvedValue([
+            {
+                ...machine,
+                id: "machine-below-slot-threshold",
+                name: "Abaixo do limite do compartimento",
+                stockLevel: 80,
+                lowStock: true,
+            },
+            {
+                ...machine,
+                id: "machine-above-slot-threshold",
+                name: "Acima do limite do compartimento",
+                stockLevel: 10,
+                lowStock: false,
+            },
+        ]);
+
+        render(<MemoryRouter><Machines /></MemoryRouter>);
+
+        expect(await screen.findByText("Abaixo do limite do compartimento")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("tab", { name: "Reposição" }));
+
+        expect(await screen.findByText("Abaixo do limite do compartimento")).toBeInTheDocument();
+        expect(screen.queryByText("Acima do limite do compartimento")).not.toBeInTheDocument();
+    });
 });
