@@ -103,7 +103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string,
     companyName: string,
     companyCnpj: string,
-  ) => {
+  ): Promise<RegistrationResult> => {
     if (isTestEnv()) {
       const session = createMockSession({
         id: "usr-admin-registered",

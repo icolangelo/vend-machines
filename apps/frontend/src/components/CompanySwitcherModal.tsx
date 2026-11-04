@@ -1,13 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Search, Building2, X, Eye, LogOut } from "lucide-react";
 import { useImpersonation } from "@/contexts/ImpersonationContext";
-import { getCompanies } from "@/lib/api";
+import { getCompanies, type PaginatedCompanies } from "@/lib/api";
 
-interface Company {
-  id: string;
-  name: string;
-  cnpj: string;
-}
+type Company = PaginatedCompanies["items"][number];
 
 interface CompanySwitcherModalProps {
   isOpen: boolean;

@@ -271,7 +271,7 @@ export default function Products() {
                                                         </TableCell>
                                                         <TableCell className="text-center px-6">
                                                             {product.isAlcoholic ? (
-                                                                <Wine className="h-4 w-4 text-orange-500 mx-auto" title="Alcoólico" />
+                                                                <Wine className="h-4 w-4 text-orange-500 mx-auto" role="img" aria-label="Alcoólico" />
                                                             ) : (
                                                                 <span className="text-muted-foreground/30">-</span>
                                                             )}

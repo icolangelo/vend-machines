@@ -1,7 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { useState, useEffect } from "react";
-import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type Machine, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import { getMachines, createPixQrCode, simulateWebhook, getTransactionLogs, PaymentRequestError, type PaymentTransaction, type TransactionTelemetryLog } from "@/lib/api";
+import type { Machine } from "@/data/mockData";
 import { getErrorMessage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

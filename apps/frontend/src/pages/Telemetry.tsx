@@ -351,7 +351,7 @@ export default function Telemetry() {
                                             {["RELATORIO_AUDITORIA", "REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
                                                 <Button key={command} size="sm" variant="outline" disabled={busy || !selected.online || !selected.monitoringEnabled}
                                                     onClick={() => run(() => sendTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
-                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.replaceAll("_", " ")}
+                                                    <Send className="h-3.5 w-3.5 mr-2" />{command.replace(/_/g, " ")}
                                                 </Button>
                                             ))}
                                         </div>

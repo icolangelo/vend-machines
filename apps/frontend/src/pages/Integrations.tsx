@@ -180,7 +180,7 @@ export default function Integrations() {
                                                 </div>
                                             </div>
 
-                                            <Badge variant={isConnected && integration?.isActive ? "success" : "secondary"} className={`text-xs font-semibold px-2.5 py-1 ${isConnected && integration?.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
+                                            <Badge variant="secondary" className={`text-xs font-semibold px-2.5 py-1 ${isConnected && integration?.isActive ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
                                                 {isConnected ? (integration?.isActive ? "Conectado e Ativo" : "Pausado") : "Não Configurado"}
                                             </Badge>
                                         </div>
