@@ -2959,3 +2959,7 @@ O launcher agora exige `--candidate-db-max-pool-size`, configurado apenas na can
 ### Validade dos artefatos de candidata ampliada (04/11/2026)
 
 Como o smoke no servidor e a validação com máquinas dependem de uma janela operacional futura, ampliei de 14 para 30 dias a retenção do pacote operacional e da imagem backend no workflow de verificação. O gate de release exige que ambos mantenham esse prazo. A mudança não altera os artefatos já gerados; a nova validade passa a valer para artefatos de uma execução aprovada deste SHA em diante. `develop` e a publicação em produção não foram alterados.
+
+### Medição read-only de capacidade PostgreSQL para a candidata (04/11/2026)
+
+Acrescentei ao runbook uma consulta `SELECT` que mostra `max_connections`, reservas do PostgreSQL e contagens agregadas de conexões de cliente/ativas/ociosas. A orientação exige amostrar durante o pico, usar a menor folga observada, descontar a margem operacional e tratar permissão insuficiente como medição inconclusiva. A consulta não expõe nomes, SQLs ou dados da aplicação; `Test-Release-Workflow-Gates.sh` passou 17/17 e `git diff --check` passou. Nenhuma conexão de produção foi aberta.

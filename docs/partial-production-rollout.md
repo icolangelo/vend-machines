@@ -74,6 +74,40 @@ Antes de iniciar a candidata no mesmo host da API atual, meça o consumo da API 
 
 Meça também o limite de conexões simultâneas do PostgreSQL/provedor e o pico de conexões da API atual. Escolha `--candidate-db-max-pool-size` somente dentro do saldo que o provedor pode suportar depois de reservar a API atual, os demais serviços e a margem operacional. Esse teto é obrigatório e vale para um único pool compartilhado pela candidata entre EF Core e telemetria. A configuração só afeta a candidata iniciada pelo launcher; não altere o pool da API atual.
 
+Para coletar uma amostra agregada no banco, execute a consulta somente de leitura abaixo durante a carga de pico e repita a amostragem ao longo dessa janela. Ela não lista usuários, bancos, clientes, consultas nem strings de conexão. Registre a maior quantidade observada de conexões de cliente e a menor folga calculada; desconte ainda a margem operacional aprovada antes de definir o pool da candidata. A consulta conta a própria conexão como cliente. Se as permissões do provedor impedirem observar todas as conexões, trate a medição como inconclusiva e obtenha o limite/consumo pelo painel ou suporte do provedor.
+
+```sql
+WITH limits AS (
+    SELECT
+        current_setting('max_connections')::integer AS max_connections,
+        COALESCE(NULLIF(current_setting('reserved_connections', true), ''), '0')::integer AS reserved_connections,
+        current_setting('superuser_reserved_connections')::integer AS superuser_reserved_connections
+),
+usage AS (
+    SELECT
+        count(*) FILTER (WHERE backend_type = 'client backend')::integer AS client_connections,
+        count(*) FILTER (WHERE backend_type = 'client backend' AND state = 'active')::integer AS active_client_connections,
+        count(*) FILTER (WHERE backend_type = 'client backend' AND state = 'idle')::integer AS idle_client_connections
+    FROM pg_stat_activity
+)
+SELECT
+    limits.max_connections,
+    limits.reserved_connections,
+    limits.superuser_reserved_connections,
+    usage.client_connections,
+    usage.active_client_connections,
+    usage.idle_client_connections,
+    GREATEST(
+        limits.max_connections
+        - limits.reserved_connections
+        - limits.superuser_reserved_connections
+        - usage.client_connections,
+        0
+    ) AS unreserved_slots_remaining_at_sample
+FROM limits
+CROSS JOIN usage;
+```
+
 `docker load` acontece antes de aplicar os limites ao container e pode consumir CPU e I/O enquanto importa a imagem. Faça o carregamento fora do pico, acompanhe a API antiga e os pings da frota, e interrompa antes de iniciar a candidata se houver degradação ou a reserva operacional não estiver comprovada. Se o host não tiver capacidade suficiente para os dois processos, não rode a candidata nele.
 
 Com as reservas dimensionadas, execute primeiro o smoke passivo no host Linux e numa rede Docker privada. Não é necessário aplicar migrations nem configurar a origem antiga para esse smoke. Os gates de backup, migrations e preflight continuam obrigatórios antes de usar `--active-overlap`. O comando não contém segredos; o runtime é lido do arquivo privado:
