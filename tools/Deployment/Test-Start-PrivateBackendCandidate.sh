@@ -39,6 +39,16 @@ case "$1" in
   image) printf '%s\n' "$DOCKER_TEST_IMAGE_ID" ;;
   run) printf 'container-id\n' ;;
   inspect) printf '%s\n' "${DOCKER_TEST_HEALTH_STATUS:-healthy}" ;;
+  exec)
+    route="${7:-}"
+    expected_status="${8:-}"
+    case "$route" in
+      /health/deploy-ready) actual_status="${DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS:-503}" ;;
+      /api/machines|/telemetria) actual_status="${DOCKER_TEST_PASSIVE_APPLICATION_STATUS:-503}" ;;
+      *) exit 8 ;;
+    esac
+    [[ "$actual_status" == "$expected_status" ]]
+    ;;
   stop) [[ "${DOCKER_TEST_STOP_FAIL:-0}" != 1 ]] ;;
   *) exit 9 ;;
 esac
@@ -76,6 +86,41 @@ bash "$launcher" \
 grep -q 'Modo ativo de convivência explicitamente solicitado' "$temporary_directory/active.log"
 grep -q -- '--env Deployment__PassiveMode=false' "$DOCKER_TEST_LOG"
 grep -q -- '--env Telemetry__LegacyApiBaseUrl=http://previous-api:8080' "$DOCKER_TEST_LOG"
+! grep -q '^exec ' "$DOCKER_TEST_LOG"
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_PASSIVE_APPLICATION_STATUS=200
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-route-failure.log" 2>&1; then
+  echo 'O launcher aceitou rota comercial habilitada em modo passivo.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q 'respondeu fora de 503 em /api/machines' "$temporary_directory/passive-route-failure.log"
+unset DOCKER_TEST_PASSIVE_APPLICATION_STATUS
+
+rm -f "$DOCKER_TEST_LOG"
+: > "$DOCKER_TEST_LOG"
+export DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS=200
+if bash "$launcher" \
+  --artifact-dir "$artifact_directory" \
+  --release-package-dir "$release_directory" \
+  --expected-source-sha "$source_sha" \
+  --docker-network private-network \
+  --runtime-env-file "$temporary_directory/runtime.env" \
+  > "$temporary_directory/passive-deploy-ready-failure.log" 2>&1; then
+  echo 'O launcher aceitou readiness de deploy liberada em modo passivo.' >&2
+  exit 1
+fi
+grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
+grep -q 'respondeu fora de 503 em /health/deploy-ready' "$temporary_directory/passive-deploy-ready-failure.log"
+unset DOCKER_TEST_PASSIVE_DEPLOY_READY_STATUS
 
 rm -f "$DOCKER_TEST_LOG"
 : > "$DOCKER_TEST_LOG"
@@ -208,4 +253,4 @@ if bash "$launcher" \
 fi
 grep -q '^stop --time 45 ' "$DOCKER_TEST_LOG"
 
-echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), parada após health falho e 7 recusas antes do início.'
+echo 'Private backend candidate launcher: 2 inícios (passivo padrão e ativo explícito), bloqueios passivos verificados, parada após probe/health falho e 7 recusas antes do início.'
