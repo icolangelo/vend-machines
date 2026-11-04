@@ -74,7 +74,10 @@ require_contains "$verify_workflow" 'node --test tools/Deployment/test_frontend_
 require_contains "$verify_workflow" 'id: frontend-target'
 require_contains "$verify_workflow" 'git diff --quiet "$base_ref" "$GITHUB_SHA" -- apps/frontend'
 require_contains "$verify_workflow" "if: steps.frontend-target.outputs.changed == 'true'"
-require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ steps.frontend-target.outputs.base_ref }}'
+require_contains "$verify_workflow" 'backend_compat_ref="$base_ref"'
+require_contains "$verify_workflow" 'backend_compat_ref="$GITHUB_SHA"'
+require_contains "$verify_workflow" 'echo "backend_compat_ref=$backend_compat_ref" >> "$GITHUB_OUTPUT"'
+require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ steps.frontend-target.outputs.backend_compat_ref }}'
 require_contains "$verify_workflow" '--backend-ref "$backend_ref"'
 require_contains "$verify_workflow" 'Generate PostgreSQL release migration segments'
 require_contains "$verify_workflow" 'artifacts/postgresql-migrations-after-inventory-index.sql'
