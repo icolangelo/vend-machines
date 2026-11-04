@@ -291,7 +291,10 @@ VALUES
         "AccountEmail__Enabled=false",
         "Telemetry__RequireDeviceCredentials=false"
     )
-    $apiArguments = @("run", "--detach", "--network", $networkName, "--name", $apiContainer)
+    $apiArguments = @(
+        "run", "--detach", "--network", $networkName, "--name", $apiContainer,
+        "--cpus", "1", "--memory", "1024m", "--memory-swap", "1024m"
+    )
     foreach ($setting in $runtimeEnvironment) {
         $apiArguments += @("--env", $setting)
     }
@@ -415,7 +418,10 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
             $_
         }
     })
-    $pendingApiArguments = @("run", "--detach", "--network", $networkName, "--name", $pendingApiContainer)
+    $pendingApiArguments = @(
+        "run", "--detach", "--network", $networkName, "--name", $pendingApiContainer,
+        "--cpus", "1", "--memory", "1024m", "--memory-swap", "1024m"
+    )
     foreach ($setting in $pendingRuntimeEnvironment) {
         $pendingApiArguments += @("--env", $setting)
     }

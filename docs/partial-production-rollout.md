@@ -70,7 +70,7 @@ if ($ActualArtifactSha256 -ne $ExpectedArtifactSha256) { throw 'Digest do ZIP di
 
 Se qualquer digest divergir, o artefato estiver expirado, ou os nomes/execuções/SHA não coincidirem, não extraia nem use os arquivos; obtenha o par novamente ou gere uma execução aprovada para o SHA revisado. Extraia cada ZIP em diretório vazio separado e então execute o verificador de pareamento.
 
-Antes de iniciar a candidata no mesmo host da API atual, meça o consumo da API e dos demais serviços durante o pico normal com `docker stats`, confira `nproc`, `MemAvailable` em `/proc/meminfo` e espaço livre no diretório informado por `docker info --format '{{.DockerRootDir}}'`. Defina um teto de CPU/memória para a candidata e uma reserva que cubra o pico medido da API atual, os demais serviços e o sistema operacional. Defina também uma reserva de disco para as operações normais do host. Não use valores de exemplo sem comparar com essas medições. O launcher falha antes de carregar a imagem se o teto mais a reserva exceder os CPUs disponíveis, a memória disponível for menor que teto mais reserva, ou o espaço livre do Docker não comportar o tamanho descompactado estimado da imagem mais a reserva. O container recebe `--cpus` e `--memory`, limitando quanto pode consumir; isso reduz competição, mas não substitui acompanhar a API antiga durante o smoke.
+O teto desejado para a candidata é **1 vCPU e 1024 MiB (1 GiB)**. O CI também inicia a imagem Production com esses limites contra PostgreSQL descartável, incluindo startup saudável, banco sem migrations e socket MDB legado sintético. Isso valida esses cenários sob o teto, mas não é teste de carga nem comprova a capacidade do host real. Antes de iniciar no mesmo host da API atual, meça o consumo da API e dos demais serviços durante o pico normal com `docker stats`, confira `nproc`, `MemAvailable` em `/proc/meminfo` e espaço livre no diretório informado por `docker info --format '{{.DockerRootDir}}'`. A reserva deve cobrir o pico medido da API atual, os demais serviços e o sistema operacional, além de uma reserva de disco para operações normais. O launcher falha antes de carregar a imagem se 1 vCPU mais a reserva exceder os CPUs disponíveis, se a memória disponível for menor que 1024 MiB mais a reserva, ou se o espaço livre do Docker não comportar o tamanho descompactado estimado da imagem mais a reserva. O container recebe `--cpus 1`, `--memory 1024m` e `--memory-swap 1024m`; isso limita o consumo da candidata, mas não comprova capacidade suficiente nem substitui acompanhar a API antiga durante o smoke.
 
 Meça também o limite de conexões simultâneas do PostgreSQL/provedor e o pico de conexões da API atual. Escolha `--candidate-db-max-pool-size` somente dentro do saldo que o provedor pode suportar depois de reservar a API atual, os demais serviços e a margem operacional. Esse teto é obrigatório e vale para um único pool compartilhado pela candidata entre EF Core e telemetria. A configuração só afeta a candidata iniciada pelo launcher; não altere o pool da API atual.
 
@@ -119,8 +119,8 @@ bash ./start-private-backend-candidate.sh \
   --expected-source-sha '<SHA Git completo>' \
   --docker-network '<rede privada existente>' \
   --runtime-env-file '<arquivo privado fora do repositório>' \
-  --candidate-cpus '<CPUs máximos medidos para a candidata>' \
-  --candidate-memory-mib '<memória máxima em MiB para a candidata>' \
+  --candidate-cpus 1 \
+  --candidate-memory-mib 1024 \
   --candidate-db-max-pool-size '<conexões que cabem no orçamento do banco>' \
   --reserve-host-cpus '<CPUs que devem permanecer para os serviços atuais>' \
   --reserve-host-memory-mib '<memória em MiB a preservar para os serviços atuais>' \

@@ -15,12 +15,12 @@
 
 ## Capacidade do host antes do smoke
 
-Registre referências das medições, sem incluir dados privados. Meça a API atual e os demais serviços durante o pico normal e escolha reservas que os preservem. O launcher recusa iniciar se o orçamento declarado não couber na capacidade observada.
+Registre referências das medições, sem incluir dados privados. O teto desejado para a candidata é **1 vCPU e 1024 MiB (1 GiB)**. Meça a API atual e os demais serviços durante o pico normal e escolha reservas que os preservem; o launcher recusa iniciar se esse teto mais as reservas não couberem na capacidade observada. O limite ainda precisa ser validado no host e sob carga.
 
 - Data/hora UTC e janela da medição de carga:
 - CPUs disponíveis no host:
-- Teto de CPU da candidata / reserva para os serviços atuais:
-- Memória disponível antes da carga / teto da candidata / reserva dos serviços atuais (MiB):
+- Teto de CPU da candidata (`1`) / reserva para os serviços atuais:
+- Memória disponível antes da carga / teto da candidata (`1024 MiB`) / reserva dos serviços atuais (MiB):
 - Espaço livre no Docker / tamanho descompactado estimado da imagem / reserva de disco (MiB):
 - Limite simultâneo do PostgreSQL/provedor / pico de conexões da API atual / conexões reservadas a outros serviços e margem:
 - Teto `--candidate-db-max-pool-size` aprovado para o pool compartilhado da candidata:

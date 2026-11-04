@@ -410,6 +410,7 @@ fi
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'CREATE DATABASE vendmachines_pending'
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'pendingApiStatus -ne "exited"'
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'pendingHistoryState -ne "t"'
+require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" '"--cpus", "1", "--memory", "1024m", "--memory-swap", "1024m"'
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'Nenhuma porta foi publicada e a rede Docker era interna.'
 require_contains "$verify_workflow" 'tools/Deployment/Test-BackendRuntimeImage.sh vend-machines-backend:verify'
 require_contains "$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh" '--network none'

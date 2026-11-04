@@ -110,8 +110,8 @@ export DOCKER_TEST_LOG="$temporary_directory/docker.log"
 export DOCKER_TEST_ROOT_DIR="$docker_root_directory"
 
 resource_arguments=(
-  --candidate-cpus 0.25
-  --candidate-memory-mib 256
+  --candidate-cpus 1
+  --candidate-memory-mib 1024
   --reserve-host-cpus 0.25
   --reserve-host-memory-mib 512
   --reserve-docker-disk-mib 512
@@ -134,8 +134,8 @@ bash "$launcher" \
   --expected-source-sha "$source_sha" \
   --docker-network private-network \
   --runtime-env-file "$temporary_directory/runtime.env" \
-  --candidate-cpus 0.25 \
-  --candidate-memory-mib 256 \
+  --candidate-cpus 1 \
+  --candidate-memory-mib 1024 \
   --reserve-host-cpus 0.25 \
   --reserve-host-memory-mib 512 \
   --reserve-docker-disk-mib 512 \
@@ -145,8 +145,8 @@ grep -q 'Health check e readiness passivos aprovados' "$temporary_directory/succ
 grep -q -- '--publish 127.0.0.1:18080:8080' "$DOCKER_TEST_LOG"
 grep -q -- '--env Deployment__PassiveMode=true' "$DOCKER_TEST_LOG"
 grep -q -- '--env Database__MaximumPoolSize=5' "$DOCKER_TEST_LOG"
-grep -q -- '--cpus 0.25 --memory 256m' "$DOCKER_TEST_LOG"
-grep -q -- '--memory-swap 256m' "$DOCKER_TEST_LOG"
+grep -q -- '--cpus 1 --memory 1024m' "$DOCKER_TEST_LOG"
+grep -q -- '--memory-swap 1024m' "$DOCKER_TEST_LOG"
 ! grep -q -- 'Telemetry__LegacyApiBaseUrl=' "$DOCKER_TEST_LOG"
 ! grep -q -- '--restart' "$DOCKER_TEST_LOG"
 grep -q '/health/ready 200' "$DOCKER_TEST_LOG"
