@@ -33,8 +33,8 @@
 - Início e fim em UTC:
 - Nome exato do container candidato:
 - Porta publicada somente em loopback:
-- Health `/health`: status, horário UTC e SHA:
-- Readiness `/health/ready`: status, horário UTC e SHA:
+- Health `/health`: status e horário UTC:
+- Readiness `/health/ready`: status, campo `sourceCommit` e horário UTC:
 - Configuração de relay legado confirmada sem registrar a URL privada: `SIM` / `NÃO`
 - Candidata sem conexões de máquinas: `SIM` / `NÃO`
 - Saúde dos workers antes/depois (somente nome, estado e contagem):
