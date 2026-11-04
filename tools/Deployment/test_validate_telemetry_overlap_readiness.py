@@ -23,6 +23,8 @@ class Handler(BaseHTTPRequestHandler):
     legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
     legacy_machine_id_sequence = None
     current_legacy_machine_ids = legacy_machine_ids
+    current_last_seen_at = {}
+    advance_last_seen_each_snapshot = True
     redirect_health = False
     followed_redirect = False
     source_commit = COMMIT
@@ -78,12 +80,25 @@ class Handler(BaseHTTPRequestHandler):
             elif page == 1:
                 type(self).current_legacy_count = type(self).legacy_count
                 type(self).current_legacy_machine_ids = type(self).legacy_machine_ids[:type(self).current_legacy_count]
+            if page == 1:
+                snapshot_time = datetime.now(timezone.utc)
+                for machine_id in type(self).current_legacy_machine_ids:
+                    if type(self).advance_last_seen_each_snapshot:
+                        type(self).current_last_seen_at[machine_id] = snapshot_time
+                    else:
+                        type(self).current_last_seen_at.setdefault(machine_id, snapshot_time)
             start = (page - 1) * page_size
             current_ids = type(self).current_legacy_machine_ids
             payload = {
                 "totalItems": type(self).current_legacy_count,
                 "totalPages": max(1, (type(self).current_legacy_count + page_size - 1) // page_size),
-                "items": [{"machineId": machine_id} for machine_id in current_ids[start:start + page_size]],
+                "items": [
+                    {
+                        "machineId": machine_id,
+                        "lastSeenAt": type(self).current_last_seen_at[machine_id].isoformat().replace("+00:00", "Z"),
+                    }
+                    for machine_id in current_ids[start:start + page_size]
+                ],
                 "relay": {"configured": True, "healthy": True},
             }
         elif self.path == "/api/admin/worker-health":
@@ -133,6 +148,8 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         Handler.legacy_machine_ids = [str(UUID(int=1)), str(UUID(int=2))]
         Handler.legacy_machine_id_sequence = None
         Handler.current_legacy_machine_ids = Handler.legacy_machine_ids
+        Handler.current_last_seen_at = {}
+        Handler.advance_last_seen_each_snapshot = True
         Handler.redirect_health = False
         Handler.followed_redirect = False
         Handler.source_commit = COMMIT
@@ -225,6 +242,20 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertNotIn("observation_samples=1\n", result.stdout)
         self.assertIn("observation_seconds=0.3", result.stdout)
         self.assertRegex(result.stdout, r"observed_at_utc=\d{4}-\d{2}-\d{2}T[^ ]+Z")
+
+    def test_blocks_when_legacy_last_seen_does_not_advance_for_every_machine(self):
+        Handler.advance_last_seen_each_snapshot = False
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0.1",
+            "--sample-interval-seconds",
+            "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LastSeenAt não avançou durante a janela", result.stderr)
+        self.assertIn("comprovar pings persistidos de toda a frota", result.stderr)
 
     def test_blocks_when_legacy_connections_drop_during_observation(self):
         Handler.legacy_count_sequence = [2, 1]

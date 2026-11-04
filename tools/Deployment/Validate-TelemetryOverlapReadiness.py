@@ -159,7 +159,9 @@ def check_clock_skew(payload: dict, maximum_skew_seconds: float) -> float:
     return skew_seconds
 
 
-def read_legacy_connection_snapshot(opener, base_url: str, token: str, timeout: float) -> tuple[int, str, dict]:
+def read_legacy_connection_snapshot(
+    opener, base_url: str, token: str, timeout: float
+) -> tuple[int, dict[str, datetime], dict]:
     endpoint = f"{base_url}/api/admin/legacy-machine-connections"
     page_size = 200
     first = read_json(opener, f"{endpoint}?{urlencode({'page': 1, 'pageSize': page_size})}", token, timeout)
@@ -178,7 +180,7 @@ def read_legacy_connection_snapshot(opener, base_url: str, token: str, timeout: 
     if total_pages != expected_pages:
         raise PreflightError(f"{endpoint}: paginação inconsistente.")
 
-    machine_ids: list[str] = []
+    machine_last_seen: dict[str, datetime] = {}
     for page_number in range(1, total_pages + 1):
         page = first if page_number == 1 else read_json(
             opener,
@@ -196,14 +198,23 @@ def read_legacy_connection_snapshot(opener, base_url: str, token: str, timeout: 
             if not isinstance(machine_id, str):
                 raise PreflightError(f"{endpoint}: identificador de máquina ausente.")
             try:
-                machine_ids.append(str(UUID(machine_id)))
+                normalized_machine_id = str(UUID(machine_id))
             except ValueError:
                 raise PreflightError(f"{endpoint}: identificador de máquina inválido.") from None
+            raw_last_seen = item.get("lastSeenAt")
+            if not isinstance(raw_last_seen, str):
+                raise PreflightError(f"{endpoint}: LastSeenAt ausente ou inválido.")
+            try:
+                last_seen = datetime.fromisoformat(raw_last_seen.replace("Z", "+00:00"))
+            except ValueError:
+                raise PreflightError(f"{endpoint}: LastSeenAt ausente ou inválido.") from None
+            if last_seen.tzinfo is None:
+                raise PreflightError(f"{endpoint}: LastSeenAt precisa informar fuso horário.")
+            machine_last_seen[normalized_machine_id] = last_seen.astimezone(timezone.utc)
 
-    if len(machine_ids) != total_items or len(set(machine_ids)) != total_items:
+    if len(machine_last_seen) != total_items:
         raise PreflightError(f"{endpoint}: IDs ausentes ou duplicados na lista de conexões.")
-    fingerprint = hashlib.sha256("\n".join(sorted(machine_ids)).encode("ascii")).hexdigest()
-    return total_items, fingerprint, relay
+    return total_items, machine_last_seen, relay
 
 
 def validate_snapshot(
@@ -214,7 +225,7 @@ def validate_snapshot(
     expected_commit: str,
     minimum_connections: int,
     maximum_clock_skew_seconds: float,
-) -> tuple[int, float, str]:
+) -> tuple[int, float, dict[str, datetime]]:
     live = read_json(opener, f"{base_url}/health", None, timeout)
     require_status(live, "/health", "Healthy")
     clock_skew_seconds = check_clock_skew(live, maximum_clock_skew_seconds)
@@ -225,7 +236,7 @@ def validate_snapshot(
     require_status(deploy_ready, "/health/deploy-ready", "Ready")
     check_commit(deploy_ready, "/health/deploy-ready", expected_commit)
 
-    legacy_count, machine_fingerprint, relay = read_legacy_connection_snapshot(
+    legacy_count, machine_last_seen, relay = read_legacy_connection_snapshot(
         opener, base_url, token, timeout
     )
     if legacy_count < minimum_connections:
@@ -253,7 +264,7 @@ def validate_snapshot(
     if readiness_gate.get("unroutable") != 0:
         raise PreflightError("A candidata reporta conexões online sem rota compatível.")
 
-    return legacy_count, clock_skew_seconds, machine_fingerprint
+    return legacy_count, clock_skew_seconds, machine_last_seen
 
 
 def main() -> int:
@@ -298,9 +309,10 @@ def main() -> int:
         deadline = time.monotonic() + args.observation_seconds
         sample_count = 0
         legacy_count = 0
-        baseline_machine_fingerprint = None
+        baseline_machine_last_seen = None
+        machines_with_ping_progress: set[str] = set()
         while True:
-            legacy_count, clock_skew_seconds, machine_fingerprint = validate_snapshot(
+            legacy_count, clock_skew_seconds, machine_last_seen = validate_snapshot(
                 opener,
                 base_url,
                 token,
@@ -309,12 +321,18 @@ def main() -> int:
                 args.minimum_legacy_connections,
                 args.maximum_clock_skew_seconds,
             )
-            if baseline_machine_fingerprint is None:
-                baseline_machine_fingerprint = machine_fingerprint
-            elif machine_fingerprint != baseline_machine_fingerprint:
+            if baseline_machine_last_seen is None:
+                baseline_machine_last_seen = machine_last_seen
+            elif set(machine_last_seen) != set(baseline_machine_last_seen):
                 raise PreflightError(
                     "O conjunto de máquinas legadas mudou durante a janela de observação; "
                     "uma conexão pode ter caído ou sido substituída."
+                )
+            else:
+                machines_with_ping_progress.update(
+                    machine_id
+                    for machine_id, last_seen in machine_last_seen.items()
+                    if last_seen > baseline_machine_last_seen[machine_id]
                 )
             sample_count += 1
             observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -328,10 +346,22 @@ def main() -> int:
                 break
             time.sleep(min(args.sample_interval_seconds, remaining))
 
+        if args.observation_seconds > 0 and baseline_machine_last_seen is not None:
+            machines_without_ping_progress = set(baseline_machine_last_seen) - machines_with_ping_progress
+            if machines_without_ping_progress:
+                raise PreflightError(
+                    f"LastSeenAt não avançou durante a janela para "
+                    f"{len(machines_without_ping_progress)} conexão(ões); "
+                    "não foi possível comprovar pings persistidos de toda a frota."
+                )
+
+        machine_fingerprint = hashlib.sha256(
+            "\n".join(sorted(baseline_machine_last_seen or {})).encode("ascii")
+        ).hexdigest()
         print("overlap_runtime_preflight=passed")
         print(f"candidate_commit={args.expected_commit}")
         print(f"legacy_connections_preserved={legacy_count}")
-        print(f"legacy_machine_set_sha256={baseline_machine_fingerprint}")
+        print(f"legacy_machine_set_sha256={machine_fingerprint}")
         print(f"observation_samples={sample_count}")
         print(f"observation_seconds={args.observation_seconds:g}")
         print("legacy_owner_relay=healthy")
