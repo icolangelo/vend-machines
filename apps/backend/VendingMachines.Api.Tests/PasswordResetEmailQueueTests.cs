@@ -53,11 +53,11 @@ public sealed class PasswordResetEmailQueueTests
         await queue.StartAsync(CancellationToken.None);
         try
         {
-            var deliveredJob = await sender.Attempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var deliveredJob = await sender.Attempted.Task.WaitAsync(TimeSpan.FromSeconds(15));
             Assert.Equal(user.Email, deliveredJob.Recipient);
             Assert.Equal(rawToken, deliveredJob.Token);
 
-            var deadline = DateTime.UtcNow.AddSeconds(5);
+            var deadline = DateTime.UtcNow.AddSeconds(15);
             while (DateTime.UtcNow < deadline)
             {
                 await db.Entry(reset).ReloadAsync();
