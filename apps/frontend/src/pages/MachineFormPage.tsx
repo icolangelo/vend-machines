@@ -3,7 +3,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Activity, ArrowLeft, Save, Microchip, Network, Server, ArrowLeftRight, HardDriveDownload, RefreshCw, DoorOpen } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
-import { useForm } from "react-hook-form";
+import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -103,7 +103,7 @@ export default function MachineFormPage() {
     const [mdbBusy, setMdbBusy] = useState(false);
 
     const form = useForm<MachineFormValues>({
-        resolver: zodResolver(machineFormSchema),
+        resolver: zodResolver(machineFormSchema) as Resolver<MachineFormValues>,
         defaultValues: {
             useGsm: false,
             useWifi: false,
