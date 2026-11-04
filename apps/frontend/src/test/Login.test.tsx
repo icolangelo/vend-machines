@@ -87,4 +87,63 @@ describe("Login", () => {
         expect(register).not.toHaveBeenCalled();
         expect(await screen.findByText("Você precisa ler e concordar com a Política de Privacidade para continuar.")).toBeInTheDocument();
     });
+
+    it("shows a pending registration notice without opening a dashboard session", async () => {
+        const message = "Cadastro recebido. Confirme seu e-mail e aguarde a análise da empresa.";
+        register.mockResolvedValue({ kind: "pending", status: "Pending", message });
+        render(
+            <MemoryRouter initialEntries={["/"]}>
+                <Routes>
+                    <Route path="/" element={<Login />} />
+                    <Route path="/dashboard" element={<h1>Painel</h1>} />
+                </Routes>
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Criar uma conta" }));
+        fireEvent.change(screen.getByLabelText("Nome Completo"), { target: { value: "Maria da Silva" } });
+        fireEvent.change(screen.getByLabelText("E-mail Comercial"), { target: { value: "maria@example.com" } });
+        fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
+        fireEvent.change(screen.getByLabelText("Senha de Acesso"), { target: { value: "senha-segura-123" } });
+        fireEvent.change(screen.getByLabelText("Confirmar Senha"), { target: { value: "senha-segura-123" } });
+        fireEvent.change(screen.getByLabelText("Nome da Empresa"), { target: { value: "Empresa Teste" } });
+        fireEvent.change(screen.getByLabelText("CNPJ"), { target: { value: "11222333000181" } });
+        fireEvent.click(screen.getByRole("checkbox"));
+        fireEvent.click(screen.getByRole("button", { name: "Enviar cadastro para análise" }));
+
+        expect(await screen.findByRole("status")).toHaveTextContent(message);
+        expect(screen.queryByRole("heading", { name: "Painel" })).not.toBeInTheDocument();
+    });
+
+    it("opens the dashboard when the registration API returns a legacy authenticated session", async () => {
+        register.mockResolvedValue({
+            kind: "session",
+            session: {
+                token: "legacy-token",
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                user: { id: "user-1", name: "Maria da Silva", email: "maria@example.com", role: "Admin" },
+            },
+        });
+        render(
+            <MemoryRouter initialEntries={["/"]}>
+                <Routes>
+                    <Route path="/" element={<Login />} />
+                    <Route path="/dashboard" element={<h1>Painel</h1>} />
+                </Routes>
+            </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Criar uma conta" }));
+        fireEvent.change(screen.getByLabelText("Nome Completo"), { target: { value: "Maria da Silva" } });
+        fireEvent.change(screen.getByLabelText("E-mail Comercial"), { target: { value: "maria@example.com" } });
+        fireEvent.change(screen.getByLabelText("CPF"), { target: { value: "52998224725" } });
+        fireEvent.change(screen.getByLabelText("Senha de Acesso"), { target: { value: "senha-segura-123" } });
+        fireEvent.change(screen.getByLabelText("Confirmar Senha"), { target: { value: "senha-segura-123" } });
+        fireEvent.change(screen.getByLabelText("Nome da Empresa"), { target: { value: "Empresa Teste" } });
+        fireEvent.change(screen.getByLabelText("CNPJ"), { target: { value: "11222333000181" } });
+        fireEvent.click(screen.getByRole("checkbox"));
+        fireEvent.click(screen.getByRole("button", { name: "Enviar cadastro para análise" }));
+
+        expect(await screen.findByRole("heading", { name: "Painel" })).toBeInTheDocument();
+    });
 });

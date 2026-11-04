@@ -108,10 +108,14 @@ export default function Login() {
     setIsSubmitting(true);
 
     try {
-      const message = await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
-      setRegistrationNotice(message);
-      setIsRegistering(false);
-      setError("");
+      const result = await register(regName, regEmail, regCpf, regPassword, regCompanyName, regCompanyCnpj);
+      if (result.kind === "session") {
+        navigate("/dashboard");
+      } else {
+        setRegistrationNotice(result.message);
+        setIsRegistering(false);
+        setError("");
+      }
     } catch (err: unknown) {
       setError(getErrorMessage(err, "Ocorreu um erro ao tentar se cadastrar. Tente novamente."));
     } finally {

@@ -5,6 +5,7 @@ import {
   getCurrentAuthUser,
   loginSession,
   logoutSession,
+  registerSession,
   setAuthSession,
   SessionExpiredError,
   SessionChangedError,
@@ -50,6 +51,47 @@ describe("authClient", () => {
     }));
     expect(sessionStorage.getItem("token")).toBeNull();
     expect(localStorage.getItem("token")).toBeNull();
+  });
+
+  it("reconhece o retorno de cadastro pendente sem criar sessão", async () => {
+    const message = "Cadastro recebido. Confirme seu e-mail.";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
+      status: "Pending",
+      message,
+      verificationEmailSent: true,
+    }, 202));
+
+    const result = await registerSession({
+      name: "Maria da Silva",
+      email: "maria@example.com",
+      cpf: "52998224725",
+      password: "senha-segura-123",
+      companyName: "Empresa Teste",
+      companyCnpj: "11222333000181",
+      acceptedPrivacyPolicy: true,
+    });
+
+    expect(result).toEqual({ kind: "pending", status: "Pending", message });
+    expect(getCurrentAuthUser()).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/auth/register"), expect.objectContaining({ method: "POST" }));
+  });
+
+  it("preserves compatibility when registration returns an authenticated session", async () => {
+    const session = createSession("registration-token");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(session));
+
+    const result = await registerSession({
+      name: "Maria da Silva",
+      email: "maria@example.com",
+      cpf: "52998224725",
+      password: "senha-segura-123",
+      companyName: "Empresa Teste",
+      companyCnpj: "11222333000181",
+      acceptedPrivacyPolicy: true,
+    });
+
+    expect(result).toEqual({ kind: "session", session });
+    expect(getCurrentAuthUser()).toEqual(session.user);
   });
 
   it("compartilha uma única renovação entre requisições simultâneas", async () => {
