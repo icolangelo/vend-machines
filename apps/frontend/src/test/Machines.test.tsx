@@ -80,7 +80,9 @@ describe("Machine list loading state", () => {
         expect(await screen.findByText("Abaixo do limite do compartimento")).toBeInTheDocument();
         fireEvent.click(screen.getByRole("tab", { name: "Reposição" }));
 
-        expect(await screen.findByText("Abaixo do limite do compartimento")).toBeInTheDocument();
-        expect(screen.queryByText("Acima do limite do compartimento")).not.toBeInTheDocument();
+        await waitFor(() => {
+            expect(screen.getByText("Abaixo do limite do compartimento")).toBeInTheDocument();
+            expect(screen.queryByText("Acima do limite do compartimento")).not.toBeInTheDocument();
+        });
     });
 });
