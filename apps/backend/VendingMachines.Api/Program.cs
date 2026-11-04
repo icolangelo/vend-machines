@@ -77,6 +77,10 @@ builder.Services.AddRateLimiter(options =>
 });
 builder.Services.Configure<AccountEmailOptions>(builder.Configuration.GetSection(AccountEmailOptions.SectionName));
 builder.Services.AddSingleton<IAccountEmailSender, SmtpAccountEmailSender>();
+builder.Services.AddSingleton<PasswordResetEmailQueue>();
+builder.Services.AddSingleton<IPasswordResetEmailQueue>(services =>
+    services.GetRequiredService<PasswordResetEmailQueue>());
+builder.Services.AddHostedService(services => services.GetRequiredService<PasswordResetEmailQueue>());
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<AuthOptions>()
     .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))

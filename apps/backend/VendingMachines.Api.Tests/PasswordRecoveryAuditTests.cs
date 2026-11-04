@@ -15,6 +15,62 @@ namespace VendingMachines.Api.Tests;
 public sealed class PasswordRecoveryAuditTests
 {
     [Fact]
+    public async Task SelfServicePasswordRecoveryIsGenericAndQueuesEmailWithoutWaitingForSmtp()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa ativa", ActivationStatus = CompanyActivationStatuses.Active };
+        var user = new User
+        {
+            Id = Guid.NewGuid(), Name = "Operador", Email = "operator@example.com",
+            NormalizedEmail = "operator@example.com", Role = AppRoles.Operator,
+            CompanyId = company.Id, Company = company, IsActive = true,
+            EmailVerifiedAt = DateTime.UtcNow, PasswordHash = "old-password-hash"
+        };
+        db.Companies.Add(company);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        var queue = new RecordingPasswordResetEmailQueue(shouldQueue: true);
+        var controller = new AuthController(db, null!, null!, null!, passwordResetEmailQueue: queue);
+        var unknownResult = Assert.IsType<AcceptedResult>(await controller.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = "unknown@example.com" }, CancellationToken.None));
+        var sentResult = Assert.IsType<AcceptedResult>(await controller.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = " OPERATOR@example.com " }, CancellationToken.None));
+        Assert.Equal(unknownResult.Value!.GetType().GetProperty("message")!.GetValue(unknownResult.Value),
+            sentResult.Value!.GetType().GetProperty("message")!.GetValue(sentResult.Value));
+        var queuedEmail = Assert.Single(queue.Messages);
+        Assert.Null(sentResult.Value.GetType().GetProperty("resetToken"));
+        var stored = await db.PasswordResetTokens.SingleAsync();
+        Assert.Equal(OneTimeTokens.Hash(queuedEmail.Token), stored.TokenHash);
+        Assert.Equal(user.Email, queuedEmail.Recipient);
+        Assert.Equal(user.Id, stored.CreatedByUserId);
+
+        var fullQueue = new RecordingPasswordResetEmailQueue(shouldQueue: false);
+        var failingController = new AuthController(db, null!, null!, null!, passwordResetEmailQueue: fullQueue);
+        var cooldownResult = Assert.IsType<AcceptedResult>(await failingController.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = user.Email }, CancellationToken.None));
+        Assert.Equal(unknownResult.Value.GetType().GetProperty("message")!.GetValue(unknownResult.Value),
+            cooldownResult.Value!.GetType().GetProperty("message")!.GetValue(cooldownResult.Value));
+        Assert.Empty(fullQueue.Messages);
+        await db.Entry(stored).ReloadAsync();
+        Assert.Null(stored.RevokedAt);
+
+        stored.CreatedAt = DateTime.UtcNow.AddMinutes(-2);
+        await db.SaveChangesAsync();
+        var failedDeliveryResult = Assert.IsType<AcceptedResult>(await failingController.RequestPasswordReset(
+            new RequestPasswordResetRequest { Email = user.Email }, CancellationToken.None));
+        Assert.Equal(unknownResult.Value.GetType().GetProperty("message")!.GetValue(unknownResult.Value),
+            failedDeliveryResult.Value!.GetType().GetProperty("message")!.GetValue(failedDeliveryResult.Value));
+        var refusedToken = await db.PasswordResetTokens.SingleAsync(
+            token => token.TokenHash == OneTimeTokens.Hash(Assert.Single(fullQueue.Messages).Token));
+        Assert.NotNull(refusedToken.RevokedAt);
+    }
+
+    [Fact]
     public async Task AccountLinksAreEmailedWithoutReturningTokensAndFailedDeliveryKeepsManualResetFallback()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -116,6 +172,17 @@ public sealed class PasswordRecoveryAuditTests
         {
             Actions.Add(action);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingPasswordResetEmailQueue(bool shouldQueue) : IPasswordResetEmailQueue
+    {
+        public List<(Guid TokenId, string Recipient, string Token, DateTime ExpiresAt)> Messages { get; } = [];
+
+        public bool TryQueue(Guid resetTokenId, string recipient, string token, DateTime expiresAt)
+        {
+            Messages.Add((resetTokenId, recipient, token, expiresAt));
+            return shouldQueue;
         }
     }
 

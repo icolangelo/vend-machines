@@ -28,6 +28,7 @@ public class AuthController : ControllerBase
     private readonly TelemetryPanelHub? _panelHub;
     private readonly ILogger<AuthController>? _logger;
     private readonly IAccountEmailSender? _accountEmailSender;
+    private readonly IPasswordResetEmailQueue? _passwordResetEmailQueue;
 
     public AuthController(
         AppDbContext context,
@@ -37,7 +38,8 @@ public class AuthController : ControllerBase
         IAuditLogService? audit = null,
         TelemetryPanelHub? panelHub = null,
         ILogger<AuthController>? logger = null,
-        IAccountEmailSender? accountEmailSender = null)
+        IAccountEmailSender? accountEmailSender = null,
+        IPasswordResetEmailQueue? passwordResetEmailQueue = null)
     {
         _context = context;
         _tokenService = tokenService;
@@ -47,6 +49,7 @@ public class AuthController : ControllerBase
         _panelHub = panelHub;
         _logger = logger;
         _accountEmailSender = accountEmailSender;
+        _passwordResetEmailQueue = passwordResetEmailQueue;
     }
 
     [HttpPost("login")]
@@ -469,6 +472,59 @@ public class AuthController : ControllerBase
     }
 
     [AllowAnonymous]
+    [HttpPost("request-password-reset")]
+    [EnableRateLimiting("auth")]
+    public async Task<IActionResult> RequestPasswordReset(
+        [FromBody] RequestPasswordResetRequest request,
+        CancellationToken cancellationToken)
+    {
+        const string message = "Se houver uma conta ativa e verificada para este e-mail, enviaremos instruções de recuperação.";
+        var normalizedEmail = RegistrationIdentity.NormalizeEmail(request?.Email);
+        if (normalizedEmail.Length is > 0 and <= 254 && MailAddress.TryCreate(normalizedEmail, out _) &&
+            _passwordResetEmailQueue != null)
+        {
+            var user = await _context.Users.Include(candidate => candidate.Company)
+                .SingleOrDefaultAsync(candidate => candidate.NormalizedEmail == normalizedEmail, cancellationToken);
+            if (user is { IsActive: true, EmailVerifiedAt: not null } &&
+                (user.Company == null || user.Company.ActivationStatus == CompanyActivationStatuses.Active))
+            {
+                var now = DateTime.UtcNow;
+                var requestWasRecentlyIssued = await _context.PasswordResetTokens.AsNoTracking().AnyAsync(
+                    token => token.UserId == user.Id && token.CreatedAt > now.AddMinutes(-1) &&
+                             token.UsedAt == null && token.RevokedAt == null,
+                    cancellationToken);
+                if (!requestWasRecentlyIssued)
+                {
+                    await _context.PasswordResetTokens
+                        .Where(token => token.UserId == user.Id && token.UsedAt == null && token.RevokedAt == null)
+                        .ExecuteUpdateAsync(setters => setters.SetProperty(token => token.RevokedAt, now), cancellationToken);
+
+                    var rawToken = OneTimeTokens.Create();
+                    var resetToken = new PasswordResetToken
+                    {
+                        UserId = user.Id,
+                        CreatedByUserId = user.Id,
+                        TokenHash = OneTimeTokens.Hash(rawToken),
+                        CreatedAt = now,
+                        ExpiresAt = now.AddHours(1)
+                    };
+                    _context.PasswordResetTokens.Add(resetToken);
+                    await _context.SaveChangesAsync(cancellationToken);
+
+                    if (!_passwordResetEmailQueue.TryQueue(
+                            resetToken.Id, user.Email, rawToken, resetToken.ExpiresAt))
+                    {
+                        resetToken.RevokedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync(cancellationToken);
+                    }
+                }
+            }
+        }
+
+        return Accepted(new { message });
+    }
+
+    [AllowAnonymous]
     [HttpPost("reset-password")]
     [EnableRateLimiting("auth")]
     public async Task<IActionResult> ResetPassword(
@@ -723,4 +779,9 @@ public sealed class ResetPasswordRequest
 {
     public string ResetToken { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+}
+
+public sealed class RequestPasswordResetRequest
+{
+    public string? Email { get; set; }
 }

@@ -35,6 +35,7 @@ class AssembleReleasePackageTests(unittest.TestCase):
             package_builder.assemble_release_package(repository, segments, package, source_sha)
 
             self.assertEqual(source_sha, (package / "source-sha.txt").read_text(encoding="utf-8").strip())
+            self.assertTrue((package / "Validate-TelemetryOverlapReadiness.py").is_file())
             self.assertTrue(all((package / name).is_file() for name in package_builder.MIGRATION_FILES))
             self.assertEqual(7, len(list(package.glob("postgresql-migration*.sql"))))
             for line in (package / "SHA256SUMS").read_text(encoding="ascii").splitlines():
@@ -55,7 +56,9 @@ class AssembleReleasePackageTests(unittest.TestCase):
             )
 
             self.assertTrue((package / "partial-production-rollout.md").is_file())
+            self.assertTrue((package / "partial-production-evidence-template.md").is_file())
             self.assertTrue((package / "telemetry-continuity-architecture.md").is_file())
+            self.assertTrue((package / "Validate-TelemetryOverlapReadiness.py").is_file())
 
     def test_rejects_invalid_source_sha_before_creating_package(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

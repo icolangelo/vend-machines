@@ -268,6 +268,8 @@ require_contains "$temporary_dir/build-job" './tools/Database/Test-PostgresMigra
 require_contains "$temporary_dir/build-job" 'name: Upload SHA-matched release package'
 require_contains "$temporary_dir/build-job" 'name: release-package-${{ github.sha }}'
 require_contains "$temporary_dir/build-job" 'path: artifacts/release-package/'
+require_contains "$verify_workflow" '      - "docs/deploy-seguro.md"'
+require_contains "$verify_workflow" '      - "docs/partial-production-evidence-template.md"'
 release_package_builder="$repo_root/tools/Deployment/assemble_release_package.py"
 require_contains "$release_package_builder" 'SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")'
 require_contains "$release_package_builder" 'MIGRATION_FILES = ('
@@ -312,7 +314,12 @@ require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'candidate_unroutable_connections=0'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'VENDMACHINES_ADMIN_BEARER_TOKEN'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'class RejectRedirects'
+require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" '--observation-seconds'
+require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'observation_sample='
+require_contains "$repo_root/tools/Deployment/assemble_release_package.py" 'tools/Deployment/Validate-TelemetryOverlapReadiness.py'
+require_contains "$repo_root/tools/Deployment/test_assemble_release_package.py" 'Validate-TelemetryOverlapReadiness.py'
 require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_accepts_healthy_relay_and_matching_legacy_connection_metrics'
+require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_blocks_when_legacy_connections_drop_during_observation'
 require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_blocks_when_no_legacy_machine_connection_is_observed'
 require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_does_not_follow_redirects'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'legacy_payment_webhook_routed_to_owner=yes'
@@ -654,6 +661,40 @@ require_contains "$verify_workflow" 'test_assemble_release_package.py'
 require_contains "$verify_workflow" 'name: Assemble verified candidate release package'
 require_contains "$verify_workflow" 'name: Upload verified candidate release package'
 require_contains "$verify_workflow" 'name: candidate-release-package-${{ github.sha }}'
+require_contains "$verify_workflow" 'name: Export verified backend image artifact'
+require_contains "$verify_workflow" 'name: Test backend image artifact verifier'
+require_contains "$verify_workflow" 'name: Test private backend candidate launcher'
+require_contains "$verify_workflow" 'SOURCE_SHA: ${{ github.sha }}'
+require_contains "$verify_workflow" 'image_ref="vend-machines-backend:${SOURCE_SHA}"'
+require_contains "$verify_workflow" 'docker save "$image_ref"'
+require_contains "$verify_workflow" 'gzip -t "$output_directory/backend-image.tar.gz"'
+require_contains "$verify_workflow" 'image-id.txt'
+require_contains "$verify_workflow" 'image-ref.txt'
+require_contains "$verify_workflow" 'platform.txt'
+require_contains "$verify_workflow" 'source-sha.txt'
+require_contains "$verify_workflow" 'cp tools/Deployment/Verify-BackendImageArtifact.ps1'
+require_contains "$verify_workflow" 'cp tools/Deployment/start-private-backend-candidate.sh'
+require_contains "$verify_workflow" 'cp tools/Deployment/verify-candidate-artifact-pair.py'
+require_contains "$verify_workflow" 'start-private-backend-candidate.sh verify-candidate-artifact-pair.py > SHA256SUMS'
+require_contains "$verify_workflow" 'pwsh tools/Deployment/Verify-BackendImageArtifact.ps1 -ArtifactPath'
+require_contains "$verify_workflow" 'python3 tools/Deployment/verify-candidate-artifact-pair.py --image-artifact-dir'
+require_contains "$verify_workflow" 'Test-Start-PrivateBackendCandidate.sh'
+require_contains "$verify_workflow" 'test_candidate_artifact_pair.py'
+require_contains "$verify_workflow" 'start-private-backend-candidate.sh'
+require_contains "$verify_workflow" 'sha256sum --check SHA256SUMS'
+require_contains "$verify_workflow" 'name: Upload verified backend image artifact'
+require_contains "$verify_workflow" 'name: candidate-backend-image-${{ github.sha }}'
+require_contains "$verify_workflow" 'retention-days: 14'
+
+overlap_gate_line="$(grep -nF 'name: Verify previous API overlap while a legacy MDB socket stays connected' "$verify_workflow" | head -n 1 | cut -d: -f1)"
+workflow_gate_line="$(grep -nF 'name: Verify production workflow release gates' "$verify_workflow" | head -n 1 | cut -d: -f1)"
+release_package_upload_line="$(grep -nF 'name: Upload verified candidate release package' "$verify_workflow" | head -n 1 | cut -d: -f1)"
+image_export_line="$(grep -nF 'name: Export verified backend image artifact' "$verify_workflow" | head -n 1 | cut -d: -f1)"
+image_upload_line="$(grep -nF 'name: Upload verified backend image artifact' "$verify_workflow" | head -n 1 | cut -d: -f1)"
+if (( overlap_gate_line >= workflow_gate_line || workflow_gate_line >= release_package_upload_line || release_package_upload_line >= image_export_line || image_export_line >= image_upload_line )); then
+  echo "A imagem backend imutável deve ser exportada somente após os gates e upload do pacote de release." >&2
+  exit 1
+fi
 
 require_contains "$frontend_workflow" 'type=sha,format=long'
 require_contains "$frontend_workflow" 'Build immutable candidate image'

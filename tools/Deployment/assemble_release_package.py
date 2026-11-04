@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 RELEASE_FILES = (
+    "tools/Deployment/Validate-TelemetryOverlapReadiness.py",
     "tools/Database/Pause-SessionAdmission.sql",
     "tools/Database/Resume-SessionAdmission.sql",
     "tools/Database/List-UnresolvedTelemetryCommands.sql",
@@ -26,6 +27,7 @@ RELEASE_FILES = (
     "docs/mercadopago-static-integration-preflight.sql",
     "docs/operacao-suporte.md",
     "docs/partial-production-rollout.md",
+    "docs/partial-production-evidence-template.md",
     "docs/payment-sensitive-data-preflight.sql",
     "docs/payment-sensitive-data-redaction.sql",
     "docs/platform-admin-bootstrap-preflight.sql",
