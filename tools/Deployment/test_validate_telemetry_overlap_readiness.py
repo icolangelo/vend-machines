@@ -243,19 +243,32 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         self.assertIn("observation_seconds=0.3", result.stdout)
         self.assertRegex(result.stdout, r"observed_at_utc=\d{4}-\d{2}-\d{2}T[^ ]+Z")
 
-    def test_blocks_when_legacy_last_seen_does_not_advance_for_every_machine(self):
+    def test_blocks_when_persisted_last_seen_stops_advancing(self):
         Handler.advance_last_seen_each_snapshot = False
 
         result = self.run_preflight(
             "--observation-seconds",
-            "0.1",
+            "0.15",
             "--sample-interval-seconds",
             "0.01",
+            "--maximum-last-seen-age-seconds",
+            "0.05",
         )
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("LastSeenAt não avançou durante a janela", result.stderr)
-        self.assertIn("comprovar pings persistidos de toda a frota", result.stderr)
+        self.assertIn("LastSeenAt excedeu 0.05s", result.stderr)
+        self.assertIn("presença da frota não está fresca", result.stderr)
+
+    def test_requires_sample_interval_to_leave_presence_expiry_margin(self):
+        result = self.run_preflight(
+            "--observation-seconds",
+            "120",
+            "--sample-interval-seconds",
+            "16",
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("intervalo entre amostras precisa deixar margem", result.stderr)
 
     def test_blocks_when_legacy_connections_drop_during_observation(self):
         Handler.legacy_count_sequence = [2, 1]
@@ -282,6 +295,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
             ("--sample-interval-seconds", "inf"),
             ("--timeout-seconds", "nan"),
             ("--maximum-clock-skew-seconds", "inf"),
+            ("--maximum-last-seen-age-seconds", "nan"),
         ):
             with self.subTest(option=option, value=value):
                 result = self.run_preflight(option, value)

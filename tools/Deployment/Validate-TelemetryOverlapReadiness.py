@@ -28,6 +28,9 @@ class PreflightError(RuntimeError):
     pass
 
 
+LEGACY_CONNECTION_FRESHNESS_SECONDS = 90.0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -62,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=30.0,
         help="Desvio máximo entre o relógio local e /health.timestamp (padrão: 30 segundos).",
+    )
+    parser.add_argument(
+        "--maximum-last-seen-age-seconds",
+        type=float,
+        default=75.0,
+        help="Idade máxima de LastSeenAt em cada amostra (padrão: 75 segundos).",
     )
     parser.add_argument(
         "--observation-seconds",
@@ -138,25 +147,29 @@ def check_commit(payload: dict, endpoint: str, expected: str) -> None:
         raise PreflightError(f"{endpoint}: sourceCommit não corresponde ao SHA esperado.")
 
 
-def check_clock_skew(payload: dict, maximum_skew_seconds: float) -> float:
-    raw_timestamp = payload.get("timestamp")
+def parse_utc_timestamp(raw_timestamp: object, endpoint: str, field: str) -> datetime:
     if not isinstance(raw_timestamp, str):
-        raise PreflightError("/health: timestamp UTC ausente ou inválido.")
+        raise PreflightError(f"{endpoint}: {field} UTC ausente ou inválido.")
     try:
-        server_time = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
     except ValueError:
-        raise PreflightError("/health: timestamp UTC ausente ou inválido.") from None
-    if server_time.tzinfo is None:
-        raise PreflightError("/health: timestamp precisa informar fuso horário.")
+        raise PreflightError(f"{endpoint}: {field} UTC ausente ou inválido.") from None
+    if timestamp.tzinfo is None:
+        raise PreflightError(f"{endpoint}: {field} precisa informar fuso horário.")
+    return timestamp.astimezone(timezone.utc)
 
-    skew_seconds = (server_time.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+
+def check_clock_skew(payload: dict, maximum_skew_seconds: float) -> tuple[float, datetime]:
+    raw_timestamp = payload.get("timestamp")
+    server_time = parse_utc_timestamp(raw_timestamp, "/health", "timestamp")
+    skew_seconds = (server_time - datetime.now(timezone.utc)).total_seconds()
     if abs(skew_seconds) > maximum_skew_seconds:
         raise PreflightError(
             f"/health: diferença entre o relógio da API e o relógio local é de "
             f"{skew_seconds:+.1f}s; máximo permitido: {maximum_skew_seconds:g}s. "
             "Sincronize os relógios UTC antes do preflight."
         )
-    return skew_seconds
+    return skew_seconds, server_time
 
 
 def read_legacy_connection_snapshot(
@@ -225,10 +238,11 @@ def validate_snapshot(
     expected_commit: str,
     minimum_connections: int,
     maximum_clock_skew_seconds: float,
+    maximum_last_seen_age_seconds: float,
 ) -> tuple[int, float, dict[str, datetime]]:
     live = read_json(opener, f"{base_url}/health", None, timeout)
     require_status(live, "/health", "Healthy")
-    clock_skew_seconds = check_clock_skew(live, maximum_clock_skew_seconds)
+    clock_skew_seconds, api_time = check_clock_skew(live, maximum_clock_skew_seconds)
     ready = read_json(opener, f"{base_url}/health/ready", None, timeout)
     require_status(ready, "/health/ready", "Ready")
     check_commit(ready, "/health/ready", expected_commit)
@@ -244,6 +258,15 @@ def validate_snapshot(
             f"Foram observadas {legacy_count} conexões legadas; mínimo exigido: "
             f"{minimum_connections}."
         )
+    for last_seen in machine_last_seen.values():
+        last_seen_age = (api_time - last_seen).total_seconds()
+        if last_seen_age < -maximum_clock_skew_seconds:
+            raise PreflightError("LastSeenAt está no futuro além do desvio de relógio permitido.")
+        if last_seen_age > maximum_last_seen_age_seconds:
+            raise PreflightError(
+                f"LastSeenAt excedeu {maximum_last_seen_age_seconds:g}s em ao menos uma máquina; "
+                "a presença da frota não está fresca o bastante."
+            )
     if relay.get("configured") is not True or relay.get("healthy") is not True:
         raise PreflightError("O relay legado não está configurado e saudável na candidata.")
 
@@ -277,6 +300,19 @@ def main() -> int:
         return 2
     if not math.isfinite(args.maximum_clock_skew_seconds) or args.maximum_clock_skew_seconds <= 0:
         print("ERRO: --maximum-clock-skew-seconds deve ser positivo e finito.", file=sys.stderr)
+        return 2
+    if not math.isfinite(args.maximum_last_seen_age_seconds) or args.maximum_last_seen_age_seconds <= 0:
+        print("ERRO: --maximum-last-seen-age-seconds deve ser positivo e finito.", file=sys.stderr)
+        return 2
+    if (
+        args.observation_seconds > 0
+        and args.sample_interval_seconds > LEGACY_CONNECTION_FRESHNESS_SECONDS - args.maximum_last_seen_age_seconds
+    ):
+        print(
+            "ERRO: o intervalo entre amostras precisa deixar margem para detectar "
+            "conexões antes de expirar a presença da API.",
+            file=sys.stderr,
+        )
         return 2
     if not math.isfinite(args.observation_seconds) or args.observation_seconds < 0:
         print("ERRO: --observation-seconds deve ser finito e não negativo.", file=sys.stderr)
@@ -320,6 +356,7 @@ def main() -> int:
                 args.expected_commit,
                 args.minimum_legacy_connections,
                 args.maximum_clock_skew_seconds,
+                args.maximum_last_seen_age_seconds,
             )
             if baseline_machine_last_seen is None:
                 baseline_machine_last_seen = machine_last_seen
