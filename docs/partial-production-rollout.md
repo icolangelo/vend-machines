@@ -77,9 +77,30 @@ bash ./start-private-backend-candidate.sh \
   --expected-source-sha '<SHA Git completo>' \
   --docker-network '<rede privada existente>' \
   --runtime-env-file '<arquivo privado fora do repositório>' \
-  --legacy-api-origin 'http://<API antiga privada>:8080' \
   --host-port 18080
 ```
+
+### Conferência depois do início passivo
+
+Guarde o nome exato `container=` impresso pelo launcher e confira no mesmo host, sem configurar rota ou DNS. A porta publicada deve mostrar somente `127.0.0.1`; a política de restart deve ser `no`. Substitua o nome do container pelo valor impresso:
+
+```bash
+candidate='vend-machines-backend-candidate-<SHA completo em minúsculas>'
+docker port "$candidate" 8080/tcp
+docker inspect --format 'restart={{if .HostConfig.RestartPolicy.Name}}{{.HostConfig.RestartPolicy.Name}}{{else}}no{{end}}' "$candidate"
+```
+
+Faça GETs locais e registre os códigos HTTP. O modo passivo exige `200` em `/health`, `503` em `/health/deploy-ready`, `/api/machines` e `/telemetria`, e `200` em `/health/ready` para aprovar a Etapa A completa. O readiness de banco só lê a conexão e o histórico de migrations. Se retornar `503` — inclusive por indisponibilidade do banco ou migrations pendentes — registre apenas o motivo sanitizado, marque a Etapa A como não aprovada e não aplique migrations neste passo. As três rotas bloqueadas devem continuar em `503`; se alguma responder com outro código, interrompa a Etapa A e pare somente a candidata pelo nome exato.
+
+```bash
+base='http://127.0.0.1:18080'
+for path in /health /health/ready /health/deploy-ready /api/machines /telemetria; do
+  code=$(curl --max-time 5 --silent --show-error --output /dev/null --write-out '%{http_code}' "$base$path") || code='falha-de-conexao'
+  printf '%s %s\n' "$path" "$code"
+done
+```
+
+Confirme também que a API antiga permaneceu saudável antes, durante e depois. Não publique corpos de resposta, tokens, arquivos de runtime, URLs privadas ou identificadores de máquinas no registro compartilhado. O launcher já confirma modo passivo, healthcheck do container e bloqueio das três rotas; esta conferência registra também o readiness do banco e a associação da porta publicada. O comando de início passivo não precisa da origem privada da API antiga.
 
 ## Efeitos da candidata no banco compartilhado
 
