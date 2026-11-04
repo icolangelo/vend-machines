@@ -251,6 +251,22 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
             "0.15",
             "--sample-interval-seconds",
             "0.01",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("LastSeenAt não avançou durante a janela", result.stderr)
+        self.assertIn("pings persistidos de toda a frota", result.stderr)
+
+    def test_blocks_when_persisted_last_seen_is_older_than_limit(self):
+        Handler.advance_last_seen_each_snapshot = False
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=10)
+        Handler.current_last_seen_at = {
+            machine_id: stale_time for machine_id in Handler.legacy_machine_ids
+        }
+
+        result = self.run_preflight(
+            "--observation-seconds",
+            "0",
             "--maximum-last-seen-age-seconds",
             "0.05",
         )
