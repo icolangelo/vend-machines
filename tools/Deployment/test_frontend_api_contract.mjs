@@ -28,6 +28,37 @@ fetch(\`\${API_BASE_URL}/alerts/summary\`);
   );
 });
 
+test("expands conditional API paths into every concrete route", () => {
+  const source = 'fetch(`${API_BASE_URL}/auth/${isReset ? "reset-password" : "request-password-reset"}`, { method: "POST" });';
+  assert.deepEqual(
+    [...parseFrontendRequests(source)].sort(),
+    ["POST /auth/request-password-reset", "POST /auth/reset-password"],
+  );
+});
+
+test("checks API requests made directly from production pages", () => {
+  const directory = mkdtempSync(join(tmpdir(), "frontend-api-contract-page-"));
+  try {
+    writeFileSync(join(directory, "AuthController.cs"), `
+      [Route("api/[controller]")]
+      public class AuthController : ControllerBase
+      {
+        [HttpPost("reset-password")] public IActionResult Reset() => Ok();
+      }
+    `);
+    const mismatches = findContractMismatches([
+      {
+        filename: "apps/frontend/src/pages/PasswordRecovery.tsx",
+        text: 'export function PasswordRecovery() { return fetch(`${API_BASE_URL}/auth/${isReset ? "reset-password" : "request-password-reset"}`, { method: "POST" }); }',
+      },
+    ], directory, new Set());
+    assert.deepEqual(mismatches, ["POST /auth/request-password-reset"]);
+  } finally {
+    rmSync(join(directory, "AuthController.cs"), { force: true });
+    rmdirSync(directory);
+  }
+});
+
 test("associates API calls with their exported helper for live-route filtering", () => {
   const entries = parseFrontendRequestEntries(
     'export async function saveIntegration() { return authFetch(`${API_BASE_URL}/payments/integration`, { method: "POST" }); }',

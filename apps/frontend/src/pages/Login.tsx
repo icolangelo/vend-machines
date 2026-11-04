@@ -319,12 +319,12 @@ export default function Login() {
               <div className="space-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-700" htmlFor="email">
-                    E-mail
+                    Email Address
                   </label>
                   <input
                     id="email"
                     type="email"
-                    placeholder="Digite seu e-mail"
+                    placeholder="Enter Email Address"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
@@ -335,22 +335,22 @@ export default function Login() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="text-sm font-medium text-gray-700" htmlFor="password">
-                      Senha
+                      Password
                     </label>
                   </div>
                   <input
                     id="password"
                     type="password"
-                    placeholder="Digite sua senha"
+                    placeholder="Enter Password"
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-colors"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                   />
                   <div className="flex justify-end pt-1">
-                    <button type="button" onClick={() => navigate("/forgot-password")} className="text-sm font-medium text-gray-600 hover:text-blue-600">
-                      Esqueceu sua senha?
-                    </button>
+                    <a href="#" className="text-sm font-medium text-gray-600 hover:text-blue-600">
+                      Forgot Password?
+                    </a>
                   </div>
                 </div>
               </div>
@@ -393,7 +393,7 @@ export default function Login() {
                   <path d="M5.84 14.11C5.62 13.45 5.49 12.74 5.49 12C5.49 11.26 5.62 10.55 5.84 9.89V7.04H2.17C1.43 8.52 1 10.21 1 12C1 13.79 1.43 15.48 2.17 16.96L5.84 14.11Z" fill="#FBBC05"/>
                   <path d="M12 5.38C13.62 5.38 15.06 5.94 16.21 7.03L19.36 3.88C17.45 2.09 14.97 1 12 1C7.7 1 3.98 3.45 2.17 7.04L5.84 9.89C6.71 7.3 9.14 5.38 12 5.38Z" fill="#EA4335"/>
                 </svg>
-                Entrar com Google
+                Log in with Google
               </button>
             </form>
           )}
@@ -411,7 +411,7 @@ export default function Login() {
               </>
             ) : (
               <>
-                Ainda não tem uma conta?{" "}
+                Need an account?{" "}
                 <button 
                   onClick={handleToggleMode}
                   className="font-medium text-blue-600 hover:text-blue-500 bg-transparent border-0 p-0 cursor-pointer"

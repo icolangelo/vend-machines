@@ -22,7 +22,6 @@ import Reports from "./pages/Reports.tsx";
 import Alerts from "./pages/Alerts.tsx";
 import Admin from "./pages/Admin.tsx";
 import PaymentSimulator from "./pages/PaymentSimulator.tsx";
-import PasswordRecovery from "./pages/PasswordRecovery.tsx";
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -113,8 +112,6 @@ const App = () => {
                                 )}
                                 <Routes>
                                     <Route path="/" element={<Login />} />
-                                    <Route path="/forgot-password" element={<PasswordRecovery />} />
-                                    <Route path="/reset-password" element={<PasswordRecovery />} />
                                     <Route path="/dashboard" element={<ProtectedRoute><Index /></ProtectedRoute>} />
                                     <Route path="/machines" element={<ProtectedRoute><Machines /></ProtectedRoute>} />
                                     <Route path="/machines/new" element={<ProtectedRoute><MachineFormPage /></ProtectedRoute>} />

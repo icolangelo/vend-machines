@@ -29,22 +29,30 @@ function canonicalPath(value) {
   return path || "/";
 }
 
-function templatePath(template, sourceFile) {
-  let path = template.head.text;
+function templatePaths(template) {
+  if (!template.templateSpans.some(span => ts.isIdentifier(span.expression) && span.expression.text === "API_BASE_URL")) return [];
+  let paths = [template.head.text];
   for (const span of template.templateSpans) {
     const expression = span.expression;
-    if (ts.isIdentifier(expression) && expression.text === "path") return null;
+    if (ts.isIdentifier(expression) && expression.text === "path") return [];
     if (ts.isIdentifier(expression) && expression.text === "API_BASE_URL") {
       // The configured API base already ends in /api and is omitted for comparison.
     } else if (ts.isIdentifier(expression) && expression.text === "query") {
       // URLSearchParams is appended as a query string to the preceding route.
+    } else if (ts.isConditionalExpression(expression)) {
+      const alternatives = [expression.whenTrue, expression.whenFalse]
+        .filter(value => ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value))
+        .map(value => value.text);
+      paths = paths.flatMap(path => alternatives.length === 2
+        ? alternatives.map(value => `${path}${value}${span.literal.text}`)
+        : [`${path}{}${span.literal.text}`]);
+      continue;
     } else {
-      path += "{}";
+      paths = paths.map(path => `${path}{}`);
     }
-    path += span.literal.text;
+    paths = paths.map(path => `${path}${span.literal.text}`);
   }
-  if (path.includes("${path}")) return null;
-  return canonicalPath(path);
+  return paths.map(canonicalPath);
 }
 
 function methodFromOptions(options, sourceFile) {
@@ -89,11 +97,8 @@ export function parseFrontendRequestEntries(sourceText, filename = "frontend.ts"
       if (["fetch", "authFetch", "sendInventoryMovement"].includes(callName) && node.arguments.length > 0) {
         const argument = node.arguments[0];
         if (ts.isTemplateExpression(argument)) {
-          const raw = templatePath(argument, sourceFile);
-          if (raw !== null) {
-            const method = callName === "sendInventoryMovement" ? "POST" : methodFromOptions(node.arguments[1], sourceFile);
-            addRequest(`${method} ${raw}`, node);
-          }
+          const method = callName === "sendInventoryMovement" ? "POST" : methodFromOptions(node.arguments[1], sourceFile);
+          for (const path of templatePaths(argument)) addRequest(`${method} ${path}`, node);
         } else if (ts.isStringLiteral(argument) && argument.text.startsWith("${API_BASE_URL}")) {
           addRequest(`${methodFromOptions(node.arguments[1], sourceFile)} ${canonicalPath(argument.text.replace("${API_BASE_URL}", ""))}`, node);
         }
@@ -156,8 +161,9 @@ function parseControllerRoutes(directory) {
 export function findContractMismatches(frontendSources, controllerDirectoryPath, usedClientFunctions = null) {
   const requests = new Set();
   for (const source of frontendSources) {
+    const isClientSource = /(^|\/)(api|authClient)\.tsx?$/.test(source.filename.replaceAll("\\", "/"));
     for (const entry of parseFrontendRequestEntries(source.text, source.filename).entries) {
-      if (entry.owner && usedClientFunctions && !usedClientFunctions.has(entry.owner)) continue;
+      if (isClientSource && entry.owner && usedClientFunctions && !usedClientFunctions.has(entry.owner)) continue;
       requests.add(entry.request);
     }
   }
@@ -273,7 +279,10 @@ function main() {
     }
     const usedClientFunctions = referencedClientFunctions(frontendSources, allFrontendSources);
     if (backendRef) selectedControllerDirectory = materializeControllersFromGitRef(backendRef);
-    const mismatches = findContractMismatches(frontendSources, selectedControllerDirectory, usedClientFunctions);
+    const productionSources = allFrontendSources.filter(source =>
+      !source.filename.replaceAll("\\", "/").includes("/test/") &&
+      !/\.(test|spec)\.tsx?$/.test(source.filename));
+    const mismatches = findContractMismatches(productionSources, selectedControllerDirectory, usedClientFunctions);
     if (mismatches.length > 0) {
       const target = backendRef ? `API em ${backendRef}` : "API atual";
       const source = frontendRef ? `frontend em ${frontendRef}` : "frontend atual";
