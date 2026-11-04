@@ -2955,3 +2955,7 @@ O launcher privado agora exige teto explícito de CPU e memória para a candidat
 ### Teto de conexões PostgreSQL da candidata (04/11/2026)
 
 O launcher agora exige `--candidate-db-max-pool-size`, configurado apenas na candidata como `Database__MaximumPoolSize`. Quando há esse limite, EF Core e o barramento de telemetria usam o mesmo `NpgsqlDataSource`, de modo que o teto é agregado e não duplicado em dois pools. A API atual mantém sua configuração existente. O launcher rejeita valor ausente/inválido e conflito no arquivo runtime; o runbook e a ficha de evidência pedem que o operador dimensione o número com base no limite simultâneo do banco, pico da API atual, outros serviços e margem. Os oito testes Release de configuração do pool, o teste do launcher e os 17 gates de release passaram localmente. Ainda não foram coletadas medições reais do banco/host; portanto, esse limite precisa ser calculado pelo usuário antes de iniciar a candidata no servidor. Nenhuma conexão ou recurso de produção foi alterado.
+
+### Validade dos artefatos de candidata ampliada (04/11/2026)
+
+Como o smoke no servidor e a validação com máquinas dependem de uma janela operacional futura, ampliei de 14 para 30 dias a retenção do pacote operacional e da imagem backend no workflow de verificação. O gate de release exige que ambos mantenham esse prazo. A mudança não altera os artefatos já gerados; a nova validade passa a valer para artefatos de uma execução aprovada deste SHA em diante. `develop` e a publicação em produção não foram alterados.

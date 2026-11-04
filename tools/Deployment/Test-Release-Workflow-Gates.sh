@@ -712,7 +712,8 @@ require_contains "$verify_workflow" 'start-private-backend-candidate.sh'
 require_contains "$verify_workflow" 'sha256sum --check SHA256SUMS'
 require_contains "$verify_workflow" 'name: Upload verified backend image artifact'
 require_contains "$verify_workflow" 'name: candidate-backend-image-${{ github.sha }}'
-require_contains "$verify_workflow" 'retention-days: 14'
+retention_days_count="$(grep -cF 'retention-days: 30' "$verify_workflow")"
+[[ "$retention_days_count" -eq 2 ]] || fail "Os dois artefatos de candidata precisam de retenção de 30 dias; encontrados: $retention_days_count."
 
 overlap_gate_line="$(grep -nF 'name: Verify previous API overlap while a legacy MDB socket stays connected' "$verify_workflow" | head -n 1 | cut -d: -f1)"
 workflow_gate_line="$(grep -nF 'name: Verify production workflow release gates' "$verify_workflow" | head -n 1 | cut -d: -f1)"
