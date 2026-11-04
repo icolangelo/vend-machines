@@ -78,7 +78,7 @@ describe("Machine list loading state", () => {
         render(<MemoryRouter><Machines /></MemoryRouter>);
 
         expect(await screen.findByText("Abaixo do limite do compartimento")).toBeInTheDocument();
-        fireEvent.click(screen.getByRole("tab", { name: "Reposição" }));
+        fireEvent.mouseDown(screen.getByRole("tab", { name: "Reposição" }), { button: 0 });
 
         await waitFor(() => {
             expect(screen.getByText("Abaixo do limite do compartimento")).toBeInTheDocument();
