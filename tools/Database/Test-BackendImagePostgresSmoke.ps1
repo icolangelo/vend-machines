@@ -101,6 +101,19 @@ function Get-ContainerHttpResponse {
     return (Invoke-DockerChecked @("exec", $apiContainer, "bash", "-ec", $requestCommand) | Out-String)
 }
 
+function Get-ContainerHealthFailureDetail {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $health = (& docker inspect --format '{{json .State.Health}}' $Name 2>&1 | Out-String).Trim()
+    $state = (& docker inspect --format '{{json .State}}' $Name 2>&1 | Out-String).Trim()
+    $logs = (& docker logs --tail 60 $Name 2>&1 | Out-String).Trim()
+    $detail = "container_state=$state health=$health logs=$logs"
+    $detail = [regex]::Replace($detail, '(?i)(Password=)[^;\s]+', '$1[redacted]')
+    $detail = [regex]::Replace($detail, '(?i)(password[=:]\s*)[^\s,;]+', '$1[redacted]')
+    $detail = [regex]::Replace($detail, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', '[email-redacted]')
+    return $detail
+}
+
 try {
     if (Test-Path -LiteralPath $tlsDirectory) {
         throw "O diretório temporário TLS já existe: $tlsDirectory."
@@ -248,13 +261,6 @@ INSERT INTO "Machines"
 VALUES
     ('$legacyMachineId', 'Local smoke legacy machine', 'Synthetic client', 'Synthetic location',
      'online', TRUE, 0, 0, 0, '', 'LOCAL-SMOKE-LEGACY-$runId', 'LOCAL-SMOKE-LEGACY-$runId', '$syntheticCompanyId', FALSE, FALSE);
-
-INSERT INTO "MachineConnectionStates"
-    ("Id", "MachineId", "CompanyId", "MonitoringEnabled", "IsOnline", "ConnectionId",
-     "ConnectedAt", "LastSeenAt")
-VALUES
-    (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', FALSE, TRUE,
-     '$legacyConnectionId', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 "@
     Invoke-DockerChecked @(
         "exec", $postgresContainer, "psql", "-X", "-tA", "-v", "ON_ERROR_STOP=1",
@@ -312,20 +318,35 @@ VALUES
             break
         }
         if ($healthStatus -in @("unhealthy", "exited", "dead")) {
-            throw "Health check da imagem backend terminou como '$healthStatus'."
+            $failureDetail = Get-ContainerHealthFailureDetail $apiContainer
+            throw "Health check da imagem backend terminou como '$healthStatus'. $failureDetail"
         }
         Start-Sleep -Seconds 1
     }
     if ($healthStatus -ne "healthy") {
-        throw "Health check da imagem backend não ficou saudável em $StartupTimeoutSeconds segundos."
+        $failureDetail = Get-ContainerHealthFailureDetail $apiContainer
+        throw "Health check da imagem backend não ficou saudável em $StartupTimeoutSeconds segundos. $failureDetail"
     }
 
-    $legacyPresenceQuery = "SELECT CASE WHEN `"IsOnline`" AND `"ConnectionId`" = '$legacyConnectionId' AND `"OwnerNodeId`" IS NULL AND `"OwnerConnectionId`" IS NULL THEN 'preserved' ELSE 'changed' END FROM `"MachineConnectionStates`" WHERE `"MachineId`" = '$legacyMachineId';"
-    $legacyPresenceAfterStartup = (Invoke-DockerChecked @(
+    $legacyPresenceSql = @"
+INSERT INTO "MachineConnectionStates"
+    ("Id", "MachineId", "CompanyId", "MonitoringEnabled", "IsOnline", "ConnectionId",
+     "ConnectedAt", "LastSeenAt")
+VALUES
+    (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', FALSE, TRUE,
+     '$legacyConnectionId', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+"@
+    Invoke-DockerChecked @(
+        "exec", $postgresContainer, "psql", "-X", "-tA", "-v", "ON_ERROR_STOP=1",
+        "-U", "postgres", "-d", "vendmachines", "-c", $legacyPresenceSql
+    ) | Out-Null
+
+    $legacyPresenceQuery = "SELECT CASE WHEN `"IsOnline`" AND `"ConnectionId`" = '$legacyConnectionId' AND `"OwnerNodeId`" IS NULL AND `"OwnerConnectionId`" IS NULL THEN 'fixture_valid' ELSE 'fixture_invalid' END FROM `"MachineConnectionStates`" WHERE `"MachineId`" = '$legacyMachineId';"
+    $legacyPresenceFixtureState = (Invoke-DockerChecked @(
         "exec", $postgresContainer, "psql", "-X", "-tA", "-U", "postgres", "-d", "vendmachines", "-c", $legacyPresenceQuery
     ) | Out-String).Trim()
-    if ($legacyPresenceAfterStartup -ne "preserved") {
-        throw "O startup Production alterou a presença online sintética pertencente ao binário legado."
+    if ($legacyPresenceFixtureState -ne "fixture_valid") {
+        throw "O fixture sintético de presença online legada não foi gravado como esperado."
     }
 
     $readinessFeeSetupSql = @'
@@ -514,12 +535,14 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
             break
         }
         if ($healthStatus -in @("unhealthy", "exited", "dead")) {
-            throw "Health check da imagem backend após substituição terminou como '$healthStatus'."
+            $failureDetail = Get-ContainerHealthFailureDetail $apiContainer
+            throw "Health check da imagem backend após substituição terminou como '$healthStatus'. $failureDetail"
         }
         Start-Sleep -Seconds 1
     }
     if ($healthStatus -ne "healthy") {
-        throw "Health check da imagem backend após substituição não ficou saudável em $StartupTimeoutSeconds segundos."
+        $failureDetail = Get-ContainerHealthFailureDetail $apiContainer
+        throw "Health check da imagem backend após substituição não ficou saudável em $StartupTimeoutSeconds segundos. $failureDetail"
     }
 
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -563,7 +586,7 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
         throw "Os logs locais do simulador não confirmaram dois handshakes MDB concluídos."
     }
 
-    Write-Output "Imagem Production saudável com PostgreSQL 17/TLS e $migrationCount migrations; readiness bloqueou presença legada sem owner, liberou após limpeza sintética, migrations pendentes foram recusadas sem escrita e um simulador MDB reconectou após a substituição do container. Nenhuma porta foi publicada e a rede Docker era interna."
+    Write-Output "Imagem Production saudável com PostgreSQL 17/TLS e $migrationCount migrations; readiness bloqueou presença legada sem relay, liberou após limpeza sintética, migrations pendentes foram recusadas sem escrita e um simulador MDB reconectou após a substituição do container. Nenhuma porta foi publicada e a rede Docker era interna."
 }
 finally {
     if ($simulatorCreated) {
