@@ -34,7 +34,11 @@ jobs:
           SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
           SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SECRET_SCAN_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
+
+      - name: Test secret scan commit range selection
+        run: python3 tools/Deployment/test_secret_scan_range.py
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -46,6 +50,22 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/frontend
         run: npm ci
+
+      - name: Verify frontend API contract
+        run: |
+          node tools/Deployment/CheckFrontendApiContract.mjs
+          node --test tools/Deployment/test_frontend_api_contract.mjs
+
+      - name: Verify frontend compatibility with the previous API
+        env:
+          BACKEND_COMPAT_REF: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          backend_ref="$BACKEND_COMPAT_REF"
+          if [[ -z "$backend_ref" || "$backend_ref" =~ ^0+$ ]]; then
+            backend_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
 
       - name: Audit frontend dependencies
         working-directory: apps/frontend
@@ -63,13 +83,13 @@ jobs:
         working-directory: apps/frontend
         run: npm test
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright browsers
         working-directory: apps/frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium firefox webkit
 
-      - name: Run browser smoke tests with isolated demo data
+      - name: Run browser tests across Chromium, Firefox and WebKit
         working-directory: apps/frontend
-        run: npm run test:e2e
+        run: npm run test:e2e:cross-browser
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

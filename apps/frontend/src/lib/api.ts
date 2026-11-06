@@ -18,11 +18,11 @@ import {
     type Product,
     type ProductType
 } from "@/data/mockData";
-import { API_BASE_URL, authenticatedFetch, getCurrentAuthUser } from "@/lib/authClient";
+import { API_BASE_URL, authenticatedFetch, getCurrentAuthUser, SessionExpiredError } from "@/lib/authClient";
 
 export { API_BASE_URL } from "@/lib/authClient";
 
-const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+
 
 const authFetch = authenticatedFetch;
 const TEST_COMPANY_ACME_ID = "11111111-1111-1111-1111-111111111111";
@@ -84,7 +84,7 @@ function canModifyTestUser(userId: string): boolean {
 }
 
 export async function getMachines(): Promise<Machine[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return getTestMachines();
     }
     const response = await authFetch(`${API_BASE_URL}/machines`);
@@ -111,6 +111,7 @@ export interface TelemetryConnection {
     serialNumber: string;
     location: string;
     online: boolean;
+    commandRouteAvailable: boolean;
     monitoringEnabled: boolean;
     autoOpenSessionEnabled: boolean;
     manualStartRequiresMdb: boolean;
@@ -194,15 +195,26 @@ export async function cancelTelemetrySession(sessionId: string, reason = "user_c
     }
 }
 
-export async function sendTelemetryCommand(machineId: string, command: string): Promise<void> {
+export class TelemetryCommandRequestError extends Error {
+    constructor(message: string, readonly code: string | null, readonly status: number) {
+        super(message);
+        this.name = "TelemetryCommandRequestError";
+    }
+}
+
+export async function sendTelemetryCommand(machineId: string, command: string, requestId: string): Promise<void> {
     const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/commands`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command })
+        body: JSON.stringify({ requestId, command })
     });
     if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.message || "A máquina não confirmou o comando.");
+        const error = await response.json().catch(() => ({} as { message?: string; code?: string }));
+        throw new TelemetryCommandRequestError(
+            error.message || "A máquina não confirmou o comando.",
+            error.code ?? null,
+            response.status
+        );
     }
 }
 
@@ -221,7 +233,7 @@ export async function createTelemetrySocketTicket(): Promise<{ ticket: string; e
 }
 
 export async function getMachine(id: string): Promise<Machine | null> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return getTestMachines().find(m => m.id === id) || null;
     }
     const response = await authFetch(`${API_BASE_URL}/machines/${id}`);
@@ -230,7 +242,7 @@ export async function getMachine(id: string): Promise<Machine | null> {
 }
 
 export async function createMachine(machine: Partial<Machine>): Promise<Machine> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const machines = getTestMachines();
         const clients = getTestClients();
         const newId = isSaborTestCompany()
@@ -267,7 +279,7 @@ export async function createMachine(machine: Partial<Machine>): Promise<Machine>
 }
 
 export async function updateMachine(id: string, machine: Partial<Machine>): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const machines = getTestMachines();
         const clients = getTestClients();
         const idx = machines.findIndex(m => m.id === id);
@@ -322,7 +334,7 @@ export async function revokeTelemetryCredential(id: string): Promise<void> {
 }
 
 export async function getLocations(): Promise<Location[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return getTestClients();
     }
     const response = await authFetch(`${API_BASE_URL}/locations`);
@@ -331,7 +343,7 @@ export async function getLocations(): Promise<Location[]> {
 }
 
 export async function createLocation(name: string): Promise<Location> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const clients = getTestClients();
         const location: Location = {
             id: `loc-${Date.now()}`,
@@ -357,7 +369,7 @@ export async function createLocation(name: string): Promise<Location> {
 }
 
 export async function updateLocation(id: string, name: string): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const location = getTestClients().find(item => item.id === id);
         if (location) {
             location.name = name;
@@ -383,7 +395,7 @@ export async function updateLocation(id: string, name: string): Promise<void> {
 }
 
 export async function deleteLocation(id: string): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const hasMachines = getTestMachines().some(machine => machine.locationId === id);
         if (hasMachines) {
             throw new Error("Não é possível excluir uma localização com máquinas vinculadas.");
@@ -409,7 +421,7 @@ export async function getClients(): Promise<Client[]> {
 }
 
 export async function getProducts(): Promise<FullProduct[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return isSaborTestCompany() ? secondaryCompanyProducts : mockProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products`);
@@ -418,7 +430,7 @@ export async function getProducts(): Promise<FullProduct[]> {
 }
 
 export async function getProductTypes(): Promise<ProductType[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return mockProductTypes;
     }
     const response = await authFetch(`${API_BASE_URL}/products/types`);
@@ -427,7 +439,7 @@ export async function getProductTypes(): Promise<ProductType[]> {
 }
 
 export async function createProductType(type: Partial<ProductType>): Promise<ProductType> {
-    if (isTestEnv()) return { ...type, id: `pt-${Date.now()}` } as ProductType;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { ...type, id: `pt-${Date.now()}` } as ProductType;
     const response = await authFetch(`${API_BASE_URL}/products/types`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -438,7 +450,7 @@ export async function createProductType(type: Partial<ProductType>): Promise<Pro
 }
 
 export async function updateProductType(id: string, type: Partial<ProductType>): Promise<ProductType> {
-    if (isTestEnv()) return { ...type, id } as ProductType;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { ...type, id } as ProductType;
     const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -452,7 +464,7 @@ export async function updateProductType(id: string, type: Partial<ProductType>):
 }
 
 export async function deleteProductType(id: string): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await authFetch(`${API_BASE_URL}/products/types/${id}`, {
         method: "DELETE"
     });
@@ -460,7 +472,7 @@ export async function deleteProductType(id: string): Promise<void> {
 }
 
 export async function createProduct(product: Partial<FullProduct>): Promise<FullProduct> {
-    if (isTestEnv()) return { ...product, id: `p-${Date.now()}` } as FullProduct;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { ...product, id: `p-${Date.now()}` } as FullProduct;
     const response = await authFetch(`${API_BASE_URL}/products`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -471,7 +483,7 @@ export async function createProduct(product: Partial<FullProduct>): Promise<Full
 }
 
 export async function updateProduct(id: string, product: Partial<FullProduct>): Promise<FullProduct> {
-    if (isTestEnv()) return { ...product, id } as FullProduct;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { ...product, id } as FullProduct;
     const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -482,7 +494,7 @@ export async function updateProduct(id: string, product: Partial<FullProduct>): 
 }
 
 export async function deleteProduct(id: string): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await authFetch(`${API_BASE_URL}/products/${id}`, {
         method: "DELETE"
     });
@@ -490,7 +502,7 @@ export async function deleteProduct(id: string): Promise<void> {
 }
 
 export async function getTopProducts(): Promise<Product[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return isSaborTestCompany() ? secondaryCompanyTopProducts : mockTopProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/top`);
@@ -499,7 +511,7 @@ export async function getTopProducts(): Promise<Product[]> {
 }
 
 export async function getBottomProducts(): Promise<Product[]> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return isSaborTestCompany() ? secondaryCompanyBottomProducts : mockBottomProducts;
     }
     const response = await authFetch(`${API_BASE_URL}/products/bottom`);
@@ -550,6 +562,7 @@ export interface OperationalAlertItem {
     machineName?: string | null;
     clientName?: string | null;
     sessionId?: string | null;
+    sessionState?: string | null;
     transactionId?: string | null;
     type: string;
     severity: "warning" | "critical";
@@ -563,22 +576,111 @@ export interface OperationalAlertItem {
     isRead: boolean;
 }
 
-export async function getOperationalAlerts(status: "Active" | "Resolved" | "All" = "Active"): Promise<OperationalAlertItem[]> {
-    if (isTestEnv()) return [];
-    const response = await authFetch(`${API_BASE_URL}/alerts?status=${status}&page=1&pageSize=200`);
+export interface OperationalAlertSummary {
+    disconnectedMachines: number;
+    otherActiveAlerts: number;
+}
+
+const TEST_CLOSURE_ALERT_SESSION_ID = "test-session-closure";
+const TEST_CLOSURE_ALERT_STATE_KEY = "vm-test-closure-alert-evidence";
+
+function getTestClosureAlert(): OperationalAlertItem | null {
+    const user = getCurrentAuthUser();
+    if (!user || user.role === "Operator") return null;
+
+    const evidenceReference = sessionStorage.getItem(TEST_CLOSURE_ALERT_STATE_KEY);
+    const resolved = evidenceReference !== null;
+    return {
+        id: "test-closure-alert",
+        machineId: "VM-CLOSURE",
+        machineName: "Máquina de teste",
+        clientName: user.companyName ?? "ACME - Hospital",
+        sessionId: TEST_CLOSURE_ALERT_SESSION_ID,
+        sessionState: resolved ? "ClosureVerified" : "ClosureIncomplete",
+        type: "SessionFailure",
+        severity: "critical",
+        status: resolved ? "Resolved" : "Active",
+        title: "Encerramento físico pendente",
+        description: "A sessão aguarda confirmação de que a máquina está ociosa.",
+        occurredAt: "2026-10-26T12:00:00Z",
+        updatedAt: "2026-10-26T12:00:00Z",
+        resolvedAt: resolved ? "2026-10-26T12:05:00Z" : null,
+        resolution: resolved
+            ? `Encerramento físico confirmado por responsável autorizado. Referência de evidência: ${evidenceReference}.`
+            : null,
+        isRead: true,
+    };
+}
+
+export async function getOperationalAlertSummary(): Promise<OperationalAlertSummary> {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { disconnectedMachines: 0, otherActiveAlerts: 0 };
+    const response = await authFetch(`${API_BASE_URL}/alerts/summary`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao buscar o resumo de alertas."));
+    return response.json();
+}
+
+export interface OperationalAlertPage {
+    items: OperationalAlertItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+}
+
+export async function getOperationalAlerts(
+    status: "Active" | "Resolved" | "All" = "Active",
+    page = 1,
+    pageSize = 50,
+    type: "TelemetryOffline" | "OtherActive" | "All" = "All",
+    search = "",
+): Promise<OperationalAlertPage> {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+        const closureAlert = getTestClosureAlert();
+        const matchesStatus = closureAlert && (status === "All" || closureAlert.status === status);
+        const matchesType = closureAlert && (type === "All" || (type === "OtherActive" && closureAlert.status === "Active"));
+        const matchesSearch = closureAlert && (!search.trim() ||
+            `${closureAlert.title} ${closureAlert.description} ${closureAlert.machineId} ${closureAlert.machineName}`
+                .toLocaleLowerCase("pt-BR")
+                .includes(search.trim().toLocaleLowerCase("pt-BR")));
+        const items = matchesStatus && matchesType && matchesSearch ? [closureAlert] : [];
+        return { items, total: items.length, page, pageSize };
+    }
+    const params = new URLSearchParams({ status, page: String(page), pageSize: String(pageSize), type, search });
+    const response = await authFetch(`${API_BASE_URL}/alerts?${params.toString()}`);
     if (!response.ok) throw new Error(await readApiError(response, "Erro ao buscar alertas."));
-    const result = await response.json();
-    return result.items;
+    return response.json();
 }
 
 export async function markOperationalAlertRead(id: string): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await authFetch(`${API_BASE_URL}/alerts/${encodeURIComponent(id)}/read`, { method: "PUT" });
     if (!response.ok) throw new Error(await readApiError(response, "Não foi possível marcar o alerta como lido."));
 }
 
+export async function resolveIncompleteSessionClosure(
+    sessionId: string,
+    evidenceReference: string,
+): Promise<void> {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+        if (sessionId !== TEST_CLOSURE_ALERT_SESSION_ID || getCurrentAuthUser()?.role === "Operator") {
+            throw new Error("Sessão não encontrada ou usuário sem permissão para confirmar o encerramento.");
+        }
+        if (!/^[A-Za-z0-9._/:_-]{3,64}$/.test(evidenceReference)) {
+            throw new Error("Informe uma referência de evidência válida.");
+        }
+        sessionStorage.setItem(TEST_CLOSURE_ALERT_STATE_KEY, evidenceReference);
+        return;
+    }
+    const response = await authFetch(`${API_BASE_URL}/telemetry/sessions/${encodeURIComponent(sessionId)}/resolve-incomplete-closure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmedMachineIdle: true, evidenceReference }),
+    });
+    if (!response.ok) throw new Error(await readApiError(response, "Não foi possível confirmar o encerramento da sessão."));
+}
+
 export interface SalesReportRow {
     id: string;
+    mercadoPagoPaymentId?: string | null;
     soldAt: string;
     machineId: string;
     machineName: string;
@@ -589,7 +691,7 @@ export interface SalesReportRow {
     quantity: number;
     grossAmount: number;
     refundedAmount: number;
-    netRevenue: number;
+    netRevenue: number | null;
     applicationFee: number;
     netAfterPlatformFee: number;
     financialStatus: string;
@@ -618,21 +720,21 @@ function buildSalesReportQuery(from: string, to: string, filters: SalesReportFil
 }
 
 export async function getSalesReport(from: string, to: string, filters: SalesReportFilters = {}): Promise<SalesReportResult> {
-    if (isTestEnv()) return { from, to, total: 0, truncated: false, items: [] };
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { from, to, total: 0, truncated: false, items: [] };
     const response = await authFetch(`${API_BASE_URL}/reports/sales?${buildSalesReportQuery(from, to, filters)}`);
     if (!response.ok) throw new Error(await readApiError(response, "Erro ao gerar relatório de vendas."));
     return response.json();
 }
 
 export async function exportSalesReport(from: string, to: string, filters: SalesReportFilters = {}): Promise<Blob> {
-    if (isTestEnv()) return new Blob(["Id;Data UTC\n"], { type: "text/csv;charset=utf-8" });
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return new Blob(["Id;Data UTC\n"], { type: "text/csv;charset=utf-8" });
     const response = await authFetch(`${API_BASE_URL}/reports/sales/export?${buildSalesReportQuery(from, to, filters)}`);
     if (!response.ok) throw new Error(await readApiError(response, "Erro ao exportar relatório de vendas."));
     return response.blob();
 }
 
 export async function getInventorySlots(machineId?: string): Promise<InventorySlot[]> {
-    if (isTestEnv()) return [];
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return [];
     const query = machineId ? `?machineId=${encodeURIComponent(machineId)}` : "";
     const response = await authFetch(`${API_BASE_URL}/inventory/slots${query}`);
     if (!response.ok) throw new Error("Erro ao buscar compartimentos do estoque.");
@@ -644,7 +746,7 @@ export async function configureInventorySlot(
     itemNumber: number,
     data: { productId: string; capacity: number; initialStock: number; lowStockThreshold: number }
 ): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -653,34 +755,74 @@ export async function configureInventorySlot(
     if (!response.ok) throw new Error(await readApiError(response, "Erro ao configurar compartimento."));
 }
 
+export class InventoryMovementUncertainError extends Error {
+    constructor() {
+        super("O resultado da movimentação não pôde ser confirmado.");
+        this.name = "InventoryMovementUncertainError";
+    }
+}
+
+export interface InventoryMovementReceipt {
+    machineId: string;
+    itemNumber: number;
+    movementType: "Restock" | "Adjustment";
+    quantityDelta: number;
+    reasonHash: string;
+}
+
+export async function getInventoryMovementReceipt(requestId: string): Promise<InventoryMovementReceipt | null> {
+    if (import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true") return null;
+    const response = await authFetch(`${API_BASE_URL}/inventory/movements/by-request/${encodeURIComponent(requestId)}`);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("Não foi possível consultar a movimentação.");
+    const value: unknown = await response.json();
+    if (!value || typeof value !== "object") throw new Error("Resposta de movimentação inválida.");
+    const receipt = value as Partial<InventoryMovementReceipt>;
+    if (typeof receipt.machineId !== "string" || !Number.isInteger(receipt.itemNumber) ||
+        (receipt.movementType !== "Restock" && receipt.movementType !== "Adjustment") ||
+        !Number.isInteger(receipt.quantityDelta) || typeof receipt.reasonHash !== "string" ||
+        !/^[0-9a-f]{64}$/.test(receipt.reasonHash)) throw new Error("Resposta de movimentação inválida.");
+    return receipt as InventoryMovementReceipt;
+}
+
+async function sendInventoryMovement(url: string, body: object, fallback: string): Promise<void> {
+    let response: Response;
+    try {
+        response = await authFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+    } catch (error) {
+        if (error instanceof SessionExpiredError) throw error;
+        throw new InventoryMovementUncertainError();
+    }
+    if (response.status === 408 || response.status >= 500) throw new InventoryMovementUncertainError();
+    if (!response.ok) throw new Error(await readApiError(response, fallback));
+}
+
 export async function restockInventorySlot(
     machineId: string,
     itemNumber: number,
     quantity: number,
-    reason: string
+    reason: string,
+    requestId?: string
 ): Promise<void> {
-    if (isTestEnv()) return;
-    const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/restock`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quantity, reason })
-    });
-    if (!response.ok) throw new Error(await readApiError(response, "Erro ao registrar reposição."));
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
+    await sendInventoryMovement(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/restock`,
+        { quantity, reason, requestId }, "Erro ao registrar reposição.");
 }
 
 export async function adjustInventorySlot(
     machineId: string,
     itemNumber: number,
     quantityDelta: number,
-    reason: string
+    reason: string,
+    requestId?: string
 ): Promise<void> {
-    if (isTestEnv()) return;
-    const response = await authFetch(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/adjustment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quantityDelta, reason })
-    });
-    if (!response.ok) throw new Error(await readApiError(response, "Erro ao ajustar estoque."));
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
+    await sendInventoryMovement(`${API_BASE_URL}/inventory/slots/${encodeURIComponent(machineId)}/${itemNumber}/adjustment`,
+        { quantityDelta, reason, requestId }, "Erro ao ajustar estoque.");
 }
 
 export async function getInventoryMovements(
@@ -688,13 +830,26 @@ export async function getInventoryMovements(
     pageSize = 50,
     filters: { machineId?: string; itemNumber?: number } = {}
 ): Promise<InventoryMovementPage> {
-    if (isTestEnv()) return { items: [], page, pageSize, totalItems: 0, totalPages: 0 };
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return { items: [], page, pageSize, totalItems: 0, totalPages: 0 };
     const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (filters.machineId) query.set("machineId", filters.machineId);
     if (filters.itemNumber !== undefined) query.set("itemNumber", String(filters.itemNumber));
     const response = await authFetch(`${API_BASE_URL}/inventory/movements?${query}`);
     if (!response.ok) throw new Error("Erro ao buscar histórico de estoque.");
     return response.json();
+}
+
+export async function exportInventoryMovements(
+    filters: { machineId?: string; itemNumber?: number } = {}
+): Promise<Blob> {
+    if (import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")
+        return new Blob(["Data UTC;ID da máquina;Compartimento;Produto;Tipo;Variação;Saldo;Motivo\r\n"], { type: "text/csv;charset=utf-8" });
+    const query = new URLSearchParams();
+    if (filters.machineId) query.set("machineId", filters.machineId);
+    if (filters.itemNumber !== undefined) query.set("itemNumber", String(filters.itemNumber));
+    const response = await authFetch(`${API_BASE_URL}/inventory/movements/export?${query}`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao exportar histórico de estoque."));
+    return response.blob();
 }
 
 async function readApiError(response: Response, fallback: string): Promise<string> {
@@ -717,7 +872,7 @@ export interface DashboardStats {
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const machines = getTestMachines();
         const totalRevenue = machines.reduce((s, m) => s + m.revenue30d, 0);
         const totalSales = machines.reduce((s, m) => s + m.totalSales30d, 0);
@@ -792,7 +947,7 @@ const mockUserRoleOverrides = new Map<string, string>();
 const mockUserActiveOverrides = new Map<string, boolean>();
 
 export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedUsers> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const allMockUsers = Array.from({ length: 45 }, (_, i) => ({
             id: `usr-${i + 1}`,
             name: i === 0 ? "Admin Ivan" : i === 1 ? "João da Silva" : `Usuário Operador ${i + 1}`,
@@ -833,7 +988,7 @@ export async function getUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): 
 }
 
 export async function updateUserRole(userId: string, role: "Admin" | "PlatformAdmin" | "Operator"): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         if (!canModifyTestUser(userId) || (role === "PlatformAdmin" && getCurrentAuthUser()?.role !== "PlatformAdmin")) {
             throw new Error("Usuário não encontrado no escopo permitido.");
         }
@@ -853,7 +1008,7 @@ export async function updateUserRole(userId: string, role: "Admin" | "PlatformAd
 }
 
 export async function updateUserActiveStatus(userId: string, isActive: boolean): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         if (!canModifyTestUser(userId)) {
             throw new Error("Usuário não encontrado no escopo permitido.");
         }
@@ -879,7 +1034,7 @@ export async function createUserInvitation(email: string, role: "Admin" | "Opera
     expiresAt: string;
     rotated: boolean;
 }> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return {
             invitationId: crypto.randomUUID(),
             invitationToken: `mock-invitation-${crypto.randomUUID()}`,
@@ -902,7 +1057,7 @@ export async function createUserInvitation(email: string, role: "Admin" | "Opera
 }
 
 export async function revokeUserInvitation(invitationId: string): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await authFetch(`${API_BASE_URL}/users/invitations/${encodeURIComponent(invitationId)}/revoke`, {
         method: "PUT",
     });
@@ -913,7 +1068,7 @@ export async function revokeUserInvitation(invitationId: string): Promise<void> 
 }
 
 export async function createPasswordResetLink(userId: string): Promise<{ resetToken: string | null; emailSent: boolean; expiresAt: string }> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return { resetToken: `mock-reset-${crypto.randomUUID()}`, emailSent: false, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
     }
     const response = await authFetch(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/password-reset`, { method: "POST" });
@@ -925,7 +1080,7 @@ export async function createPasswordResetLink(userId: string): Promise<{ resetTo
 }
 
 export async function resetPassword(resetToken: string, password: string): Promise<void> {
-    if (isTestEnv()) return;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) return;
     const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
         method: "POST",
         credentials: "include",
@@ -945,7 +1100,7 @@ export interface EmailVerificationResult {
 }
 
 export async function verifyEmail(token: string): Promise<EmailVerificationResult> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return { emailVerified: true, accountActive: false, message: "E-mail confirmado. A empresa ainda aguarda análise da plataforma." };
     }
     const response = await fetch(`${API_BASE_URL}/auth/verify-email`, {
@@ -960,7 +1115,7 @@ export async function verifyEmail(token: string): Promise<EmailVerificationResul
 }
 
 export async function resendEmailVerification(email: string): Promise<{ message: string }> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return { message: "Se houver um cadastro aguardando confirmação, enviaremos um novo link para o endereço informado." };
     }
     const response = await fetch(`${API_BASE_URL}/auth/resend-email-verification`, {
@@ -993,7 +1148,7 @@ export interface PaginatedCompanies {
 }
 
 export async function getCompanies(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedCompanies> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const allMockCompanies = [
             {
                 id: "11111111-1111-1111-1111-111111111111",
@@ -1059,7 +1214,7 @@ export async function updateCompanyActivation(
     companyId: string,
     status: "Active" | "Rejected",
 ): Promise<{ companyId: string; activationStatus: string; affectedUsers: number }> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return { companyId, activationStatus: status, affectedUsers: status === "Rejected" ? 1 : 0 };
     }
 
@@ -1079,6 +1234,8 @@ export interface SystemSettings {
     id?: string;
     applicationFeePercent: number;
     updatedAt?: string;
+    isConfigured?: boolean;
+    isValid?: boolean;
 }
 
 export interface MercadoPagoIntegration {
@@ -1094,17 +1251,18 @@ export interface MercadoPagoIntegration {
     businessEmail: string;
     businessPhone: string;
     accessToken: string;
+    hasAccessToken?: boolean;
     hasRefreshToken?: boolean;
     accessTokenExpiresAt?: string;
     publicKey: string;
     clientId?: string;
     clientSecret?: string;
+    hasClientSecret?: boolean;
     mercadoPagoUserId?: string;
     mercadoPagoNickname?: string;
     mercadoPagoSiteId?: string;
     lastTokenValidationAt?: string;
     lastTokenValidationStatus?: string;
-    tokenFingerprint?: string;
     isActive: boolean;
     createdAt?: string;
     updatedAt?: string;
@@ -1116,12 +1274,20 @@ export interface PaymentTransaction {
     machine?: Pick<Machine, "id" | "name" | "serialNumber">;
     amount: number;
     applicationFee: number;
-    status: "Pending" | "Approved" | "Rejected" | "Failed" | "Refunded";
+    status: string;
     mercadoPagoPaymentId?: string;
     mercadoPagoStatus?: string;
     mercadoPagoStatusDetail?: string;
     createdAt: string;
     completedAt?: string;
+}
+
+export interface PaymentTransactionHistoryPage {
+    items: PaymentTransaction[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
 }
 
 export interface TransactionTelemetryLog {
@@ -1132,6 +1298,14 @@ export interface TransactionTelemetryLog {
     message: string;
 }
 
+export interface TransactionTelemetryLogPage {
+    items: TransactionTelemetryLog[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+}
+
 export class PaymentRequestError extends Error {
     constructor(message: string, public readonly transactionId?: string) {
         super(message);
@@ -1140,30 +1314,42 @@ export class PaymentRequestError extends Error {
 }
 
 export async function getGlobalSettings(): Promise<SystemSettings> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const local = localStorage.getItem("mock_global_settings");
-        return local ? JSON.parse(local) : { applicationFeePercent: 5.0 };
+        const settings = local ? JSON.parse(local) as SystemSettings : { applicationFeePercent: 5.0 };
+        return {
+            ...settings,
+            isConfigured: local !== null,
+            isValid: local !== null && settings.applicationFeePercent > 0 && settings.applicationFeePercent < 100
+        };
     }
     const response = await authFetch(`${API_BASE_URL}/payments/global-settings`);
+    if (response.status === 409) {
+        throw new Error("Há mais de uma configuração global de taxa. Solicite a revisão dos registros antes de continuar.");
+    }
     if (!response.ok) throw new Error("Erro ao carregar configurações de pagamento globais.");
     return response.json();
 }
 
-export async function updateGlobalSettings(settings: SystemSettings): Promise<void> {
-    if (isTestEnv()) {
-        localStorage.setItem("mock_global_settings", JSON.stringify(settings));
+export async function updateGlobalSettings(settings: SystemSettings, expected?: SystemSettings): Promise<void> {
+    const expectedFee = expected?.isConfigured === true ? String(expected.applicationFeePercent) : expected?.isConfigured === false ? "missing" : undefined;
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+        const current = localStorage.getItem("mock_global_settings");
+        const currentFee = current ? String((JSON.parse(current) as SystemSettings).applicationFeePercent) : "missing";
+        if (expectedFee !== undefined && expectedFee !== currentFee) throw new Error("A taxa global foi alterada. Atualize e confira o valor antes de salvar novamente.");
+        localStorage.setItem("mock_global_settings", JSON.stringify({ ...settings, isConfigured: true, isValid: true }));
         return;
     }
     const response = await authFetch(`${API_BASE_URL}/payments/global-settings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(expectedFee !== undefined ? { "X-Expected-Platform-Fee": expectedFee } : {}) },
         body: JSON.stringify(settings)
     });
     if (!response.ok) throw new Error("Erro ao salvar taxa global.");
 }
 
 export async function getIntegration(): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const local = localStorage.getItem("mock_mp_integration");
         const companyId = "11111111-1111-1111-1111-111111111111";
         return local ? JSON.parse(local) : {
@@ -1178,21 +1364,8 @@ export async function getIntegration(): Promise<MercadoPagoIntegration> {
     return response.json();
 }
 
-export async function saveIntegration(integration: MercadoPagoIntegration): Promise<void> {
-    if (isTestEnv()) {
-        localStorage.setItem("mock_mp_integration", JSON.stringify(integration));
-        return;
-    }
-    const response = await authFetch(`${API_BASE_URL}/payments/integration`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(integration)
-    });
-    if (!response.ok) throw new Error("Erro ao salvar integração.");
-}
-
 export async function toggleIntegration(isActive: boolean): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const local = localStorage.getItem("mock_mp_integration");
         if (local) {
             const parsed = JSON.parse(local);
@@ -1216,7 +1389,7 @@ export interface OauthConfig {
 }
 
 export async function getOauthConfig(): Promise<OauthConfig> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return {
             clientId: "7902965695113613",
             redirectUri: window.location.origin + "/"
@@ -1228,7 +1401,7 @@ export async function getOauthConfig(): Promise<OauthConfig> {
 }
 
 export async function exchangeOauthCode(code: string, redirectUri: string, state?: string): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const companyId = "11111111-1111-1111-1111-111111111111";
         const mockIntegration: MercadoPagoIntegration = {
             companyId,
@@ -1263,7 +1436,7 @@ export async function exchangeOauthCode(code: string, redirectUri: string, state
 }
 
 export async function disconnectIntegration(): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         localStorage.removeItem("mock_mp_integration");
         return;
     }
@@ -1275,7 +1448,7 @@ export async function disconnectIntegration(): Promise<void> {
 }
 
 export async function getCompanyIntegration(companyId: string): Promise<MercadoPagoIntegration> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const local = localStorage.getItem("mock_mp_integration");
         if (local) {
             const parsed = JSON.parse(local);
@@ -1295,9 +1468,11 @@ export async function getCompanyIntegration(companyId: string): Promise<MercadoP
             businessEmail: "financeiro@acmemachines.com",
             businessPhone: "(11) 5555-1234",
             accessToken: "APP_USR-1234••••••••ABCD",
+            hasAccessToken: true,
             publicKey: "APP_USR-9876••••••••XYZ",
             clientId: "acme_client_id",
             clientSecret: "acme_••••••••secret",
+            hasClientSecret: true,
             isActive: true
         };
     }
@@ -1326,7 +1501,7 @@ export async function createPixQrCode(params: {
     applicationFeeWarning?: string | null;
     simulated?: boolean;
 }> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const mockTxId = `tx-${Date.now()}`;
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         const newTx = {
@@ -1378,7 +1553,7 @@ export async function createPixQrCode(params: {
 }
 
 export async function simulateWebhook(transactionId: string, approved: boolean, sendTelemetryToMachine = true): Promise<void> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const mockTransactions = JSON.parse(localStorage.getItem("mock_transactions") || "[]");
         const idx = mockTransactions.findIndex(t => t.id == transactionId);
         if (idx > -1) {
@@ -1422,11 +1597,12 @@ export async function simulateWebhook(transactionId: string, approved: boolean, 
     if (!response.ok) throw new Error("Erro ao simular webhook de pagamento.");
 }
 
-export async function getTransactions(machineId?: string): Promise<PaymentTransaction[]> {
-    if (isTestEnv()) {
+export async function getTransactions(machineId?: string, transactionId?: string): Promise<PaymentTransaction[]> {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const list = JSON.parse(localStorage.getItem("mock_transactions") || "[]") as Array<PaymentTransaction & { qrCode?: string; qrCodeBase64?: string }>;
         return list
             .filter((transaction) => !machineId || transaction.machineId === machineId)
+            .filter((transaction) => !transactionId || transaction.id === transactionId)
             .map((transaction) => {
                 const summary = { ...transaction };
                 Reflect.deleteProperty(summary, "qrCode");
@@ -1434,19 +1610,84 @@ export async function getTransactions(machineId?: string): Promise<PaymentTransa
                 return summary;
             });
     }
-    const url = machineId ? `${API_BASE_URL}/payments/transactions?machineId=${machineId}` : `${API_BASE_URL}/payments/transactions`;
-    const response = await authFetch(url);
+    const params = new URLSearchParams();
+    if (machineId) params.set("machineId", machineId);
+    if (transactionId) params.set("transactionId", transactionId);
+    const serializedParams = params.toString();
+    const query = serializedParams ? `?${serializedParams}` : "";
+    const response = await authFetch(`${API_BASE_URL}/payments/transactions${query}`);
     if (!response.ok) throw new Error("Erro ao buscar transações.");
     return response.json();
 }
 
-export async function getTransactionLogs(transactionId: string): Promise<TransactionTelemetryLog[]> {
-    if (isTestEnv()) {
-        return JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]");
+export async function getPaymentTransactionHistory(
+    page = 1,
+    pageSize = 25,
+    machineId?: string,
+    transactionId?: string,
+    status?: string,
+): Promise<PaymentTransactionHistoryPage> {
+    const safePage = Math.max(1, Math.floor(page));
+    const safePageSize = Math.min(100, Math.max(1, Math.floor(pageSize)));
+    if (import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true") {
+        const filtered = (await getTransactions(machineId, transactionId))
+            .filter(transaction => !status || transaction.status === status);
+        const total = filtered.length;
+        const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+        const currentPage = Math.min(safePage, totalPages);
+        const startIndex = (currentPage - 1) * safePageSize;
+        return {
+            items: filtered.slice(startIndex, startIndex + safePageSize),
+            total,
+            page: currentPage,
+            pageSize: safePageSize,
+            totalPages,
+        };
     }
-    const response = await authFetch(`${API_BASE_URL}/payments/transactions/${transactionId}/logs`);
-    if (!response.ok) throw new Error("Erro ao buscar logs da transação.");
+
+    const params = new URLSearchParams({ page: String(safePage), pageSize: String(safePageSize) });
+    if (machineId) params.set("machineId", machineId);
+    if (transactionId) params.set("transactionId", transactionId);
+    if (status) params.set("status", status);
+    const response = await authFetch(`${API_BASE_URL}/payments/transactions/history?${params.toString()}`);
+    if (!response.ok) throw new Error(await readApiError(response, "Erro ao buscar o histórico de pagamentos."));
     return response.json();
+}
+
+export async function getTransactionLogs(
+    transactionId: string,
+    page = 1,
+    pageSize = 50,
+): Promise<TransactionTelemetryLogPage> {
+    const safePage = Math.max(1, Math.floor(page));
+    const safePageSize = Math.min(100, Math.max(1, Math.floor(pageSize)));
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+        const allItems = JSON.parse(localStorage.getItem(`mock_logs_${transactionId}`) || "[]") as TransactionTelemetryLog[];
+        const totalPages = Math.max(1, Math.ceil(allItems.length / safePageSize));
+        const currentPage = Math.min(safePage, totalPages);
+        return {
+            items: allItems.slice((currentPage - 1) * safePageSize, currentPage * safePageSize),
+            total: allItems.length,
+            page: currentPage,
+            pageSize: safePageSize,
+            totalPages,
+        };
+    }
+    const params = new URLSearchParams({ page: String(safePage), pageSize: String(safePageSize) });
+    const response = await authFetch(`${API_BASE_URL}/payments/transactions/${transactionId}/logs?${params.toString()}`);
+    if (!response.ok) throw new Error("Erro ao buscar logs da transação.");
+    const items = await response.json() as TransactionTelemetryLog[];
+    const readHeader = (name: string, fallback: number) => {
+        const value = Number(response.headers.get(name));
+        return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+    };
+    return {
+        items,
+        total: readHeader("X-Total-Count", items.length),
+        page: readHeader("X-Page", safePage),
+        pageSize: readHeader("X-Page-Size", safePageSize),
+        totalPages: readHeader("X-Total-Pages", 1),
+    };
 }
 
 export interface AdminLog {
@@ -1496,6 +1737,7 @@ export interface ReconciliationQueueItem {
     machineName: string;
     amount: number;
     status: "Pending" | "ReconciliationRequired";
+    reconciliationReason?: string | null;
     mercadoPagoStatus?: string | null;
     mercadoPagoStatusDetail?: string | null;
     mercadoPagoPaymentId?: string | null;
@@ -1503,9 +1745,44 @@ export interface ReconciliationQueueItem {
     lastReconciliationAt?: string | null;
 }
 
+export interface PaymentReconciliationResolutionRequest {
+    resolution: "approved" | "rejected" | "cancelled" | "refunded" | "chargeback_settled" | "chargeback_reimbursed";
+    evidenceReference: string;
+    expectedProviderStatus: string;
+    expectedProviderStatusDetail: string | null;
+    expectedReconciliationReason: string | null;
+    expectedLastReconciliationAt: string | null;
+    confirmedRefundedAmount?: number;
+}
+
 export interface ReconciliationQueueSummary {
     counts: { pending: number; reconciliationRequired: number };
     items: ReconciliationQueueItem[];
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export type PaymentWebhookStatus = "Pending" | "Retry" | "Processing" | "Processed" | "Failed";
+
+export interface PaymentWebhookInboxItem {
+    id: string;
+    paymentId: string;
+    eventType: string;
+    eventAction: string;
+    format: string;
+    authenticationMode: string;
+    receivedAt: string;
+    status: PaymentWebhookStatus;
+    attempts: number;
+    nextAttemptAt?: string | null;
+    processedAt?: string | null;
+    lastError?: string | null;
+}
+
+export interface PaymentWebhookInboxSummary {
+    items: PaymentWebhookInboxItem[];
     page: number;
     pageSize: number;
     totalItems: number;
@@ -1529,44 +1806,116 @@ export interface WorkerHealthQueueMetrics {
         online: number;
         staleOnline: number;
         onlineWithoutOwner: number;
+        onlineWithoutCommandRouting?: number;
+        legacyRelay?: {
+            eligibleConnections: number;
+            configured: boolean;
+            healthy: boolean | null;
+        };
+        readinessGate?: {
+            onlineInGateScope: number;
+            unroutable: number;
+            withoutOwner: number;
+            withoutCommandRouting: number;
+            companyMismatch: number;
+        };
     };
     deviceMessageInbox?: Record<string, number>;
     oldestDeviceMessageAgeSeconds?: number | null;
     telemetryCommandDispatches?: Record<string, number>;
     oldestPendingTelemetryDispatchAgeSeconds?: number | null;
     oldestProcessingTelemetryDispatchAgeSeconds?: number | null;
+    localTelemetryCommands?: {
+        pendingIntents: number;
+        oldestPendingIntentAgeSeconds: number | null;
+        unresolvedResults: number;
+        oldestUnresolvedResultAgeSeconds: number | null;
+    };
     webhookInbox?: Record<string, number>;
     oldestWebhookAgeSeconds?: number | null;
+    financialOutbox?: Record<string, number>;
+    oldestPendingFinancialOutboxAgeSeconds?: number | null;
+    oldestDeferredLegacyFinancialOutboxAgeSeconds?: number | null;
+    earliestProcessingFinancialOutboxLeaseExpiryAt?: string | null;
     pendingPayments?: number;
     oldestPendingPaymentAgeSeconds?: number | null;
 }
 
 export interface WorkerHealthSummary {
     generatedAt: string;
+    sourceCommit: string | null;
     workers: BackgroundWorkerHealth[];
     hasUnhealthyWorkers: boolean;
     queueMetrics: WorkerHealthQueueMetrics;
 }
 
+export interface LegacyMachineConnection {
+    machineId: string;
+    machineName: string;
+    serialNumber: string;
+    companyName: string;
+    lastSeenAt: string;
+    activeSessionState: string | null;
+    activeSessionStartedAt: string | null;
+}
+
+export interface LegacyMachineConnectionsSummary {
+    generatedAt: string;
+    relay: { configured: boolean; healthy: boolean | null };
+    items: LegacyMachineConnection[];
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+}
+
+export async function getLegacyMachineConnections(page: number = 1, pageSize: number = 50): Promise<LegacyMachineConnectionsSummary> {
+    if (import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true") {
+        return { generatedAt: new Date().toISOString(), relay: { configured: false, healthy: null }, items: [], page, pageSize, totalItems: 0, totalPages: 0 };
+    }
+    const response = await authFetch(`${API_BASE_URL}/admin/legacy-machine-connections?page=${page}&pageSize=${pageSize}`);
+    if (!response.ok) throw new Error("Não foi possível consultar as conexões da API anterior.");
+    return response.json();
+}
+
 export async function getWorkerHealth(): Promise<WorkerHealthSummary> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return {
             generatedAt: new Date().toISOString(),
+            sourceCommit: null,
             workers: [
                 { name: "telemetry-inbox", status: "Healthy", startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0 },
+                { name: "telemetry-command-dispatch", status: "Healthy", startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0 },
                 { name: "mercado-pago-webhook", status: "Healthy", startedAt: new Date().toISOString(), lastHeartbeatAt: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), consecutiveFailures: 0 },
             ],
             hasUnhealthyWorkers: false,
             queueMetrics: {
                 available: true,
-                machineConnections: { monitored: 3, online: 2, staleOnline: 0, onlineWithoutOwner: 0 },
+                machineConnections: {
+                    monitored: 3,
+                    online: 2,
+                    staleOnline: 0,
+                    onlineWithoutOwner: 0,
+                    onlineWithoutCommandRouting: 0,
+                    readinessGate: { onlineInGateScope: 2, unroutable: 0, withoutOwner: 0, withoutCommandRouting: 0, companyMismatch: 0 },
+                },
                 deviceMessageInbox: { Pending: 0, Retry: 0, Processing: 0, Failed: 0, Processed: 0 },
                 oldestDeviceMessageAgeSeconds: null,
                 telemetryCommandDispatches: { Pending: 0, Processing: 0, Failed: 0 },
                 oldestPendingTelemetryDispatchAgeSeconds: null,
                 oldestProcessingTelemetryDispatchAgeSeconds: null,
+                localTelemetryCommands: {
+                    pendingIntents: 0,
+                    oldestPendingIntentAgeSeconds: null,
+                    unresolvedResults: 0,
+                    oldestUnresolvedResultAgeSeconds: null,
+                },
                 webhookInbox: { Pending: 0, Retry: 0, Processing: 0, Failed: 0, Processed: 0 },
                 oldestWebhookAgeSeconds: null,
+                financialOutbox: { pending: 0, processing: 0, failed: 0, processed: 0, deferred_legacy_overlap: 0 },
+                oldestPendingFinancialOutboxAgeSeconds: null,
+                oldestDeferredLegacyFinancialOutboxAgeSeconds: null,
+                earliestProcessingFinancialOutboxLeaseExpiryAt: null,
                 pendingPayments: 0,
                 oldestPendingPaymentAgeSeconds: null,
             },
@@ -1579,12 +1928,49 @@ export async function getWorkerHealth(): Promise<WorkerHealthSummary> {
 }
 
 export async function getReconciliationQueue(page: number = 1, pageSize: number = 20): Promise<ReconciliationQueueSummary> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         return { counts: { pending: 0, reconciliationRequired: 0 }, items: [], page, pageSize, totalItems: 0, totalPages: 0 };
     }
     const response = await authFetch(`${API_BASE_URL}/payments/admin/reconciliation-queue?page=${page}&pageSize=${pageSize}`);
     if (!response.ok) throw new Error("Não foi possível consultar a fila de conciliação financeira.");
     return response.json();
+}
+
+export async function resolvePaymentReconciliation(
+    id: string,
+    request: PaymentReconciliationResolutionRequest
+): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/payments/admin/reconciliation-queue/${encodeURIComponent(id)}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message ?? "Não foi possível registrar a conciliação financeira.");
+    }
+}
+
+export async function getPaymentWebhookInbox(
+    status: PaymentWebhookStatus | "All" = "Failed",
+    page: number = 1,
+    pageSize: number = 20
+): Promise<PaymentWebhookInboxSummary> {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (status !== "All") params.set("status", status);
+    const response = await authFetch(`${API_BASE_URL}/payments/admin/webhook-inbox?${params.toString()}`);
+    if (!response.ok) throw new Error("Não foi possível consultar a fila de webhooks do Mercado Pago.");
+    return response.json();
+}
+
+export async function retryPaymentWebhook(id: string): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/payments/admin/webhook-inbox/${encodeURIComponent(id)}/retry`, {
+        method: "POST"
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message ?? "Não foi possível reenfileirar o webhook.");
+    }
 }
 
 export async function getDeviceMessageInbox(page: number = 1, pageSize: number = 20): Promise<DeviceMessageInboxSummary> {
@@ -1606,7 +1992,7 @@ export async function retryDeviceMessageInbox(id: string): Promise<void> {
 }
 
 export async function getAdminLogs(page: number = 1, pageSize: number = 20, search: string = ""): Promise<PaginatedAdminLogs> {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
         const mockItems: AdminLog[] = [
             {
                 id: "1",

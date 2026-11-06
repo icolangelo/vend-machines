@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -47,25 +47,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "IX_Users_EmailVerificationTokenHash",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "EmailVerificationTokenExpiresAt",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "EmailVerificationTokenHash",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "EmailVerifiedAt",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "RequiresEmailVerification",
-                table: "Users");
+            throw new System.InvalidOperationException(
+                "Esta migration contém estado e provas de verificação de e-mail. Reverta somente o binário e preserve as colunas e o índice.");
         }
     }
 }

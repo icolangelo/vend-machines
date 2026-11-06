@@ -29,17 +29,46 @@ public sealed class DeviceMessageInboxService
             100_000);
     }
 
-    public async Task PersistBeforeAcknowledgementAsync(InboundDeviceMessage message, CancellationToken cancellationToken)
+    public async Task<bool> PersistBeforeAcknowledgementAsync(InboundDeviceMessage message, CancellationToken cancellationToken)
     {
         await _admissionGate.Semaphore.WaitAsync(cancellationToken);
         try
         {
+            if (_db.Database.IsNpgsql() && string.IsNullOrWhiteSpace(message.OwnerNodeId))
+                return false;
+
             await using var transaction = await BeginAdmissionTransactionAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(message.OwnerNodeId))
+            {
+                MachineConnectionState? owner;
+                if (_db.Database.IsNpgsql())
+                {
+                    var lockedOwners = await _db.MachineConnectionStates
+                        .FromSqlInterpolated($"SELECT * FROM \"MachineConnectionStates\" WHERE \"MachineId\" = {message.MachineId} FOR UPDATE")
+                        .ToListAsync(cancellationToken);
+                    owner = lockedOwners.SingleOrDefault();
+                }
+                else
+                {
+                    owner = await _db.MachineConnectionStates.AsNoTracking()
+                        .SingleOrDefaultAsync(state => state.MachineId == message.MachineId, cancellationToken);
+                }
+
+                if (owner is null || owner.CompanyId != message.CompanyId || !owner.IsOnline ||
+                    owner.ConnectionId != message.ConnectionId || owner.OwnerConnectionId != message.ConnectionId ||
+                    owner.OwnerNodeId != message.OwnerNodeId ||
+                    owner.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return false;
+                }
+            }
+
             var idempotencyKey = await CreateIdempotencyKeyAsync(message, cancellationToken);
             if (await _db.DeviceMessageInbox.AnyAsync(row => row.IdempotencyKey == idempotencyKey, cancellationToken))
             {
                 await transaction.CommitAsync(cancellationToken);
-                return;
+                return true;
             }
 
             var pendingCount = await _db.DeviceMessageInbox.CountAsync(
@@ -47,6 +76,18 @@ public sealed class DeviceMessageInboxService
                 cancellationToken);
             if (pendingCount >= _maximumPendingMessages)
                 throw new DeviceMessageInboxFullException(_maximumPendingMessages);
+
+            var receivedAt = message.ReceivedAt;
+            var latestMachineMessageAt = await _db.DeviceMessageInbox
+                .Where(row => row.MachineId == message.MachineId &&
+                              (row.Status == "Pending" || row.Status == "Retry" || row.Status == "Processing"))
+                .Select(row => (DateTime?)row.ReceivedAt)
+                .MaxAsync(cancellationToken);
+            // The owner row remains locked through insert/commit, so this timestamp
+            // preserves queue order even when a reconnect lands on a node with a
+            // clock behind an earlier, still-unprocessed message.
+            if (latestMachineMessageAt.HasValue && receivedAt <= latestMachineMessageAt.Value)
+                receivedAt = latestMachineMessageAt.Value.AddTicks(10);
 
             _db.DeviceMessageInbox.Add(new DeviceMessageInbox
             {
@@ -57,7 +98,7 @@ public sealed class DeviceMessageInboxService
                 ConnectionId = message.ConnectionId,
                 MessageId = message.MessageId,
                 DataJson = message.DataJson,
-                ReceivedAt = message.ReceivedAt,
+                ReceivedAt = receivedAt,
                 Status = "Pending"
             });
 
@@ -71,11 +112,12 @@ public sealed class DeviceMessageInboxService
                 await transaction.RollbackAsync(cancellationToken);
                 _db.ChangeTracker.Clear();
                 if (await _db.DeviceMessageInbox.AnyAsync(row => row.IdempotencyKey == idempotencyKey, cancellationToken))
-                    return;
+                    return true;
                 throw;
             }
 
             await transaction.CommitAsync(cancellationToken);
+            return true;
         }
         finally
         {

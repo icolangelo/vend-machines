@@ -18,6 +18,83 @@ namespace VendingMachines.Api.Tests;
 public sealed class TelemetryControllerIsolationTests
 {
     [Fact]
+    public async Task ManualCommandIsNotSentWhileDeploymentAdmissionIsPaused()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa de teste" };
+        var machine = new Machine
+        {
+            Id = "MACHINE-PAUSED",
+            Name = "Máquina pausada",
+            SerialNumber = "SERIAL-PAUSED",
+            NormalizedSerialNumber = "SERIAL-PAUSED",
+            CompanyId = company.Id
+        };
+        db.Companies.Add(company);
+        db.Machines.Add(machine);
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = machine.Id,
+            CompanyId = company.Id,
+            MonitoringEnabled = true,
+            IsOnline = true,
+            LastSeenAt = DateTime.UtcNow
+        });
+        db.SessionAdmissionGates.Add(new SessionAdmissionGate
+        {
+            Id = SessionAdmissionGate.SingletonId,
+            NewSessionsPaused = true,
+            UpdatedBy = "test",
+            Reason = "deployment test"
+        });
+        await db.SaveChangesAsync();
+
+        using var services = new ServiceCollection()
+            .AddDbContext<AppDbContext>(builder => builder.UseSqlite(connection))
+            .BuildServiceProvider();
+        using var connections = new TelemetryConnectionManager(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            new TelemetryPanelHub(NullLogger<TelemetryPanelHub>.Instance),
+            NullLogger<TelemetryConnectionManager>.Instance);
+        var controller = new TelemetryController(
+            db,
+            null!,
+            connections,
+            null!,
+            null!,
+            null!,
+            Options.Create(new MdbStatusOptions()));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                {
+                    new Claim("company_id", company.Id.ToString()),
+                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString())
+                }, "Test"))
+            }
+        };
+
+        var response = await controller.SendCommand(
+            machine.Id,
+            new SendCommandRequest { Command = "TEST" },
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, unavailable.StatusCode);
+        Assert.Contains("deployment_draining", JsonSerializer.Serialize(unavailable.Value));
+        Assert.Equal("5", controller.Response.Headers["Retry-After"].ToString());
+        Assert.Empty(await db.TelemetryCommands.ToListAsync());
+        Assert.Empty(await db.TelemetryCommandDispatches.ToListAsync());
+    }
+
+    [Fact]
     public async Task ConnectionsDoNotExposeForeignCompanyStateOrSessionForOwnedMachine()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -36,8 +113,16 @@ public sealed class TelemetryControllerIsolationTests
             NormalizedSerialNumber = "SERIAL-A",
             CompanyId = companyA.Id
         };
+        var legacyMachine = new Machine
+        {
+            Id = "MACHINE-LEGACY",
+            Name = "Máquina legada",
+            SerialNumber = "SERIAL-LEGACY",
+            NormalizedSerialNumber = "SERIAL-LEGACY",
+            CompanyId = companyA.Id
+        };
         db.Companies.AddRange(companyA, companyB);
-        db.Machines.Add(machine);
+        db.Machines.AddRange(machine, legacyMachine);
         db.MachineConnectionStates.Add(new MachineConnectionState
         {
             MachineId = machine.Id,
@@ -47,6 +132,18 @@ public sealed class TelemetryControllerIsolationTests
             LastSeenAt = DateTime.UtcNow,
             MdbStatus = MdbStatuses.Enabled,
             MdbStatusUpdatedAt = DateTime.UtcNow
+        });
+        db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = legacyMachine.Id,
+            CompanyId = companyA.Id,
+            IsOnline = true,
+            LastSeenAt = DateTime.UtcNow,
+            MdbStatus = MdbStatuses.Enabled,
+            MdbStatusUpdatedAt = DateTime.UtcNow,
+            OwnerNodeId = "legacy-node",
+            OwnerConnectionId = "legacy-connection",
+            CommandRoutingVersion = null
         });
         db.MachineSessions.Add(new MachineSession
         {
@@ -91,19 +188,25 @@ public sealed class TelemetryControllerIsolationTests
             Assert.False(await connectionManager.IsOnlineAsync(machine.SerialNumber, CancellationToken.None));
             var response = await controller.GetConnections(cancellationToken: CancellationToken.None);
             var json = JsonDocument.Parse(JsonSerializer.Serialize(Assert.IsType<OkObjectResult>(response).Value));
-            var item = Assert.Single(json.RootElement.GetProperty("items").EnumerateArray());
+            var items = json.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            var item = Assert.Single(items, value => value.GetProperty("machineId").GetString() == machine.Id);
 
             Assert.False(item.GetProperty("online").GetBoolean());
             Assert.False(item.GetProperty("monitoringEnabled").GetBoolean());
             Assert.Equal(JsonValueKind.Null, item.GetProperty("activeSession").ValueKind);
             Assert.Equal(JsonValueKind.Null, item.GetProperty("mdbStatus").ValueKind);
+            Assert.False(item.GetProperty("commandRouteAvailable").GetBoolean());
+
+            var legacyItem = Assert.Single(items, value => value.GetProperty("machineId").GetString() == legacyMachine.Id);
+            Assert.True(legacyItem.GetProperty("online").GetBoolean());
+            Assert.False(legacyItem.GetProperty("commandRouteAvailable").GetBoolean());
 
             var setMonitoring = await controller.SetMonitoring(
                 machine.Id,
                 new MonitoringRequest { Enabled = false },
                 CancellationToken.None);
             Assert.IsType<ConflictObjectResult>(setMonitoring);
-            Assert.Equal(companyB.Id, (await db.MachineConnectionStates.SingleAsync()).CompanyId);
+            Assert.Equal(companyB.Id, (await db.MachineConnectionStates.SingleAsync(state => state.MachineId == machine.Id)).CompanyId);
 
             var sendCommand = await controller.SendCommand(
                 machine.Id,

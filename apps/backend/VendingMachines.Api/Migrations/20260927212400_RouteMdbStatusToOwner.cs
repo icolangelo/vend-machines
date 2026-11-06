@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -49,25 +49,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "Operation",
-                table: "TelemetryCommandDispatches");
-
-            migrationBuilder.DropColumn(
-                name: "ResponseAt",
-                table: "TelemetryCommandDispatches");
-
-            migrationBuilder.DropColumn(
-                name: "ResponseDataJson",
-                table: "TelemetryCommandDispatches");
-
-            migrationBuilder.DropColumn(
-                name: "ResponseStatus",
-                table: "TelemetryCommandDispatches");
-
-            migrationBuilder.DropColumn(
-                name: "TimeoutMilliseconds",
-                table: "TelemetryCommandDispatches");
+            throw new System.InvalidOperationException(
+                "Esta migration contém despachos e resultados MDB persistidos. Reverta somente o binário e preserve as colunas do dispatch.");
         }
     }
 }

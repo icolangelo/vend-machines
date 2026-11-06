@@ -19,10 +19,18 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VendingMachines.Api\VendingMachines.Api.csproj" />
+    <ProjectReference Include="..\..\..\tools\VendingMachines.Simulator\VendingMachines.Simulator.csproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\..\docs\backend-staging-environment.example" Link="TestData\backend-staging-environment.example" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\backend-production-environment.example" Link="TestData\backend-production-environment.example" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\..\docs\deploy-preflight.sql" Link="TestData\deploy-preflight.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\demo-data-preflight.sql" Link="TestData\demo-data-preflight.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\payment-sensitive-data-preflight.sql" Link="TestData\payment-sensitive-data-preflight.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\payment-sensitive-data-redaction.sql" Link="TestData\payment-sensitive-data-redaction.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\mercadopago-static-integration-preflight.sql" Link="TestData\mercadopago-static-integration-preflight.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\docs\sales-backfill-preflight.sql" Link="TestData\sales-backfill-preflight.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -1,8 +1,8 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { LogOut, Plus, Pencil, Trash2 } from "lucide-react";
-import { useState, useEffect } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import { LogOut, Plus, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@/contexts/useAuth";
 import { type ProductType } from "@/data/mockData";
 import { getProductTypes, createProductType, updateProductType, deleteProductType } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
 import {
     Dialog,
     DialogContent,
+    DialogDescription,
     DialogHeader,
     DialogTitle,
     DialogFooter,
@@ -32,21 +33,32 @@ export default function Settings() {
     const { toast } = useToast();
     const [types, setTypes] = useState<ProductType[]>([]);
     const [loading, setLoading] = useState(true);
+    const [hasLoaded, setHasLoaded] = useState(false);
+    const [loadError, setLoadError] = useState(false);
+    const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
 
-
-
-    useEffect(() => {
+    const loadProductTypes = useCallback(async () => {
         setLoading(true);
-        getProductTypes()
-            .then(data => {
-                setTypes(data);
-                setLoading(false);
-            })
-            .catch(err => {
-                console.error("Erro ao buscar tipos de produtos:", err);
-                setLoading(false);
+        setLoadError(false);
+        try {
+            const data = await getProductTypes();
+            setTypes(data);
+            setHasLoaded(true);
+            setLastLoadedAt(new Date());
+        } catch (err) {
+            console.error("Erro ao buscar tipos de produtos:", err);
+            setLoadError(true);
+            toast({
+                title: "Não foi possível carregar os tipos de produto",
+                description: "Confira sua conexão e tente novamente.",
+                variant: "destructive",
             });
-    }, []);
+        } finally {
+            setLoading(false);
+        }
+    }, [toast]);
+
+    useEffect(() => { void loadProductTypes(); }, [loadProductTypes]);
 
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     const [editingType, setEditingType] = useState<ProductType | null>(null);
@@ -139,8 +151,11 @@ export default function Settings() {
                         <h1 className="text-sm font-semibold text-foreground">Configurações</h1>
                         <div className="ml-auto flex items-center gap-4">
                             <span className="text-xs text-muted-foreground">
-                                Última atualização: agora
+                                {lastLoadedAt ? `Atualizado às ${lastLoadedAt.toLocaleTimeString("pt-BR")}` : "Tipos de produto"}
                             </span>
+                            <Button variant="ghost" size="icon" onClick={() => void loadProductTypes()} disabled={loading} aria-label="Atualizar tipos de produto">
+                                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                            </Button>
                             <button
                                 onClick={handleLogout}
                                 className="text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2"
@@ -152,12 +167,24 @@ export default function Settings() {
                     </header>
 
                     <main className="flex-1 p-6 space-y-6 overflow-auto">
-                        {loading ? (
+                        {loading && !hasLoaded ? (
                             <div className="flex items-center justify-center h-[50vh]">
                                 <p className="text-muted-foreground animate-pulse font-medium">Carregando configurações...</p>
                             </div>
+                        ) : loadError && !hasLoaded ? (
+                            <div role="alert" className="flex min-h-[40vh] flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-card p-6 text-center">
+                                <p className="font-medium">Não foi possível carregar os tipos de produto.</p>
+                                <p className="text-sm text-muted-foreground">Confira sua conexão e tente novamente.</p>
+                                <Button variant="outline" onClick={() => void loadProductTypes()} disabled={loading}>Tentar novamente</Button>
+                            </div>
                         ) : (
                             <>
+                        {loadError && (
+                            <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                <span>Não foi possível atualizar os tipos de produto. Os dados exibidos podem estar desatualizados.</span>
+                                <Button variant="outline" size="sm" onClick={() => void loadProductTypes()} disabled={loading}>Tentar novamente</Button>
+                            </div>
+                        )}
                                 <div className="flex items-center justify-between pb-4 border-b">
                             <div>
                                 <h2 className="text-2xl font-bold tracking-tight">Configurações do Sistema</h2>
@@ -235,6 +262,9 @@ export default function Settings() {
                                     <DialogTitle>
                                         {editingType ? "Editar Tipo de Produto" : "Novo Tipo de Produto"}
                                     </DialogTitle>
+                                    <DialogDescription className="sr-only">
+                                        Informe o nome que identifica esta categoria de produtos.
+                                    </DialogDescription>
                                 </DialogHeader>
                                 <div className="py-4">
                                     <label htmlFor="name" className="text-sm font-medium mb-2 block">

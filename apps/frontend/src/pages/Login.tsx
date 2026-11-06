@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Package, Loader2 } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { PrivacyPolicyModal } from "@/components/PrivacyPolicyModal";
 import { getErrorMessage } from "@/lib/utils";
 
@@ -48,7 +48,11 @@ export default function Login() {
   const [agreedToPolicy, setAgreedToPolicy] = useState(false);
 
   useEffect(() => {
-    if (token) {
+    const currentHashPath = window.location.hash.startsWith("#/")
+      ? window.location.hash.slice(1).split("?")[0]
+      : window.location.pathname;
+    const hasOauthCallback = new URLSearchParams(window.location.search).has("code");
+    if (token && currentHashPath === "/" && !hasOauthCallback) {
       navigate("/dashboard");
     }
   }, [token, navigate]);

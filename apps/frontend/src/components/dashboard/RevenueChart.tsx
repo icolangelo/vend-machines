@@ -44,7 +44,7 @@ export function RevenueChart({ data = [] }: { data?: RevenueChartPoint[] }) {
                         Faturamento e Vendas
                     </h2>
                 </div>
-                
+
                 <div className="flex items-center gap-1 bg-muted rounded-md p-1">
                     {TIME_RANGES.map((range) => (
                         <button
@@ -98,8 +98,8 @@ export function RevenueChart({ data = [] }: { data?: RevenueChartPoint[] }) {
                                 labelStyle={{ color: "hsl(220 9% 46%)", marginBottom: "4px" }}
                             />
                             <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '10px' }} />
-                            <Bar yAxisId="left" dataKey="revenue" name="Receita" fill="hsl(217 91% 60%)" radius={[2, 2, 0, 0]} maxBarSize={40} />
-                            <Line yAxisId="right" type="monotone" dataKey="products" name="Produtos" stroke="#f97316" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                            <Bar yAxisId="left" dataKey="revenue" name="Receita" fill="hsl(217 91% 60%)" radius={[2, 2, 0, 0]} maxBarSize={40} isAnimationActive={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="products" name="Produtos" stroke="#f97316" strokeWidth={2} dot={false} activeDot={{ r: 4 }} isAnimationActive={false} />
                         </ComposedChart>
                     </ResponsiveContainer>
                 ) : (

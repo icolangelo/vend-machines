@@ -35,36 +35,20 @@ public class LocationsController : BaseApiController
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> GetById(Guid id)
+    public Task<IActionResult> GetById(Guid id)
     {
         if (!TryGetEffectiveCompanyId(out var companyId))
         {
-            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+            return Task.FromResult<IActionResult>(BadRequest(new { message = "O usuário não está associado a nenhuma empresa." }));
         }
 
-        var location = await _context.Locations
-            .FirstOrDefaultAsync(l => l.Id == id && l.CompanyId == companyId);
-
+        var location = _dataService.GetLocation(id, companyId);
         if (location == null)
         {
-            return NotFound(new { message = "Localização não encontrada." });
+            return Task.FromResult<IActionResult>(NotFound(new { message = "Localização não encontrada." }));
         }
 
-        var machines = await _context.Machines
-            .Where(m => m.CompanyId == companyId && m.LocationId == location.Id)
-            .ToListAsync();
-
-        return Ok(new LocationDto
-        {
-            Id = location.Id,
-            CompanyId = location.CompanyId,
-            Name = location.Name,
-            MachineCount = machines.Count,
-            Revenue30d = machines.Sum(m => m.Revenue30d),
-            TotalSales30d = machines.Sum(m => m.TotalSales30d),
-            CreatedAt = location.CreatedAt,
-            UpdatedAt = location.UpdatedAt
-        });
+        return Task.FromResult<IActionResult>(Ok(location));
     }
 
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]

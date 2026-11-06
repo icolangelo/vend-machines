@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -114,33 +114,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "AccessTokenExpiresAt",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "LastTokenValidationAt",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "LastTokenValidationStatus",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "MercadoPagoNickname",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "MercadoPagoSiteId",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "MercadoPagoUserId",
-                table: "MercadoPagoIntegrations");
-
-            migrationBuilder.DropColumn(
-                name: "RefreshToken",
-                table: "MercadoPagoIntegrations");
+            throw new System.InvalidOperationException(
+                "Esta migration contém o refresh token e estado OAuth do Mercado Pago. Reverta somente o binário e preserve colunas e valores da integração.");
         }
     }
 }

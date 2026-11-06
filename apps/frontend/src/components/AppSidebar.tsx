@@ -17,8 +17,8 @@ import {
     Warehouse,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { useAuth } from "@/contexts/AuthContext";
-import { useImpersonation } from "@/contexts/ImpersonationContext";
+import { useAuth } from "@/contexts/useAuth";
+import { useImpersonation } from "@/contexts/useImpersonation";
 import { CompanySwitcherModal } from "@/components/CompanySwitcherModal";
 import {
     Sidebar,
@@ -41,6 +41,7 @@ const mainItems = [
     { title: "Localizações", url: "/locations", icon: MapPin },
     { title: "Produtos", url: "/products", icon: Package },
     { title: "Estoque", url: "/inventory", icon: Warehouse },
+    { title: "Pagamentos", url: "/payments", icon: CreditCard },
     { title: "Relatórios", url: "/reports", icon: BarChart3 },
 ];
 
@@ -78,7 +79,9 @@ export function AppSidebar() {
             ? [{ title: "Simulador Pix", url: "/payment-simulator", icon: QrCode }]
             : []),
         ...(isSuperAdmin ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
-        { title: "Integrações", url: "/integrations", icon: Blocks },
+        ...((user?.role === "Admin" || user?.role === "PlatformAdmin")
+            ? [{ title: "Integrações", url: "/integrations", icon: Blocks }]
+            : []),
         ...(user?.role === "Admin" ? [{ title: "Usuários", url: "/users", icon: Users }] : []),
         { title: "Configurações", url: "/settings", icon: Settings },
     ];

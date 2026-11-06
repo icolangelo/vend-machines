@@ -35,7 +35,7 @@ public sealed class ReportsControllerTests
         var transactionB = new PaymentTransaction { Id = Guid.NewGuid(), CompanyId = companyB.Id, MachineId = machineB.Id, Amount = 99m, Status = "Approved" };
         sessionA.TransactionId = transactionA.Id;
         sessionB.TransactionId = transactionB.Id;
-        var soldAt = DateTime.UtcNow.Date.AddHours(10);
+        var soldAt = DateTime.UtcNow.Date.AddDays(-1).AddHours(10);
         var saleA = new SaleRecord
         {
             CompanyId = companyA.Id, MachineId = machineA.Id, SessionId = sessionA.Id, TransactionId = transactionA.Id,
@@ -61,7 +61,7 @@ public sealed class ReportsControllerTests
         var jsonResult = Assert.IsType<OkObjectResult>(await controller.GetSales(DateOnly.FromDateTime(soldAt), DateOnly.FromDateTime(soldAt), cancellationToken: CancellationToken.None));
         var payload = JsonSerializer.SerializeToElement(jsonResult.Value);
         Assert.Equal(1, payload.GetProperty("total").GetInt32());
-        Assert.Equal(10m, payload.GetProperty("items")[0].GetProperty("NetRevenue").GetDecimal());
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("items")[0].GetProperty("NetRevenue").ValueKind);
         Assert.Equal(1m, payload.GetProperty("items")[0].GetProperty("ApplicationFee").GetDecimal());
         Assert.Equal(11m, payload.GetProperty("items")[0].GetProperty("NetAfterPlatformFee").GetDecimal());
 
@@ -87,18 +87,153 @@ public sealed class ReportsControllerTests
             DateOnly.FromDateTime(soldAt), DateOnly.FromDateTime(soldAt), cancellationToken: CancellationToken.None));
         Assert.Equal(1, JsonSerializer.SerializeToElement(platformImpersonation.Value).GetProperty("total").GetInt32());
 
-        var csvResult = Assert.IsType<FileContentResult>(await controller.ExportSales(
+        var csvStream = new MemoryStream();
+        controller.ControllerContext.HttpContext.Response.Body = csvStream;
+        Assert.IsType<EmptyResult>(await controller.ExportSales(
             DateOnly.FromDateTime(soldAt), DateOnly.FromDateTime(soldAt),
             machineId: machineA.Id, locationId: locationA.Id, productId: productA.Id,
             cancellationToken: CancellationToken.None));
-        var csv = Encoding.UTF8.GetString(csvResult.FileContents);
+        Assert.Equal("text/csv; charset=utf-8", controller.ControllerContext.HttpContext.Response.ContentType);
+        Assert.Contains("attachment; filename=vendas-", controller.ControllerContext.HttpContext.Response.Headers.ContentDisposition.ToString());
+        var csv = Encoding.UTF8.GetString(csvStream.ToArray());
         Assert.Contains("'=2+2", csv);
         Assert.Contains("\"' \n=1+1\"", csv);
         Assert.Contains("Liquido original apos taxa", csv);
+        Assert.Contains("Pendente de conciliação", csv);
         Assert.Contains("11.00", csv);
         Assert.Contains("Conciliação necessária", csv);
         Assert.DoesNotContain("ReconciliationRequired", csv);
         Assert.DoesNotContain("Privado", csv);
+    }
+
+    [Fact]
+    public async Task SalesReportRejectsMaximumDateInsteadOfFailingWhileBuildingExclusiveEnd()
+    {
+        var controller = CreateController(null!, Guid.NewGuid());
+
+        var salesResult = Assert.IsType<BadRequestObjectResult>(await controller.GetSales(
+            DateOnly.MaxValue, DateOnly.MaxValue, cancellationToken: CancellationToken.None));
+        Assert.Equal("A data final informada não é válida para este relatório.",
+            JsonSerializer.SerializeToElement(salesResult.Value).GetProperty("message").GetString());
+
+        var exportResult = Assert.IsType<BadRequestObjectResult>(await controller.ExportSales(
+            DateOnly.MaxValue, DateOnly.MaxValue, cancellationToken: CancellationToken.None));
+        Assert.Equal("A data final informada não é válida para este relatório.",
+            JsonSerializer.SerializeToElement(exportResult.Value).GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task SalesReportMarksDisputedSaleAsUnconfirmedRevenue()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa", Cnpj = "11111111000111" };
+        var machine = new Machine
+        {
+            Id = "disputed-report-machine", Name = "Máquina", CompanyId = company.Id,
+            SerialNumber = "DISPUTED-REPORT"
+        };
+        var transaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+            Amount = 20m, Status = "ReconciliationRequired"
+        };
+        var session = new MachineSession
+        {
+            Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+            TransactionId = transaction.Id, State = MachineSessionStates.Completed
+        };
+        db.Companies.Add(company);
+        db.Machines.Add(machine);
+        db.PaymentTransactions.Add(transaction);
+        db.MachineSessions.Add(session);
+        db.SaleRecords.Add(new SaleRecord
+        {
+            CompanyId = company.Id, MachineId = machine.Id, SessionId = session.Id,
+            TransactionId = transaction.Id, SoldAt = DateTime.UtcNow,
+            ProductNameSnapshot = "Água", Quantity = 1, GrossAmount = 20m,
+            FinancialStatus = "Disputed"
+        });
+        await db.SaveChangesAsync();
+
+        var controller = CreateController(db, company.Id);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow);
+        var result = Assert.IsType<OkObjectResult>(await controller.GetSales(day, day, cancellationToken: CancellationToken.None));
+        var payload = JsonSerializer.SerializeToElement(result.Value);
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("items")[0].GetProperty("NetRevenue").ValueKind);
+
+        var csvStream = new MemoryStream();
+        controller.ControllerContext.HttpContext.Response.Body = csvStream;
+        Assert.IsType<EmptyResult>(await controller.ExportSales(day, day, cancellationToken: CancellationToken.None));
+        var csv = Encoding.UTF8.GetString(csvStream.ToArray());
+        Assert.Contains("Em contestação", csv);
+        Assert.Contains("Em contestação\"", csv);
+    }
+
+    [Fact]
+    public async Task SalesCsvStreamsAllRowsWhenTheResultExceedsTheTableLimit()
+    {
+        const int salesCount = 10_001;
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa", Cnpj = "11111111000111" };
+        var machine = new Machine { Id = "full-sales-export", Name = "Máquina", SerialNumber = "FULL-EXPORT", CompanyId = company.Id };
+        var soldAt = DateTime.UtcNow.Date.AddDays(-1).AddHours(10);
+        var transactions = Enumerable.Range(0, salesCount).Select(_ => new PaymentTransaction
+        {
+            MachineId = machine.Id,
+            CompanyId = company.Id,
+            Amount = 1m,
+            Status = "Approved"
+        }).ToArray();
+        var sessions = transactions.Select(transaction => new MachineSession
+        {
+            Id = Guid.NewGuid(),
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            TransactionId = transaction.Id,
+            State = MachineSessionStates.Completed,
+            StartedAt = soldAt,
+            LastEventAt = soldAt,
+            ClosedAt = soldAt
+        }).ToArray();
+        var sales = transactions.Zip(sessions, (transaction, session) => new SaleRecord
+        {
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            SessionId = session.Id,
+            TransactionId = transaction.Id,
+            SoldAt = soldAt,
+            ProductNameSnapshot = "Produto",
+            Quantity = 1,
+            GrossAmount = 1m,
+            FinancialStatus = "Settled"
+        }).ToArray();
+
+        db.Companies.Add(company);
+        db.Machines.Add(machine);
+        db.PaymentTransactions.AddRange(transactions);
+        db.MachineSessions.AddRange(sessions);
+        db.SaleRecords.AddRange(sales);
+        await db.SaveChangesAsync();
+
+        var controller = CreateController(db, company.Id);
+        var csvStream = new MemoryStream();
+        controller.ControllerContext.HttpContext.Response.Body = csvStream;
+        Assert.IsType<EmptyResult>(await controller.ExportSales(
+            DateOnly.FromDateTime(soldAt), DateOnly.FromDateTime(soldAt), cancellationToken: CancellationToken.None));
+
+        var csv = Encoding.UTF8.GetString(csvStream.ToArray());
+        Assert.Equal(salesCount + 1, csv.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.Contains("Produto", csv);
     }
 
     private static ReportsController CreateController(

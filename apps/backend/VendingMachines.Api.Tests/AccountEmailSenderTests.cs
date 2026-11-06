@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Hosting;
@@ -44,11 +47,63 @@ public sealed class AccountEmailSenderTests
         Assert.False(sent);
     }
 
-    private static SmtpAccountEmailSender CreateSender(AccountEmailOptions options, string environmentName) =>
+    [Fact]
+    public async Task SmtpFailureFallsBackWithoutLoggingTokenRecipientOrCredentials()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+
+        var logger = new RecordingLogger();
+        var sender = CreateSender(new AccountEmailOptions
+        {
+            Enabled = true,
+            Host = IPAddress.Loopback.ToString(),
+            Port = port,
+            Username = "smtp-user-secret",
+            Password = "smtp-password-secret",
+            FromAddress = "no-reply@example.com",
+            PublicBaseUrl = "https://app.example.com",
+            TimeoutSeconds = 2
+        }, "Production", logger);
+        const string recipient = "private-recipient@example.com";
+        const string token = "one-time-private-token";
+
+        var sent = await sender.SendPasswordResetAsync(
+            recipient,
+            token,
+            DateTime.UtcNow.AddHours(1),
+            CancellationToken.None);
+
+        Assert.False(sent);
+        var log = Assert.Single(logger.Messages);
+        Assert.Contains("Falha no envio SMTP", log, StringComparison.Ordinal);
+        Assert.DoesNotContain(recipient, log, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(token, log, StringComparison.Ordinal);
+        Assert.DoesNotContain("smtp-user-secret", log, StringComparison.Ordinal);
+        Assert.DoesNotContain("smtp-password-secret", log, StringComparison.Ordinal);
+    }
+
+    private static SmtpAccountEmailSender CreateSender(
+        AccountEmailOptions options,
+        string environmentName,
+        ILogger<SmtpAccountEmailSender>? logger = null) =>
         new(
             Options.Create(options),
             new TestEnvironment(environmentName),
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<SmtpAccountEmailSender>.Instance);
+            logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<SmtpAccountEmailSender>.Instance);
+
+    private sealed class RecordingLogger : ILogger<SmtpAccountEmailSender>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+        }
+    }
 
     private sealed class TestEnvironment(string environmentName) : IWebHostEnvironment
     {

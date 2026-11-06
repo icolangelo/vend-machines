@@ -14,9 +14,25 @@ fi
 : "${REGISTRY:?Configure REGISTRY para validar a origem da imagem Coolify.}"
 : "${IMAGE_NAME:?Configure IMAGE_NAME para validar a origem da imagem Coolify.}"
 allow_missing_deploy_readiness_endpoint="${ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT:-false}"
+allow_missing_api_readiness_endpoint="${ALLOW_MISSING_API_READINESS_ENDPOINT:-false}"
+legacy_deploy_readiness_missing=false
 if [[ "$allow_missing_deploy_readiness_endpoint" != "true" && "$allow_missing_deploy_readiness_endpoint" != "false" ]]; then
   echo "::error::ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT deve ser true ou false." >&2
   exit 2
+fi
+if [[ "$allow_missing_api_readiness_endpoint" != "true" && "$allow_missing_api_readiness_endpoint" != "false" ]]; then
+  echo "::error::ALLOW_MISSING_API_READINESS_ENDPOINT deve ser true ou false." >&2
+  exit 2
+fi
+
+expected_api_revision=""
+if [[ "$action" == "deploy" ]]; then
+  expected_api_revision="${EXPECTED_API_REVISION:-}"
+  if [[ ! "$expected_api_revision" =~ ^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then
+    echo "::error::EXPECTED_API_REVISION precisa ser o SHA completo de 40 ou 64 caracteres da imagem candidata." >&2
+    exit 2
+  fi
+  expected_api_revision="${expected_api_revision,,}"
 fi
 
 coolify_endpoint_data="$(python3 - <<'PY'
@@ -60,6 +76,7 @@ validate_production_deploy_readiness() {
   fi
 
   if [[ "$http_status" == "404" && "$allow_missing_deploy_readiness_endpoint" == "true" ]]; then
+    legacy_deploy_readiness_missing=true
     echo "::warning::A API atual ainda não possui /health/deploy-ready. O SQL somente leitura e a confirmação manual são o gate de bootstrap; a versão nova precisa instalar a rota após o rolling update."
     return 0
   fi
@@ -81,9 +98,17 @@ if isinstance(payload, dict) and payload.get("status") == "Ready":
 reason = payload.get("reason") if isinstance(payload, dict) else None
 descriptions = {
     "active_vend_sessions": "há uma venda física em andamento",
+    "unresolved_session_closures": "há sessão cujo encerramento físico ainda precisa ser confirmado por um responsável",
+    "machine_connections_unroutable": "há máquinas online conectadas a instâncias sem rota de comandos compatível; aguarde a reconexão compatível antes de repetir o preflight",
+    "legacy_owner_api_unavailable": "há sockets legados ativos, mas a API anterior não está acessível e saudável pelo relay interno",
     "telemetry_commands_in_flight": "há comando MDB aguardando conclusão",
+    "device_messages_unresolved": "há mensagens MDB duráveis ainda não processadas ou com falha",
+    "payment_webhooks_unresolved": "há webhooks de pagamento duráveis ainda não processados ou com falha",
+    "financial_outbox_in_flight": "há estorno ou cancelamento financeiro em processamento",
+    "invalid_platform_fee_settings": "a taxa da plataforma está fora do intervalo permitido",
     "deployment_preflight_failed": "a consulta operacional falhou fechada",
 }
+
 print(descriptions.get(reason, "a API não autorizou o preflight operacional"))
 raise SystemExit(1)
 PY
@@ -96,8 +121,76 @@ PY
   fi
 }
 
+validate_legacy_api_liveness() {
+  local response_file="$1"
+  local api_base_url="${PRODUCTION_API_HEALTH_URL%/health/ready}"
+  local endpoint
+  local endpoint_name
+  local endpoint_url
+  local expected_status
+  local http_status
+
+  for endpoint in "root|$api_base_url/|Online" "health|$api_base_url/health|Healthy"; do
+    IFS='|' read -r endpoint_name endpoint_url expected_status <<< "$endpoint"
+    if ! http_status="$(curl --max-time 15 -sS -o "$response_file" -w '%{http_code}' \
+      --header "Accept: application/json" "$endpoint_url")"; then
+      echo "::error::O endpoint básico $endpoint_name da API antiga não respondeu. A readiness ausente não pode ser contornada."
+      return 1
+    fi
+
+    if [[ "$http_status" != "200" ]]; then
+      echo "::error::O endpoint básico $endpoint_name da API antiga não confirmou o estado esperado. A readiness ausente não pode ser contornada."
+      return 1
+    fi
+
+    if ! python3 -c 'import json,sys; payload=json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if isinstance(payload, dict) and payload.get("status") == sys.argv[2] else 1)' "$response_file" "$expected_status"; then
+      echo "::error::O endpoint básico $endpoint_name da API antiga não confirmou o estado esperado. A readiness ausente não pode ser contornada."
+      return 1
+    fi
+  done
+
+  echo "::warning::Bootstrap explícito: /health/ready ainda não existe; raiz Online e liveness Healthy foram confirmados. Os gates operacionais e a evidência de continuidade continuam obrigatórios."
+}
+
+validate_current_api_readiness() {
+  local response_file="$1"
+  legacy_deploy_readiness_missing=false
+  if ! current_health_status="$(curl --max-time 15 -sS -o "$response_file" -w '%{http_code}' \
+    --header "Accept: application/json" "$PRODUCTION_API_HEALTH_URL")"; then
+    echo "::error::A API atual não respondeu à consulta de readiness. Nenhuma solicitação de troca foi enviada."
+    return 1
+  fi
+
+  if [[ "$current_health_status" == "404" && "$allow_missing_api_readiness_endpoint" == "true" ]]; then
+    validate_legacy_api_liveness "$response_file" || return 1
+  elif [[ ! "$current_health_status" =~ ^2[0-9][0-9]$ ]] || ! python3 - "$response_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as response:
+        payload = json.load(response)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+if not isinstance(payload, dict) or payload.get("status") != "Ready":
+    raise SystemExit(1)
+PY
+  then
+    echo "::error::A API atual não confirmou /health/ready = Ready. Nenhuma solicitação de troca foi enviada."
+    return 1
+  fi
+
+  validate_production_deploy_readiness "$response_file" || return 1
+  if [[ "$current_health_status" == "404" && "$legacy_deploy_readiness_missing" != "true" ]]; then
+    echo "::error::O bootstrap de /health/ready exige que /health/deploy-ready também esteja ausente na API antiga. Nenhuma solicitação de troca foi enviada."
+    return 1
+  fi
+}
+
 verify_deploy_readiness_endpoint_installed() {
   local response_file="$1"
+  local expected_revision="$2"
   local http_status
   local endpoint_state
   if ! http_status="$(curl --max-time 15 -sS -o "$response_file" -w '%{http_code}' \
@@ -105,24 +198,30 @@ verify_deploy_readiness_endpoint_installed() {
     return 1
   fi
 
-  endpoint_state="$(python3 - "$http_status" "$response_file" <<'PY' || true
+  endpoint_state="$(python3 - "$http_status" "$response_file" "$expected_revision" <<'PY' || true
 import json
 import sys
 
 try:
     status_code = int(sys.argv[1])
+    expected_revision = sys.argv[3].lower()
     with open(sys.argv[2], encoding="utf-8") as response:
         payload = json.load(response)
 except (OSError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
 
-if status_code == 200 and isinstance(payload, dict) and payload.get("status") == "Ready":
+if (status_code == 200 and isinstance(payload, dict) and payload.get("status") == "Ready" and
+        isinstance(payload.get("sourceCommit"), str) and payload["sourceCommit"].lower() == expected_revision):
     print("ready")
     raise SystemExit(0)
 
-if status_code == 503 and isinstance(payload, dict) and payload.get("status") == "NotReady":
+if (status_code == 503 and isinstance(payload, dict) and payload.get("status") == "NotReady" and
+        isinstance(payload.get("sourceCommit"), str) and payload["sourceCommit"].lower() == expected_revision):
     reason = payload.get("reason")
-    if reason in {"active_vend_sessions", "telemetry_commands_in_flight"}:
+    if reason == "machine_connections_unroutable":
+        print("unroutable_connections")
+        raise SystemExit(0)
+    if reason in {"active_vend_sessions", "telemetry_commands_in_flight", "device_messages_unresolved", "payment_webhooks_unresolved", "financial_outbox_in_flight"}:
         print("installed_with_live_activity")
         raise SystemExit(0)
 PY
@@ -130,12 +229,19 @@ PY
 
   case "$endpoint_state" in
     ready)
-      echo "O endpoint de segurança da release está ativo e sem vendas/comandos em curso."
+      deploy_readiness_state="ready"
+      echo "O endpoint de segurança da release está ativo e sem vendas, comandos ou mensagens MDB não processadas."
       return 0
       ;;
     installed_with_live_activity)
+      deploy_readiness_state="installed_with_live_activity"
       echo "::warning::O endpoint de segurança da release está instalado; há nova atividade operacional após o rolling update."
       return 0
+      ;;
+    unroutable_connections)
+      deploy_readiness_state="unroutable_connections"
+      echo "::error::A API candidata encontrou máquinas ainda conectadas a instâncias sem rota de comandos compatível. A release não será declarada concluída; siga a reconexão operacional e o procedimento manual de rollback."
+      return 1
       ;;
     *)
       return 1
@@ -184,30 +290,7 @@ if [[ "$action" == "preflight" ]]; then
   validate_coolify_application "$response_file" "$response_dir/environment.json"
 
   echo "Verificando readiness atual da API antes de promover a imagem."
-  if ! current_health_status="$(curl --max-time 15 -sS -o "$response_file" -w '%{http_code}' \
-    --header "Accept: application/json" "$PRODUCTION_API_HEALTH_URL")" ||
-      [[ ! "$current_health_status" =~ ^2[0-9][0-9]$ ]] ||
-      ! python3 - "$response_file" <<'PY'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as response:
-        payload = json.load(response)
-except (OSError, json.JSONDecodeError):
-    raise SystemExit(1)
-
-if not isinstance(payload, dict) or payload.get("status") != "Ready":
-    raise SystemExit(1)
-PY
-  then
-    echo "::error::A API atual não confirmou /health/ready = Ready. Nenhuma tag foi promovida e nenhum webhook foi enviado."
-    exit 1
-  fi
-
-  if ! validate_production_deploy_readiness "$response_file"; then
-    exit 1
-  fi
+  validate_current_api_readiness "$response_file"
 
   if ! http_status="$(curl --max-time 30 -sS -o "$response_file" -w '%{http_code}' \
     --header "Authorization: Bearer $COOLIFY_API_TOKEN" \
@@ -234,7 +317,11 @@ PY
     exit 1
   fi
 
-  echo "Readiness atual, ausência de venda/comando em curso, configuração de continuidade e acesso de leitura do Coolify validados antes da promoção da imagem."
+  if [[ "$current_health_status" == "404" || "$legacy_deploy_readiness_missing" == "true" ]]; then
+    echo "::warning::Bootstrap: a API antiga não confirmou automaticamente todos os estados de readiness. A ausência de sessões, comandos e mensagens pendentes depende do preflight SQL e da confirmação operacional; a configuração e o acesso de leitura foram verificados."
+  else
+    echo "Readiness atual, ausência de venda, encerramento físico pendente, comando em curso e mensagens MDB não processadas, configuração de continuidade e acesso de leitura validados antes da promoção da imagem."
+  fi
   exit 0
 fi
 
@@ -242,7 +329,7 @@ response_dir="$(mktemp -d)"
 trap 'rm -f "$response_dir/application.json" "$response_dir/environment.json" "$response_dir/trigger.json" "$response_dir/status.json" "$response_dir/health.json" "$response_dir/deploy-ready.json"; rmdir "$response_dir"' EXIT
 echo "Revalidando domínio, elegibilidade para rolling update e health check antes do webhook."
 validate_coolify_application "$response_dir/application.json" "$response_dir/environment.json"
-validate_production_deploy_readiness "$response_dir/deploy-ready.json"
+validate_current_api_readiness "$response_dir/deploy-ready.json"
 trigger_response="$response_dir/trigger.json"
 if ! trigger_status="$(curl --max-time 30 -sS -o "$trigger_response" -w '%{http_code}' \
   --request POST "$COOLIFY_DEPLOY_WEBHOOK" \
@@ -385,22 +472,28 @@ while (( $(date +%s) < health_deadline )); do
   if health_http="$(curl --max-time 10 -sS -o "$health_response" -w '%{http_code}' \
     --header "Accept: application/json" "$PRODUCTION_API_HEALTH_URL")" &&
       [[ "$health_http" =~ ^2[0-9][0-9]$ ]]; then
-    if python3 - "$health_response" <<'PY'
+    if python3 - "$health_response" "$expected_api_revision" <<'PY'
 import json
 import sys
 
 try:
+    expected_revision = sys.argv[2].lower()
     with open(sys.argv[1], encoding="utf-8") as response:
         payload = json.load(response)
 except (OSError, json.JSONDecodeError):
     raise SystemExit(1)
 
-if not isinstance(payload, dict) or payload.get("status") != "Ready":
+if (not isinstance(payload, dict) or payload.get("status") != "Ready" or
+        not isinstance(payload.get("sourceCommit"), str) or payload["sourceCommit"].lower() != expected_revision):
     raise SystemExit(1)
 PY
     then
-      if verify_deploy_readiness_endpoint_installed "$response_dir/deploy-ready.json"; then
-        echo "Deploy concluído e /health/ready confirmou status Ready (HTTP $health_http)."
+      if verify_deploy_readiness_endpoint_installed "$response_dir/deploy-ready.json" "$expected_api_revision"; then
+        if [[ "$deploy_readiness_state" == "ready" ]]; then
+          echo "Deploy concluído; /health/ready e /health/deploy-ready confirmaram status Ready na release $expected_api_revision (HTTP $health_http)."
+        else
+          echo "Deploy concluído; /health/ready confirmou status Ready e /health/deploy-ready confirmou a revisão $expected_api_revision com atividade operacional permitida (HTTP $health_http)."
+        fi
         exit 0
       fi
     fi
@@ -408,5 +501,5 @@ PY
   sleep "$health_interval"
 done
 
-echo "::error::O deployment terminou no Coolify, mas a API não ficou pronta em ${health_timeout}s. Verifique logs/roteamento e siga o rollback manual; nenhuma reversão automática foi iniciada."
+echo "::error::O deployment terminou, mas a API não ficou pronta na revisão candidata ${expected_api_revision} em ${health_timeout}s. Verifique logs/roteamento e siga o rollback manual; nenhuma reversão automática foi iniciada."
 exit 1

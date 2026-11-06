@@ -50,6 +50,21 @@ public sealed class RefreshSessionServiceTests
     }
 
     [Fact]
+    public async Task RevokeAsync_StaleRotatedTokenRevokesTheWholeFamily()
+    {
+        await using var scenario = await RefreshScenario.CreateAsync();
+        var issued = await scenario.Service.CreateAsync(scenario.User, null, null);
+        var rotated = await scenario.Service.RotateAsync(issued.Token, null, null);
+
+        await scenario.Service.RevokeAsync(issued.Token);
+
+        Assert.Equal(0, await scenario.Db.RefreshSessions.AsNoTracking().CountAsync(x => x.RevokedAt == null));
+        Assert.NotNull(rotated.Token);
+        Assert.Equal(RefreshRotationStatus.Reused,
+            (await scenario.Service.RotateAsync(rotated.Token!, null, null)).Status);
+    }
+
+    [Fact]
     public async Task RotateAsync_ReusedAfterGracePeriod_RevokesTokenFamily()
     {
         await using var scenario = await RefreshScenario.CreateAsync();

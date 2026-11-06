@@ -5,7 +5,9 @@ on:
     branches: ["develop", "main", "master"]
     paths:
       - "apps/backend/**"
+      - "tools/Database/**"
       - "tools/Deployment/**"
+      - "docs/migration-risk-review.json"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
@@ -16,7 +18,7 @@ on:
         default: "no"
         options: ["no", "yes"]
       database_migrations_applied:
-        description: "As migrações compatíveis foram aplicadas e verificadas antes do deploy?"
+        description: "As migrations pendentes foram aplicadas? Para BackfillLegacyDeliveredSales, confirme só após preflight em cópia e execução dentro dos limites aprovados de duração, I/O, WAL e espaço."
         type: choice
         required: true
         default: "no"
@@ -39,8 +41,8 @@ on:
         required: true
         default: "no"
         options: ["no", "yes"]
-      active_vend_sessions_drained:
-        description: "O preflight somente leitura confirmou zero sessões físicas de venda abertas antes da release?"
+      platform_fee_settings_validated:
+        description: "O preflight confirmou exatamente uma configuração global de taxa, válida, com invalid_platform_fee_settings = 0?"
         type: choice
         required: true
         default: "no"
@@ -51,14 +53,20 @@ on:
         required: true
         default: "no"
         options: ["no", "yes"]
+      bootstrap_api_readiness_endpoint:
+        description: "A API atual responde 404 em /health/ready? Marque yes somente na primeira release; o preflight exigirá raiz Online e /health Healthy, além dos demais gates."
+        type: choice
+        required: true
+        default: "no"
+        options: ["no", "yes"]
       machine_connections_preserved:
-        description: "Há evidência em homologação de que os sockets existentes e os comandos continuam no nó proprietário durante a sobreposição de versões? Reconexão posterior, sozinha, não atende."
+        description: "Há evidência em homologação de que telemetria, comandos e vendas permaneceram contínuos durante toda a troca, sem fechar/reconectar sockets ativos nem pausar novas sessões ou comandos necessários? Qualquer EndpointUnavailable, reconexão ou pausa operacional reprova este critério."
         type: choice
         required: true
         default: "no"
         options: ["no", "yes"]
       continuity_test_evidence_url:
-        description: "Link HTTPS para o registro do teste de continuidade em homologação (PR, execução de CI ou relatório aprovado)."
+        description: "Link HTTPS para um PR ou execução do GitHub Actions deste repositório que contenha a evidência revisada do teste de continuidade em homologação."
         type: string
         required: true
         default: "none"
@@ -85,6 +93,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: vending_test
+          POSTGRES_INITDB_ARGS: "-c max_connections=300"
         ports:
           - 5432:5432
         options: >-
@@ -103,7 +112,20 @@ jobs:
           SECRET_SCAN_BEFORE_SHA: ${{ github.event.before }}
           SECRET_SCAN_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SECRET_SCAN_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SECRET_SCAN_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: bash tools/Deployment/Scan-GitChangesForSecrets.sh
+
+      - name: Test secret scan commit range selection
+        run: python3 tools/Deployment/test_secret_scan_range.py
+
+      - name: Verify backend image context excludes local databases
+        run: python -B tools/Deployment/test_backend_docker_context.py
+
+      - name: Verify migration impact and recovery review
+        run: |
+          python -B tools/Deployment/test_check_migration_risk.py
+          python -B tools/Deployment/test_bound_migration_lock_wait.py
+          python -B tools/Deployment/check_migration_risk.py
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
@@ -127,6 +149,14 @@ jobs:
           VENDMACHINES_REQUIRE_TEST_POSTGRES: "true"
         run: dotnet test apps/backend/VendingMachines.Api.Tests/VendingMachines.Api.Tests.csproj --configuration Release
 
+      - name: Test session admission pause and resume scripts
+        shell: pwsh
+        run: ./tools/Database/Test-SessionAdmissionScripts.ps1 -PostgresImage postgres:17-alpine
+
+      - name: Verify isolated PostgreSQL migration rehearsal utility
+        shell: pwsh
+        run: ./tools/Database/Test-PostgresMigrationRehearsal.ps1 -PostgresImage postgres:17-alpine
+
       - name: Install pinned EF Core CLI
         run: dotnet tool install --tool-path "$RUNNER_TEMP/dotnet-tools" dotnet-ef --version 10.0.12
 
@@ -140,6 +170,9 @@ jobs:
           session_index=20260730120000_AddMdbStatusAndAutomaticSession
           before_payment_index=20260926173525_AddWebhookInbox
           payment_index=20260926174359_AddPaymentReconciliationTracking
+          before_inventory_mapping_index=20261026083333_AddSessionProductSnapshot
+          inventory_mapping_index=20261026091223_IndexInventoryMappingMismatchAlerts
+          after_inventory_mapping_index=20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata
 
           "$ef" migrations script 0 "$before_session_index" --idempotent \
             --configuration Release \
@@ -169,12 +202,29 @@ jobs:
             --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
             --output artifacts/postgresql-migration-payment-reconciliation-index.sql
 
-          "$ef" migrations script "$payment_index" --idempotent \
+          "$ef" migrations script "$payment_index" "$before_inventory_mapping_index" --idempotent \
             --configuration Release \
             --no-build \
             --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
             --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
-            --output artifacts/postgresql-migrations-after-online-indexes.sql
+            --output artifacts/postgresql-migrations-after-payment-index.sql
+
+          "$ef" migrations script "$before_inventory_mapping_index" "$inventory_mapping_index" \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migration-inventory-mapping-index.sql
+
+          "$ef" migrations script "$inventory_mapping_index" "$after_inventory_mapping_index" --idempotent \
+            --configuration Release \
+            --no-build \
+            --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
+            --output artifacts/postgresql-migrations-after-inventory-index.sql
+
+      - name: Bound PostgreSQL migration lock waits
+        run: python3 tools/Deployment/bound_migration_lock_wait.py artifacts
 
       - name: Verify online migration segments are outside EF idempotency wrappers
         run: |
@@ -188,23 +238,52 @@ jobs:
               "session": artifacts / "postgresql-migration-session-index.sql",
               "between": artifacts / "postgresql-migrations-between-online-indexes.sql",
               "payment": artifacts / "postgresql-migration-payment-reconciliation-index.sql",
-              "after": artifacts / "postgresql-migrations-after-online-indexes.sql",
+              "after_payment": artifacts / "postgresql-migrations-after-payment-index.sql",
+              "inventory_mapping": artifacts / "postgresql-migration-inventory-mapping-index.sql",
+              "after_inventory_mapping": artifacts / "postgresql-migrations-after-inventory-index.sql",
           }
           scripts = {name: path.read_text(encoding="utf-8") for name, path in files.items()}
-          for name in ("before", "between", "after"):
+          for name, script in scripts.items():
+              if not script.startswith("SET lock_timeout = '5s';\n"):
+                  raise SystemExit(f"O segmento {files[name].name} não limita a espera por locks a 5 segundos.")
+          for name in ("before", "between", "after_payment", "after_inventory_mapping"):
               if "INDEX CONCURRENTLY" in scripts[name]:
                   raise SystemExit(f"DDL concorrente apareceu no segmento idempotente: {files[name].name}")
 
           expected = {
               "session": r'(?m)^COMMIT;\s*CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "UX_MachineSessions_OneOpenPerMachine"',
               "payment": r'(?m)^COMMIT;\s*CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_PaymentTransactions_Status_LastReconciliationAt_CreatedAt"',
+              "inventory_mapping": r'(?m)^CREATE INDEX CONCURRENTLY IF NOT EXISTS "IX_InventoryMovements_MappingMismatch_Machine_Item_CreatedAt"',
           }
           for name, pattern in expected.items():
               script = scripts[name]
               if "DO $EF$" in script or not re.search(pattern, script):
                   raise SystemExit(f"Índice concorrente não está fora de transação no segmento {files[name].name}")
+          mapping_script = scripts["inventory_mapping"]
+          for required in ("indisvalid", "indisready", "pg_get_indexdef", "pg_get_expr", "SaleMappingMismatch", "RAISE EXCEPTION"):
+              if required not in mapping_script:
+                  raise SystemExit(f"O segmento de estoque não valida o índice parcial antes de registrar a migration: {required}")
+          if mapping_script.index("CREATE INDEX CONCURRENTLY") > mapping_script.index("START TRANSACTION"):
+              raise SystemExit("O índice de estoque precisa ser criado antes da transação de validação/histórico.")
+          route_migration = "20261025150422_AddTelemetryCommandRoutingCapability"
+          route_column_sql = r'ALTER TABLE "MachineConnectionStates" ADD "CommandRoutingVersion" integer;'
+          if route_migration not in scripts["after_payment"] or not re.search(route_column_sql, scripts["after_payment"]):
+              raise SystemExit("O segmento posterior à migration de pagamentos precisa conter a migration aditiva de capacidade de roteamento MDB.")
+          if "20261026091223_IndexInventoryMappingMismatchAlerts" not in scripts["inventory_mapping"]:
+              raise SystemExit("O segmento concorrente precisa registrar a migration de alertas de estoque.")
+          lease_migration = "20261101221552_AddTelemetryConnectionOwnerLease"
+          lease_column_sql = r'ALTER TABLE "MachineConnectionStates" ADD "OwnerLeaseExpiresAt" timestamp with time zone;'
+          if lease_migration not in scripts["after_inventory_mapping"] or not re.search(lease_column_sql, scripts["after_inventory_mapping"]):
+              raise SystemExit("O último segmento precisa conter a coluna nullable do lease de conexão MDB.")
+          legacy_owner_reset_migration = "20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata"
+          if legacy_owner_reset_migration not in scripts["after_inventory_mapping"] or 'NEW."CommandRoutingVersion" := NULL;' not in scripts["after_inventory_mapping"] or 'NEW."OwnerLeaseExpiresAt" := NULL;' not in scripts["after_inventory_mapping"]:
+              raise SystemExit("O último segmento precisa limpar versão e lease ao reconectar um owner MDB legado.")
           print("Segmentos de migrations PostgreSQL prontos para revisão.")
           PY
+
+      - name: Apply generated PostgreSQL release segments to an isolated database
+        shell: pwsh
+        run: ./tools/Database/Test-PostgresReleaseMigrationSegments.ps1 -SegmentsDirectory artifacts -PostgresImage postgres:17-alpine
 
       - name: Verify EF model has no uncommitted migration changes
         env:
@@ -216,13 +295,70 @@ jobs:
             --project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj \
             --startup-project apps/backend/VendingMachines.Api/VendingMachines.Api.csproj
 
-      - name: Upload migration script for pre-deploy review
-        uses: actions/upload-artifact@v4
-        with:
-          name: postgresql-migrations-${{ github.sha }}
-          path: artifacts/postgresql-migration*.sql
-          if-no-files-found: error
-          retention-days: 14
+      - name: Assemble SHA-matched release package
+        run: |
+          set -euo pipefail
+          package_dir=artifacts/release-package
+          mkdir -p "$package_dir"
+          cp tools/Database/Pause-SessionAdmission.sql "$package_dir/"
+          cp tools/Database/Resume-SessionAdmission.sql "$package_dir/"
+          cp tools/Database/List-UnresolvedTelemetryCommands.sql "$package_dir/"
+          cp tools/Database/Resolve-TelemetryCommand.sql "$package_dir/"
+          cp tools/Database/Cancel-PendingTelemetryCommand.sql "$package_dir/"
+          cp tools/Database/Resolve-StaleProcessingTelemetryCommand.sql "$package_dir/"
+          cp tools/Database/Rehearse-PostgresMigrations.ps1 "$package_dir/"
+          cp docs/deploy-preflight.sql "$package_dir/"
+          cp docs/deploy-seguro.md "$package_dir/"
+          cp docs/backup-restore-rehearsal.md "$package_dir/"
+          cp docs/demo-data-preflight.sql "$package_dir/"
+          cp docs/frontend-release.md "$package_dir/"
+          cp docs/mercadopago-static-integration-preflight.sql "$package_dir/"
+          cp docs/operacao-suporte.md "$package_dir/"
+          cp docs/payment-sensitive-data-preflight.sql "$package_dir/"
+          cp docs/payment-sensitive-data-redaction.sql "$package_dir/"
+          cp docs/platform-admin-bootstrap-preflight.sql "$package_dir/"
+          cp docs/registration-identifiers-preflight.sql "$package_dir/"
+          cp docs/remediacao-historico-segredos.md "$package_dir/"
+          cp docs/sales-backfill-preflight.sql "$package_dir/"
+          cp docs/migration-risk-review.json "$package_dir/"
+          expected_migration_scripts=(
+            artifacts/postgresql-migrations-before-session-index.sql
+            artifacts/postgresql-migration-session-index.sql
+            artifacts/postgresql-migrations-between-online-indexes.sql
+            artifacts/postgresql-migration-payment-reconciliation-index.sql
+            artifacts/postgresql-migrations-after-payment-index.sql
+            artifacts/postgresql-migration-inventory-mapping-index.sql
+            artifacts/postgresql-migrations-after-inventory-index.sql
+          )
+          for script in "${expected_migration_scripts[@]}"; do
+            if [ ! -s "$script" ]; then
+              echo "::error::Segmento PostgreSQL ausente ou vazio: $script"
+              exit 1
+            fi
+          done
+          migration_scripts=(artifacts/postgresql-migration*.sql)
+          if [ "${#migration_scripts[@]}" -ne 7 ]; then
+            echo "::error::Esperados sete segmentos SQL de migrations PostgreSQL; encontrados ${#migration_scripts[@]}."
+            exit 1
+          fi
+          cp "${migration_scripts[@]}" "$package_dir/"
+          python3 - "$package_dir" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          package = Path(sys.argv[1])
+          runbook = package / "deploy-seguro.md"
+          for link in re.findall(r"\]\(([^)]+)\)", runbook.read_text(encoding="utf-8")):
+              target = link.split("#", 1)[0]
+              if target.endswith((".sql", ".md", ".ps1", ".json")) and not (package / target).is_file():
+                  raise SystemExit(f"Link do runbook sem arquivo no pacote: {target}")
+          print("Links locais do runbook resolvidos no pacote.")
+          PY
+          printf '%s\n' "$GITHUB_SHA" > "$package_dir/source-sha.txt"
+          (cd "$package_dir" && sha256sum -- *.sql *.md *.json *.txt *.ps1 > SHA256SUMS)
+          test "$(cat "$package_dir/source-sha.txt")" = "$GITHUB_SHA"
+          (cd "$package_dir" && sha256sum --check SHA256SUMS)
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -234,6 +370,22 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/frontend
         run: npm ci
+
+      - name: Verify frontend API contract
+        run: |
+          node tools/Deployment/CheckFrontendApiContract.mjs
+          node --test tools/Deployment/test_frontend_api_contract.mjs
+
+      - name: Verify previous frontend compatibility with candidate API
+        env:
+          FRONTEND_COMPAT_REF: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          frontend_ref="$FRONTEND_COMPAT_REF"
+          if [[ -z "$frontend_ref" || "$frontend_ref" =~ ^0+$ ]]; then
+            frontend_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          node tools/Deployment/CheckFrontendApiContract.mjs --frontend-ref "$frontend_ref"
 
       - name: Audit frontend dependencies
         working-directory: apps/frontend
@@ -284,16 +436,63 @@ jobs:
           tags: |
             type=raw,value=${{ github.sha }}
 
-      - name: Build and Push Docker Image
+      - name: Build candidate backend image without publishing
         uses: docker/build-push-action@v5
         with:
           context: ./apps/backend/VendingMachines.Api
           file: ./apps/backend/VendingMachines.Api/Dockerfile
-          push: true
+          load: true
+          build-args: |
+            APP_REVISION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify backend runtime image before publishing
+        env:
+          BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
+        run: bash tools/Deployment/Test-BackendRuntimeImage.sh "$BACKEND_IMAGE_TAG"
+
+      - name: Verify backend Production startup with isolated PostgreSQL
+        env:
+          BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
+        shell: pwsh
+        run: ./tools/Database/Test-BackendImagePostgresSmoke.ps1 -Image $env:BACKEND_IMAGE_TAG -SegmentsDirectory artifacts
+
+      - name: Verify previous API overlap while a legacy MDB socket stays connected
+        env:
+          BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
+          PREVIOUS_BACKEND_REF: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          previous_ref="$PREVIOUS_BACKEND_REF"
+          if [[ -z "$previous_ref" || "$previous_ref" =~ ^0+$ ]]; then
+            previous_ref="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+          python tools/Database/Test-PreviousBackendRollbackCompatibility.py \
+            --segments artifacts \
+            --previous-ref "$previous_ref" \
+            --candidate-image "$BACKEND_IMAGE_TAG" \
+            --postgres-image postgres:17-alpine
+
+      - name: Publish verified backend image
+        env:
+          BACKEND_IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r image_tag; do
+            if [[ -n "$image_tag" ]]; then
+              docker push "$image_tag"
+            fi
+          done <<< "$BACKEND_IMAGE_TAGS"
+
+      - name: Upload SHA-matched release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package-${{ github.sha }}
+          path: artifacts/release-package/
+          if-no-files-found: error
+          retention-days: 14
 
   deploy-production:
     name: Deploy confirmed release to Coolify
@@ -305,7 +504,7 @@ jobs:
       inputs.backup_verified == 'yes' &&
       inputs.production_secrets_rotated == 'yes' &&
       inputs.telemetry_reconnect_tested == 'yes' &&
-      inputs.active_vend_sessions_drained == 'yes' &&
+      inputs.platform_fee_settings_validated == 'yes' &&
       inputs.machine_connections_preserved == 'yes' &&
       inputs.continuity_test_evidence_url != 'none' &&
       github.ref == 'refs/heads/main'
@@ -348,6 +547,7 @@ jobs:
 
       - name: Validate telemetry continuity evidence link
         env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
           CONTINUITY_TEST_EVIDENCE_URL: ${{ inputs.continuity_test_evidence_url }}
         run: |
           python3 tools/Deployment/Validate-ContinuityEvidence.py "$CONTINUITY_TEST_EVIDENCE_URL"
@@ -359,6 +559,7 @@ jobs:
           PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready
           PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready
           ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT: ${{ inputs.bootstrap_deploy_readiness_endpoint == 'yes' && 'true' || 'false' }}
+          ALLOW_MISSING_API_READINESS_ENDPOINT: ${{ inputs.bootstrap_api_readiness_endpoint == 'yes' && 'true' || 'false' }}
         run: bash tools/Deployment/Coolify-Deployment.sh preflight
 
       - name: Promote immutable image to production tag
@@ -373,8 +574,10 @@ jobs:
         env:
           COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_BACKEND_DEPLOY_WEBHOOK }}
           COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          EXPECTED_API_REVISION: ${{ github.sha }}
           PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready
           PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready
           ALLOW_MISSING_DEPLOY_READINESS_ENDPOINT: ${{ inputs.bootstrap_deploy_readiness_endpoint == 'yes' && 'true' || 'false' }}
+          ALLOW_MISSING_API_READINESS_ENDPOINT: ${{ inputs.bootstrap_api_readiness_endpoint == 'yes' && 'true' || 'false' }}
         run: |
           bash tools/Deployment/Coolify-Deployment.sh deploy

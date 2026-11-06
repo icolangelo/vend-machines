@@ -19,7 +19,7 @@ public class AppDbContext : DbContext
     public DbSet<RefreshSession> RefreshSessions { get; set; } = null!;
     public DbSet<Company> Companies { get; set; } = null!;
     public DbSet<Location> Locations { get; set; } = null!;
-    
+
     // Novas tabelas Mercado Pago
     public DbSet<SystemSettings> SystemSettings { get; set; } = null!;
     public DbSet<MercadoPagoIntegration> MercadoPagoIntegrations { get; set; } = null!;
@@ -28,6 +28,7 @@ public class AppDbContext : DbContext
     public DbSet<MachineConnectionState> MachineConnectionStates { get; set; } = null!;
     public DbSet<MachineSession> MachineSessions { get; set; } = null!;
     public DbSet<TelemetryCommand> TelemetryCommands { get; set; } = null!;
+    public DbSet<TelemetryCommandResolution> TelemetryCommandResolutions { get; set; } = null!;
     public DbSet<TelemetryCommandDispatch> TelemetryCommandDispatches { get; set; } = null!;
     public DbSet<TelemetryEvent> TelemetryEvents { get; set; } = null!;
     public DbSet<DeviceMessageInbox> DeviceMessageInbox { get; set; } = null!;
@@ -40,6 +41,7 @@ public class AppDbContext : DbContext
     public DbSet<InventoryMovement> InventoryMovements { get; set; } = null!;
     public DbSet<OperationalAlert> OperationalAlerts { get; set; } = null!;
     public DbSet<AlertReadReceipt> AlertReadReceipts { get; set; } = null!;
+    public DbSet<SessionAdmissionGate> SessionAdmissionGates { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,13 +99,44 @@ public class AppDbContext : DbContext
             .HasDefaultValue(CompanyActivationStatuses.Pending);
         modelBuilder.Entity<Location>().HasKey(l => l.Id);
         modelBuilder.Entity<SystemSettings>().HasKey(s => s.Id);
+        modelBuilder.Entity<SystemSettings>().ToTable("SystemSettings", table =>
+            table.HasCheckConstraint("CK_SystemSettings_Singleton", "\"IsSingleton\" = TRUE"));
+        modelBuilder.Entity<SystemSettings>()
+            .Property(settings => settings.IsSingleton)
+            .HasDefaultValue(true);
+        modelBuilder.Entity<SystemSettings>()
+            .HasIndex(settings => settings.IsSingleton)
+            .IsUnique();
+        modelBuilder.Entity<SessionAdmissionGate>().HasKey(gate => gate.Id);
+        modelBuilder.Entity<SessionAdmissionGate>().ToTable("SessionAdmissionGates", table =>
+            table.HasCheckConstraint("CK_SessionAdmissionGates_Singleton", "\"Id\" = 1"));
+        modelBuilder.Entity<SessionAdmissionGate>().Property(gate => gate.UpdatedBy).HasMaxLength(128);
+        modelBuilder.Entity<SessionAdmissionGate>().Property(gate => gate.Reason).HasMaxLength(256);
         modelBuilder.Entity<MercadoPagoIntegration>().HasKey(mpi => mpi.Id);
         modelBuilder.Entity<PaymentTransaction>().HasKey(t => t.Id);
+        modelBuilder.Entity<PaymentTransaction>().Property(t => t.ReconciliationReason).HasMaxLength(128);
         modelBuilder.Entity<PaymentTransaction>().HasIndex(t => new { t.Status, t.LastReconciliationAt, t.CreatedAt });
         modelBuilder.Entity<TransactionTelemetryLog>().HasKey(tl => tl.Id);
         modelBuilder.Entity<MachineConnectionState>().HasKey(x => x.Id);
         modelBuilder.Entity<MachineSession>().HasKey(x => x.Id);
         modelBuilder.Entity<TelemetryCommand>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryCommandResolution>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryCommandResolution>().Property(x => x.OperatorName).HasMaxLength(128);
+        modelBuilder.Entity<TelemetryCommandResolution>().Property(x => x.Reason).HasMaxLength(512);
+        modelBuilder.Entity<TelemetryCommandResolution>().Property(x => x.EvidenceReference).HasMaxLength(512);
+        modelBuilder.Entity<TelemetryCommandResolution>().HasIndex(x => x.TelemetryCommandId)
+            .IsUnique().HasFilter("\"TelemetryCommandId\" IS NOT NULL");
+        modelBuilder.Entity<TelemetryCommandResolution>().HasIndex(x => x.TelemetryCommandDispatchId)
+            .IsUnique().HasFilter("\"TelemetryCommandDispatchId\" IS NOT NULL");
+        modelBuilder.Entity<TelemetryCommandResolution>()
+            .HasOne(x => x.TelemetryCommand)
+            .WithMany()
+            .HasForeignKey(x => x.TelemetryCommandId)
+            .OnDelete(DeleteBehavior.Restrict);
+        modelBuilder.Entity<TelemetryCommandResolution>().ToTable(table =>
+            table.HasCheckConstraint(
+                "CK_TelemetryCommandResolutions_OneCommand",
+                "(\"TelemetryCommandId\" IS NOT NULL AND \"TelemetryCommandDispatchId\" IS NULL) OR (\"TelemetryCommandId\" IS NULL AND \"TelemetryCommandDispatchId\" IS NOT NULL)"));
         modelBuilder.Entity<TelemetryEvent>().HasKey(x => x.Id);
         modelBuilder.Entity<DeviceMessageInbox>().HasKey(x => x.Id);
         modelBuilder.Entity<DeviceMessageInbox>().HasIndex(x => x.IdempotencyKey).IsUnique();
@@ -116,6 +149,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<DeviceMessageInbox>().Property(x => x.LastError).HasMaxLength(2000);
         modelBuilder.Entity<DeliveryFailure>().HasKey(x => x.Id);
         modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
+        modelBuilder.Entity<OutboxMessage>().Property(x => x.NextAttemptAt).IsConcurrencyToken();
         modelBuilder.Entity<AuditLog>().HasKey(x => x.Id);
         modelBuilder.Entity<WebhookInboxMessage>().HasKey(x => x.Id);
         modelBuilder.Entity<WebhookInboxMessage>().HasIndex(x => x.EventKey).IsUnique();
@@ -159,6 +193,10 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<InventoryMovement>().HasKey(x => x.Id);
         modelBuilder.Entity<InventoryMovement>().HasIndex(x => new { x.MachineId, x.ItemNumber, x.CreatedAt });
+        modelBuilder.Entity<InventoryMovement>()
+            .HasIndex(x => new { x.MovementType, x.MachineId, x.ItemNumber, x.CreatedAt })
+            .HasFilter("\"MovementType\" = 'SaleMappingMismatch'")
+            .HasDatabaseName("IX_InventoryMovements_MappingMismatch_Machine_Item_CreatedAt");
         modelBuilder.Entity<InventoryMovement>().Property(x => x.MovementType).HasMaxLength(32);
         modelBuilder.Entity<InventoryMovement>().Property(x => x.Reason).HasMaxLength(500);
         modelBuilder.Entity<InventoryMovement>()
@@ -269,6 +307,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<MachineConnectionState>().HasIndex(x => new { x.CompanyId, x.IsOnline });
         modelBuilder.Entity<MachineConnectionState>().Property(x => x.OwnerNodeId).HasMaxLength(32);
         modelBuilder.Entity<MachineConnectionState>().Property(x => x.OwnerConnectionId).HasMaxLength(32);
+
 
         modelBuilder.Entity<MachineSession>()
             .HasOne(x => x.Machine)

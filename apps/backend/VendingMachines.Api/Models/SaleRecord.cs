@@ -10,6 +10,8 @@ public sealed class SaleRecord
     public int ItemNumber { get; set; }
     public string? ProductId { get; set; }
     public string? ProductNameSnapshot { get; set; }
+    public Guid? LocationIdSnapshot { get; set; }
+    public string? LocationNameSnapshot { get; set; }
     public int Quantity { get; set; } = 1;
     public decimal GrossAmount { get; set; }
     public decimal ApplicationFee { get; set; }

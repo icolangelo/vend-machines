@@ -20,7 +20,7 @@ vi.mock("@/components/AppSidebar", () => ({
     AppSidebar: () => <nav aria-label="Navegação" />,
 }));
 
-vi.mock("@/contexts/AuthContext", () => ({
+vi.mock("@/contexts/useAuth", () => ({
     useAuth: () => ({ logout: vi.fn(), user: { role: "Operator" } }),
 }));
 

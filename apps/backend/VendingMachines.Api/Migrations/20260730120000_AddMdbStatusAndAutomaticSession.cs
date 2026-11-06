@@ -149,45 +149,7 @@ public partial class AddMdbStatusAndAutomaticSession : Migration
 
     protected override void Down(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.DropIndex(
-            name: "UX_MachineSessions_OneOpenPerMachine",
-            table: "MachineSessions");
-
-        migrationBuilder.CreateIndex(
-            name: "IX_MachineSessions_MachineId",
-            table: "MachineSessions",
-            column: "MachineId");
-
-        migrationBuilder.DropColumn(
-            name: "AutoOpenSessionEnabled",
-            table: "Machines");
-
-        migrationBuilder.DropColumn(
-            name: "AutoOpenLastAttemptAt",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "AutoOpenLastError",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "MdbStatus",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "MdbStatusRaw",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "MdbStatusRequestAt",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "MdbStatusRequestMessageId",
-            table: "MachineConnectionStates");
-
-        migrationBuilder.DropColumn(
-            name: "MdbStatusUpdatedAt",
-            table: "MachineConnectionStates");
+        throw new System.InvalidOperationException(
+            "Esta migration contém presença e estado MDB persistidos. Reverta somente o binário e preserve as colunas e o índice de sessão única.");
     }
 }

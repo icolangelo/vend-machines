@@ -2,7 +2,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { LogOut, Plus, Pencil, Trash2, Package, Wine, DollarSign, Tag, RefreshCw } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { type FullProduct, type ProductType } from "@/data/mockData";
 import { getProducts, getProductTypes, createProduct, updateProduct, deleteProduct } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
 import {
     Dialog,
     DialogContent,
+    DialogDescription,
     DialogHeader,
     DialogTitle,
     DialogFooter,
@@ -345,6 +346,9 @@ export default function Products() {
                                     <DialogTitle>
                                         {editingProduct ? "Editar Produto" : "Novo Cadastro de Produto"}
                                     </DialogTitle>
+                                    <DialogDescription className="sr-only">
+                                        Preencha os dados de identificação, categoria e preço do produto.
+                                    </DialogDescription>
                                 </DialogHeader>
                                 <div className="grid gap-4 py-4">
                                     <div className="grid grid-cols-2 gap-4">

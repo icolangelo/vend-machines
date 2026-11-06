@@ -6,6 +6,9 @@ public sealed class SimulatorLog
 {
     private readonly object _consoleLock = new();
     private readonly ConcurrentQueue<string> _history = new();
+    private readonly bool _writeToConsole;
+
+    public SimulatorLog(bool writeToConsole = true) => _writeToConsole = writeToConsole;
 
     public void Info(string serial, string message) => Write(serial, "INFO", message, ConsoleColor.Cyan);
     public void Received(string serial, string message) => Write(serial, "RECV", message, ConsoleColor.Green);
@@ -23,6 +26,8 @@ public sealed class SimulatorLog
         var line = $"{DateTime.Now:HH:mm:ss.fff} [{serial}] [{level}] {message}";
         _history.Enqueue(line);
         while (_history.Count > 200) _history.TryDequeue(out _);
+
+        if (!_writeToConsole) return;
 
         lock (_consoleLock)
         {

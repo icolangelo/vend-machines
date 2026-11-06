@@ -37,6 +37,59 @@ public sealed class SecurityIsolationTests
     }
 
     [Fact]
+    public async Task UsersController_CompanyAdminCannotResetOrChangeAnotherCompanyUser()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var companyA = new Company { Id = Guid.NewGuid(), Name = "Empresa A" };
+        var companyB = new Company { Id = Guid.NewGuid(), Name = "Empresa B" };
+        var adminA = new User
+        {
+            Id = Guid.NewGuid(), Name = "Admin A", Email = "admin-a@example.com",
+            NormalizedEmail = "ADMIN-A@EXAMPLE.COM", Role = "Admin", CompanyId = companyA.Id
+        };
+        var userB = new User
+        {
+            Id = Guid.NewGuid(), Name = "Operador B", Email = "operator-b@example.com",
+            NormalizedEmail = "OPERATOR-B@EXAMPLE.COM", Role = "Operator", CompanyId = companyB.Id
+        };
+        scenario.Db.Companies.AddRange(companyA, companyB);
+        scenario.Db.Users.AddRange(adminA, userB);
+        await scenario.Db.SaveChangesAsync();
+
+        var controller = new UsersController(scenario.Db);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                {
+                    new Claim(ClaimTypes.NameIdentifier, adminA.Id.ToString()),
+                    new Claim("company_id", companyA.Id.ToString()),
+                    new Claim(ClaimTypes.Role, "Admin")
+                }, "Test"))
+            }
+        };
+
+        var reset = await controller.CreatePasswordResetLink(userB.Id, CancellationToken.None);
+        var roleChange = await controller.UpdateRole(
+            userB.Id,
+            new UpdateUserRoleRequest { Role = "Admin" },
+            CancellationToken.None);
+        var deactivate = await controller.UpdateActiveStatus(
+            userB.Id,
+            new UpdateUserActiveStatusRequest { IsActive = false },
+            CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(reset);
+        Assert.IsType<NotFoundObjectResult>(roleChange);
+        Assert.IsType<NotFoundObjectResult>(deactivate);
+        Assert.Empty(await scenario.Db.PasswordResetTokens.ToListAsync());
+        var persisted = await scenario.Db.Users.SingleAsync(user => user.Id == userB.Id);
+        Assert.Equal("Operator", persisted.Role);
+        Assert.True(persisted.IsActive);
+    }
+
+    [Fact]
     public async Task PaymentsController_CompanyAdminCannotReadAnotherCompanyTransactionLogs()
     {
         await using var scenario = await CreateScenarioAsync();
@@ -209,7 +262,7 @@ public sealed class SecurityIsolationTests
         environment: null!);
 
     [Fact]
-    public async Task AuthController_RejectsRegistrationWithReservedPlatformAdminEmail()
+    public async Task PublicRegistrationWithFormerBootstrapEmailGetsOnlyCompanyAdminRole()
     {
         await using var scenario = await CreateScenarioAsync();
         var controller = new AuthController(
@@ -229,8 +282,12 @@ public sealed class SecurityIsolationTests
             AcceptedPrivacyPolicy = true
         });
 
-        var badRequest = Assert.IsType<BadRequestObjectResult>(action);
-        Assert.Contains("reservado", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.IsType<AcceptedResult>(action);
+        var registeredUser = await scenario.Db.Users.SingleAsync();
+        Assert.Equal("dev.ivan@gmail.com", registeredUser.NormalizedEmail);
+        Assert.Equal("Admin", registeredUser.Role);
+        Assert.NotEqual("PlatformAdmin", registeredUser.Role);
+        Assert.False(registeredUser.IsActive);
     }
 
     [Fact]

@@ -11,13 +11,14 @@
         "preview": "vite preview",
         "test": "vitest run --maxWorkers=2 --no-file-parallelism",
         "test:e2e": "playwright test --project=chromium",
+        "test:e2e:cross-browser": "playwright test --workers=1",
         "test:e2e:production": "playwright test --config=playwright.production.config.ts --project=chromium",
         "test:watch": "vitest"
     },
     "dependencies": {
         "@fontsource/ibm-plex-mono": "^5.2.7",
         "@fontsource/inter": "^5.3.0",
-        "@hookform/resolvers": "^3.10.0",
+        "@hookform/resolvers": "^5.9.2",
         "@radix-ui/react-accordion": "^1.2.11",
         "@radix-ui/react-alert-dialog": "^1.1.14",
         "@radix-ui/react-aspect-ratio": "^1.1.7",
@@ -65,7 +66,7 @@
         "tailwind-merge": "^2.6.0",
         "tailwindcss-animate": "^1.0.7",
         "vaul": "^0.9.9",
-        "zod": "^3.25.76"
+        "zod": "^4.6.7"
     },
     "devDependencies": {
         "@eslint/js": "^9.32.0",
@@ -92,6 +93,7 @@
     },
     "overrides": {
         "source-map-js": "1.2.2",
+        "minimatch": "11.0.1",
         "postcss-selector-parser": "7.1.6"
     }
 }

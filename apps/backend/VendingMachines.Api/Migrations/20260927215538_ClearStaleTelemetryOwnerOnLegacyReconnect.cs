@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -43,14 +43,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
-                DROP TRIGGER IF EXISTS "TR_MachineConnectionStates_ClearLegacyOwner" ON "MachineConnectionStates";
-                DROP FUNCTION IF EXISTS clear_legacy_telemetry_owner_on_connection_change();
-                """);
-
-            migrationBuilder.DropColumn(
-                name: "OwnerConnectionId",
-                table: "MachineConnectionStates");
+            throw new System.InvalidOperationException(
+                "Esta migration protege a propriedade do socket durante reconexão de firmware legado. Reverta somente o binário e preserve OwnerConnectionId e o trigger.");
         }
     }
 }

@@ -3,8 +3,8 @@ interface StatusIndicatorProps {
 }
 
 const statusConfig = {
-    online: { label: "Online", colorClass: "bg-success" },
-    offline: { label: "Offline", colorClass: "bg-destructive" },
+    online: { label: "Conectada", colorClass: "bg-success" },
+    offline: { label: "Desconectada", colorClass: "bg-destructive" },
     warning: { label: "Atenção", colorClass: "bg-warning" },
     unmonitored: { label: "Sem monitoramento", colorClass: "bg-muted-foreground" },
     inactive: { label: "Inativa", colorClass: "bg-muted-foreground" },

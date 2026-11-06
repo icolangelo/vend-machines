@@ -50,8 +50,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "WebhookInboxMessages");
+            throw new InvalidOperationException(
+                "WebhookInboxMessages contém eventos financeiros duráveis; não reverta a migration. Reverta somente o binário e preserve as linhas pendentes para retomada.");
         }
     }
 }

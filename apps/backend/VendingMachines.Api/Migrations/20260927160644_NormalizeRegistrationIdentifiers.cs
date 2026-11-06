@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -152,48 +152,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            if (migrationBuilder.ActiveProvider == "Npgsql.EntityFrameworkCore.PostgreSQL")
-            {
-                migrationBuilder.Sql("""
-                    DROP TRIGGER IF EXISTS "TR_Users_NormalizeRegistrationIdentifiers" ON "Users";
-                    DROP TRIGGER IF EXISTS "TR_Companies_NormalizeRegistrationIdentifier" ON "Companies";
-                    DROP FUNCTION IF EXISTS normalize_user_registration_identifiers();
-                    DROP FUNCTION IF EXISTS normalize_company_registration_identifier();
-                    """);
-            }
-            else if (migrationBuilder.ActiveProvider == "Microsoft.EntityFrameworkCore.Sqlite")
-            {
-                migrationBuilder.Sql("""
-                    DROP TRIGGER IF EXISTS "TR_Users_NormalizeRegistrationIdentifiers_Insert";
-                    DROP TRIGGER IF EXISTS "TR_Users_NormalizeRegistrationIdentifiers_Update";
-                    DROP TRIGGER IF EXISTS "TR_Companies_NormalizeRegistrationIdentifier_Insert";
-                    DROP TRIGGER IF EXISTS "TR_Companies_NormalizeRegistrationIdentifier_Update";
-                    """);
-            }
-
-            migrationBuilder.DropIndex(
-                name: "IX_Users_NormalizedCpf",
-                table: "Users");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Users_NormalizedEmail",
-                table: "Users");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Companies_NormalizedCnpj",
-                table: "Companies");
-
-            migrationBuilder.DropColumn(
-                name: "NormalizedCpf",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "NormalizedEmail",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "NormalizedCnpj",
-                table: "Companies");
+            throw new System.InvalidOperationException(
+                "Esta migration contém identificadores canônicos e proteções de unicidade. Reverta somente o binário e preserve colunas, índices e triggers.");
         }
     }
 }

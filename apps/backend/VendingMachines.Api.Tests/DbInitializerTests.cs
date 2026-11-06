@@ -46,6 +46,39 @@ public sealed class DbInitializerTests
     }
 
     [Fact]
+    public async Task DevelopmentSeedCreatesDatabaseFileWhenNoLocalDatabaseExists()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"vending-machines-{Guid.NewGuid():N}.db");
+        Assert.False(File.Exists(databasePath));
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite(new SqliteConnectionStringBuilder
+                {
+                    DataSource = databasePath,
+                    Pooling = false
+                }.ToString())
+                .Options;
+            await using (var db = new AppDbContext(options))
+            {
+                DbInitializer.Initialize(db, seedDemoData: true);
+
+                Assert.Contains(await db.Companies.Select(company => company.Name).ToListAsync(),
+                    name => name == "ACME Machines LTDA");
+                Assert.True(await db.Machines.CountAsync() > 0);
+            }
+
+            Assert.True(File.Exists(databasePath));
+        }
+        finally
+        {
+            if (File.Exists(databasePath))
+                File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task ExistingSqliteConnectionStateAddsOwnerNodeWithoutChangingLiveState()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
@@ -110,5 +143,32 @@ public sealed class DbInitializerTests
         await using var dispatchTable = connection.CreateCommand();
         dispatchTable.CommandText = "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'TelemetryCommandDispatches'";
         Assert.Equal(1L, (long)(await dispatchTable.ExecuteScalarAsync())!);
+    }
+
+    [Fact]
+    public async Task StartupDoesNotPromoteAnAccountByEmail()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(connection)
+            .Options;
+        await using var db = new AppDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var user = new User
+        {
+            Name = "Conta sem privilégio automático",
+            Email = "dev.ivan@gmail.com",
+            NormalizedEmail = "dev.ivan@gmail.com",
+            Role = "Admin",
+            IsActive = true
+        };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        DbInitializer.Initialize(db, seedDemoData: false);
+
+        Assert.Equal("Admin", (await db.Users.SingleAsync()).Role);
     }
 }

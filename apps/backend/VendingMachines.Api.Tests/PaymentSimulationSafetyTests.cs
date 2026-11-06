@@ -98,6 +98,7 @@ public sealed class PaymentSimulationSafetyTests
             RefreshToken = string.Empty,
             ClientSecret = string.Empty
         });
+        scenario.Db.SystemSettings.Add(new SystemSettings { ApplicationFeePercent = 5m });
         await scenario.Db.SaveChangesAsync();
 
         var httpClientFactory = new UnexpectedHttpClientFactory();

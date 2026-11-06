@@ -330,6 +330,10 @@ namespace VendingMachines.Api.Migrations
 
                     b.HasIndex("MachineId", "ItemNumber", "CreatedAt");
 
+                    b.HasIndex("MovementType", "MachineId", "ItemNumber", "CreatedAt")
+                        .HasDatabaseName("IX_InventoryMovements_MappingMismatch_Machine_Item_CreatedAt")
+                        .HasFilter("\"MovementType\" = 'SaleMappingMismatch'");
+
                     b.ToTable("InventoryMovements");
                 });
 
@@ -462,6 +466,9 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("AutoOpenLastError")
                         .HasColumnType("text");
 
+                    b.Property<int?>("CommandRoutingVersion")
+                        .HasColumnType("integer");
+
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uuid");
 
@@ -511,6 +518,9 @@ namespace VendingMachines.Api.Migrations
                     b.Property<string>("OwnerConnectionId")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("OwnerLeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("OwnerNodeId")
                         .HasMaxLength(32)
@@ -600,12 +610,24 @@ namespace VendingMachines.Api.Migrations
                     b.Property<DateTime>("LastEventAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("LocationIdSnapshot")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LocationNameSnapshot")
+                        .HasColumnType("text");
+
                     b.Property<string>("MachineId")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<DateTime?>("PaymentDeadlineAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SelectedProductIdSnapshot")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SelectedProductNameSnapshot")
+                        .HasColumnType("text");
 
                     b.Property<DateTime?>("SelectionDeadlineAt")
                         .HasColumnType("timestamp with time zone");
@@ -843,6 +865,7 @@ namespace VendingMachines.Api.Migrations
                         .HasColumnType("text");
 
                     b.Property<DateTime?>("NextAttemptAt")
+                        .IsConcurrencyToken()
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("PayloadJson")
@@ -957,6 +980,10 @@ namespace VendingMachines.Api.Migrations
 
                     b.Property<string>("RawResponse")
                         .HasColumnType("text");
+
+                    b.Property<string>("ReconciliationReason")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
                     b.Property<int>("SendTelemetryToMachineValue")
                         .HasColumnType("integer")
@@ -1099,6 +1126,12 @@ namespace VendingMachines.Api.Migrations
                     b.Property<int>("ItemNumber")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("LocationIdSnapshot")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LocationNameSnapshot")
+                        .HasColumnType("text");
+
                     b.Property<string>("MachineId")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1154,6 +1187,38 @@ namespace VendingMachines.Api.Migrations
                     b.ToTable("SaleRecords");
                 });
 
+            modelBuilder.Entity("VendingMachines.Api.Models.SessionAdmissionGate", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("NewSessionsPaused")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("SessionAdmissionGates", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_SessionAdmissionGates_Singleton", "\"Id\" = 1");
+                        });
+                });
+
             modelBuilder.Entity("VendingMachines.Api.Models.SystemSettings", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1164,12 +1229,23 @@ namespace VendingMachines.Api.Migrations
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)");
 
+                    b.Property<bool>("IsSingleton")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
-                    b.ToTable("SystemSettings");
+                    b.HasIndex("IsSingleton")
+                        .IsUnique();
+
+                    b.ToTable("SystemSettings", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_SystemSettings_Singleton", "\"IsSingleton\" = TRUE");
+                        });
                 });
 
             modelBuilder.Entity("VendingMachines.Api.Models.TelemetryCommand", b =>
@@ -1312,6 +1388,52 @@ namespace VendingMachines.Api.Migrations
                     b.ToTable("TelemetryCommandDispatches");
                 });
 
+            modelBuilder.Entity("VendingMachines.Api.Models.TelemetryCommandResolution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EvidenceReference")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("OperatorName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<Guid?>("TelemetryCommandDispatchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("TelemetryCommandId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TelemetryCommandDispatchId")
+                        .IsUnique()
+                        .HasFilter("\"TelemetryCommandDispatchId\" IS NOT NULL");
+
+                    b.HasIndex("TelemetryCommandId")
+                        .IsUnique()
+                        .HasFilter("\"TelemetryCommandId\" IS NOT NULL");
+
+                    b.ToTable("TelemetryCommandResolutions", t =>
+                        {
+                            t.HasCheckConstraint("CK_TelemetryCommandResolutions_OneCommand", "(\"TelemetryCommandId\" IS NOT NULL AND \"TelemetryCommandDispatchId\" IS NULL) OR (\"TelemetryCommandId\" IS NULL AND \"TelemetryCommandDispatchId\" IS NOT NULL)");
+                        });
+                });
+
             modelBuilder.Entity("VendingMachines.Api.Models.TelemetryEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1442,6 +1564,10 @@ namespace VendingMachines.Api.Migrations
 
                     b.Property<DateTime?>("PrivacyPolicyAcceptedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PrivacyPolicyVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<bool>("RequiresEmailVerification")
                         .ValueGeneratedOnAdd()
@@ -1808,6 +1934,16 @@ namespace VendingMachines.Api.Migrations
                         .HasForeignKey("TransactionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("VendingMachines.Api.Models.TelemetryCommandResolution", b =>
+                {
+                    b.HasOne("VendingMachines.Api.Models.TelemetryCommand", "TelemetryCommand")
+                        .WithMany()
+                        .HasForeignKey("TelemetryCommandId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("TelemetryCommand");
                 });
 
             modelBuilder.Entity("VendingMachines.Api.Models.TransactionTelemetryLog", b =>

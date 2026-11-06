@@ -182,6 +182,7 @@ public class UsersController : ControllerBase
 
     [Authorize(Roles = AppRoles.Admin)]
     [HttpPut("invitations/{invitationId:guid}/revoke")]
+    [EnableRateLimiting("auth")]
     public async Task<IActionResult> RevokeInvitation(Guid invitationId, CancellationToken cancellationToken)
     {
         var companyId = Guid.TryParse(User.FindFirst("company_id")?.Value, out var parsedCompanyId)
@@ -313,6 +314,10 @@ public class UsersController : ControllerBase
         if (target == null)
             return NotFound(new { message = "Usuário não encontrado." });
 
+        await using var companyMutation = await BeginCompanyAdminMutationAsync(target.CompanyId, cancellationToken);
+        if (companyMutation != null)
+            await _context.Entry(target).ReloadAsync(cancellationToken);
+
         if (!isPlatformAdmin &&
             (target.Role == AppRoles.PlatformAdmin || requestedRole == AppRoles.PlatformAdmin))
         {
@@ -322,6 +327,12 @@ public class UsersController : ControllerBase
         var previousRole = target.Role;
         if (previousRole == requestedRole)
             return Ok(new { userId, role = target.Role, changed = false });
+
+        if (target.IsActive && previousRole == AppRoles.Admin && requestedRole != AppRoles.Admin &&
+            !await HasOtherActiveCompanyAdminAsync(target, cancellationToken))
+        {
+            return Conflict(new { message = "A empresa precisa manter pelo menos um administrador ativo." });
+        }
 
         target.Role = requestedRole;
         target.CredentialVersion++;
@@ -342,6 +353,9 @@ public class UsersController : ControllerBase
                 new { previousRole, newRole = requestedRole },
                 cancellationToken);
         }
+
+        if (companyMutation != null)
+            await companyMutation.CommitAsync(cancellationToken);
 
         return Ok(new
         {
@@ -381,6 +395,10 @@ public class UsersController : ControllerBase
         if (target == null)
             return NotFound(new { message = "Usuário não encontrado." });
 
+        await using var companyMutation = await BeginCompanyAdminMutationAsync(target.CompanyId, cancellationToken);
+        if (companyMutation != null)
+            await _context.Entry(target).ReloadAsync(cancellationToken);
+
         if (!isPlatformAdmin && target.Role == AppRoles.PlatformAdmin)
             return Forbid();
 
@@ -390,16 +408,10 @@ public class UsersController : ControllerBase
         if (target.IsActive == request.IsActive)
             return Ok(new { userId, isActive = target.IsActive, changed = false });
 
-        if (!isPlatformAdmin && !request.IsActive && target.Role == AppRoles.Admin)
+        if (!request.IsActive && target.IsActive && target.Role == AppRoles.Admin &&
+            !await HasOtherActiveCompanyAdminAsync(target, cancellationToken))
         {
-            var activeAdmins = await _context.Users.CountAsync(
-                user => user.CompanyId == target.CompanyId &&
-                        user.Role == AppRoles.Admin &&
-                        user.IsActive &&
-                        user.Id != target.Id,
-                cancellationToken);
-            if (activeAdmins == 0)
-                return Conflict(new { message = "A empresa precisa manter pelo menos um administrador ativo." });
+            return Conflict(new { message = "A empresa precisa manter pelo menos um administrador ativo." });
         }
 
         target.IsActive = request.IsActive;
@@ -413,8 +425,6 @@ public class UsersController : ControllerBase
             await _context.RefreshSessions
                 .Where(session => session.UserId == target.Id && session.RevokedAt == null)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(session => session.RevokedAt, now), cancellationToken);
-            if (_panelHub != null)
-                await _panelHub.DisconnectUserAsync(target.Id);
         }
 
         if (_audit != null)
@@ -428,6 +438,12 @@ public class UsersController : ControllerBase
                 cancellationToken);
         }
 
+        if (companyMutation != null)
+            await companyMutation.CommitAsync(cancellationToken);
+
+        if (!target.IsActive && _panelHub != null)
+            await _panelHub.DisconnectUserAsync(target.Id);
+
         return Ok(new
         {
             userId,
@@ -435,6 +451,46 @@ public class UsersController : ControllerBase
             changed = true,
             sessionsRevoked = !target.IsActive
         });
+    }
+
+    private Task<bool> HasOtherActiveCompanyAdminAsync(User target, CancellationToken cancellationToken)
+    {
+        if (!target.CompanyId.HasValue)
+            return Task.FromResult(true);
+
+        return _context.Users.AnyAsync(
+            user => user.CompanyId == target.CompanyId &&
+                    user.Role == AppRoles.Admin &&
+                    user.IsActive &&
+                    user.Id != target.Id,
+            cancellationToken);
+    }
+
+    private async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction?> BeginCompanyAdminMutationAsync(
+        Guid? companyId,
+        CancellationToken cancellationToken)
+    {
+        if (!companyId.HasValue)
+            return null;
+
+        var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        try
+        {
+            // Serializes admin role/status changes for the same tenant across API instances.
+            // The company row value remains unchanged; the update holds its database write lock
+            // until the user change and last-admin check are committed together.
+            await _context.Companies
+                .Where(company => company.Id == companyId.Value)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(company => company.Name, company => company.Name),
+                    cancellationToken);
+            return transaction;
+        }
+        catch
+        {
+            await transaction.DisposeAsync();
+            throw;
+        }
     }
 }
 

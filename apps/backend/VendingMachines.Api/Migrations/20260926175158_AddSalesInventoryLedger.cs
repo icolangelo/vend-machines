@@ -199,14 +199,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "InventoryMovements");
-
-            migrationBuilder.DropTable(
-                name: "MachineProductSlots");
-
-            migrationBuilder.DropTable(
-                name: "SaleRecords");
+            throw new System.InvalidOperationException(
+                "Esta migration contém o razão de vendas e estoque. Reverta somente o binário e preserve SaleRecords, InventoryMovements e MachineProductSlots.");
         }
     }
 }

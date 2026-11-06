@@ -105,6 +105,62 @@ public sealed class DatabaseDataServiceScopeTests
     }
 
     [Fact]
+    public async Task DisputedSalesAreExcludedFromRevenueAggregatesUntilResolved()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var company = new Company { Id = Guid.NewGuid(), Name = "Operadora", Cnpj = "11111111000111" };
+        var location = new Location { Id = Guid.NewGuid(), CompanyId = company.Id, Name = "Hospital" };
+        var machine = new Machine
+        {
+            Id = "DISPUTED-1", Name = "Máquina em contestação", CompanyId = company.Id,
+            LocationId = location.Id, SerialNumber = "DISPUTED-1"
+        };
+        var productType = new ProductType { Id = "disputed-drinks", Name = "Bebidas", CompanyId = company.Id };
+        var product = new FullProduct
+        {
+            Id = "disputed-water", Name = "Água", Code = "DW1", TypeId = productType.Id, CompanyId = company.Id
+        };
+        var transaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+            Amount = 20m, Status = "ReconciliationRequired"
+        };
+        var session = new MachineSession
+        {
+            Id = Guid.NewGuid(), CompanyId = company.Id, MachineId = machine.Id,
+            TransactionId = transaction.Id, State = MachineSessionStates.Completed
+        };
+        scenario.Db.Companies.Add(company);
+        scenario.Db.Locations.Add(location);
+        scenario.Db.Machines.Add(machine);
+        scenario.Db.ProductTypes.Add(productType);
+        scenario.Db.Products.Add(product);
+        scenario.Db.MachineSessions.Add(session);
+        scenario.Db.PaymentTransactions.Add(transaction);
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = company.Id, MachineId = machine.Id, ItemNumber = 1,
+            ProductId = product.Id, Capacity = 10, CurrentStock = 9
+        });
+        scenario.Db.SaleRecords.Add(new SaleRecord
+        {
+            CompanyId = company.Id, MachineId = machine.Id, SessionId = session.Id,
+            TransactionId = transaction.Id, ProductId = product.Id, ProductNameSnapshot = product.Name,
+            ItemNumber = 1, Quantity = 1, GrossAmount = 20m, FinancialStatus = "Disputed",
+            SoldAt = DateTime.UtcNow
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var service = new DatabaseDataService(scenario.Db);
+
+        Assert.Equal(0m, Assert.Single(service.GetMachines(company.Id)).Revenue30d);
+        Assert.Equal(0m, Assert.Single(service.GetLocations(company.Id)).Revenue30d);
+        Assert.Equal(0m, service.GetDashboardStats(company.Id).TotalRevenue30d);
+        Assert.Equal(0m, Assert.Single(service.GetTopProducts(company.Id)).Revenue);
+        Assert.All(service.GetDashboardStats(company.Id).RevenueHistory, day => Assert.Equal(0m, day.Revenue));
+    }
+
+    [Fact]
     public async Task GetMachinesAndLocationsIgnoreOperationalRowsAssignedToAnotherCompany()
     {
         await using var scenario = await CreateScenarioAsync();
@@ -114,7 +170,7 @@ public sealed class DatabaseDataServiceScopeTests
         var machineA = new Machine
         {
             Id = "A-1", Name = "Máquina A", CompanyId = companyA.Id, SerialNumber = "A-1",
-            LocationId = locationA.Id
+            LocationId = locationA.Id, MinimumSalesTarget30d = 1
         };
         var productTypeB = new ProductType { Id = "type-b", Name = "Tipo B", CompanyId = companyB.Id };
         var productB = new FullProduct
@@ -161,6 +217,7 @@ public sealed class DatabaseDataServiceScopeTests
 
         Assert.Equal(0m, machine.Revenue30d);
         Assert.Equal(0, machine.TotalSales30d);
+        Assert.True(machine.BelowSalesTarget);
         Assert.Equal("unmonitored", machine.Status);
         Assert.False(machine.InventoryConfigured);
         Assert.False(machine.LowStock);
@@ -196,7 +253,7 @@ public sealed class DatabaseDataServiceScopeTests
             var session = new MachineSession
             {
                 Id = Guid.NewGuid(), CompanyId = companyId, MachineId = machine.Id,
-                State = MachineSessionStates.Completed
+                State = MachineSessionStates.Completed, ClosedAt = DateTime.UtcNow
             };
             var transaction = new PaymentTransaction
             {
@@ -209,9 +266,33 @@ public sealed class DatabaseDataServiceScopeTests
             {
                 CompanyId = companyId, MachineId = machine.Id, SessionId = session.Id,
                 TransactionId = transaction.Id, ItemNumber = 1, Quantity = machine == belowTarget ? 4 : 3,
-                GrossAmount = 10m, SoldAt = DateTime.UtcNow.AddDays(-1)
+                GrossAmount = 10m, SoldAt = DateTime.UtcNow.AddDays(-30).AddMinutes(1)
             });
         }
+
+        var expiredSession = new MachineSession
+        {
+            Id = Guid.NewGuid(), CompanyId = companyId, MachineId = belowTarget.Id,
+            State = MachineSessionStates.Completed, ClosedAt = DateTime.UtcNow
+        };
+        var expiredTransaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(), CompanyId = companyId, MachineId = belowTarget.Id,
+            Amount = 100m, Status = "Approved"
+        };
+        scenario.Db.MachineSessions.Add(expiredSession);
+        scenario.Db.PaymentTransactions.Add(expiredTransaction);
+        scenario.Db.SaleRecords.Add(new SaleRecord
+        {
+            CompanyId = companyId,
+            MachineId = belowTarget.Id,
+            SessionId = expiredSession.Id,
+            TransactionId = expiredTransaction.Id,
+            ItemNumber = 2,
+            Quantity = 100,
+            GrossAmount = 100m,
+            SoldAt = DateTime.UtcNow.AddDays(-30).AddMinutes(-1)
+        });
 
         await scenario.Db.SaveChangesAsync();
 
@@ -252,32 +333,61 @@ public sealed class DatabaseDataServiceScopeTests
     }
 
     [Fact]
-    public async Task ProductRankings_UseDeliveredSalesAndStayWithinCompanyScope()
+    public async Task GetProductTypes_IncludesGlobalAndCompanyTypesButExcludesOtherCompaniesAndOverriddenGlobalTypes()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var companyA = Guid.NewGuid();
+        var companyB = Guid.NewGuid();
+        scenario.Db.Companies.AddRange(
+            new Company { Id = companyA, Name = "Empresa A" },
+            new Company { Id = companyB, Name = "Empresa B" });
+        scenario.Db.ProductTypes.AddRange(
+            new ProductType { Id = "global", Name = "Tipo global" },
+            new ProductType { Id = "company-a", Name = "Tipo A", CompanyId = companyA },
+            new ProductType { Id = "company-b", Name = "Tipo B", CompanyId = companyB },
+            new ProductType { Id = "global-override", Name = "Tipo global personalizado", CompanyId = companyA, OriginalId = "global" });
+        await scenario.Db.SaveChangesAsync();
+
+        var result = new DatabaseDataService(scenario.Db).GetProductTypes(companyA);
+
+        Assert.Contains(result, type => type.Id == "company-a");
+        Assert.Contains(result, type => type.Id == "global-override");
+        Assert.DoesNotContain(result, type => type.Id == "company-b");
+        Assert.DoesNotContain(result, type => type.Id == "global");
+    }
+
+    [Fact]
+    public async Task ProductRankingsIncludeAssignedUnsoldProductsAndStayWithinCompanyScope()
     {
         await using var scenario = await CreateScenarioAsync();
         var companyA = Guid.NewGuid();
         var companyB = Guid.NewGuid();
         var machineA = new Machine { Id = "A-1", Name = "Máquina A", CompanyId = companyA, SerialNumber = "A-1" };
+        var machineA2 = new Machine { Id = "A-2", Name = "Máquina A2", CompanyId = companyA, SerialNumber = "A-2" };
         var machineB = new Machine { Id = "B-1", Name = "Máquina B", CompanyId = companyB, SerialNumber = "B-1" };
         var productType = new ProductType { Id = "drink", Name = "Bebida" };
         scenario.Db.Companies.AddRange(
             new Company { Id = companyA, Name = "Empresa A" },
             new Company { Id = companyB, Name = "Empresa B" });
-        scenario.Db.Machines.AddRange(machineA, machineB);
+        scenario.Db.Machines.AddRange(machineA, machineA2, machineB);
         scenario.Db.ProductTypes.Add(productType);
         scenario.Db.Products.AddRange(
             new FullProduct { Id = "coffee", Name = "Café", Code = "C1", TypeId = productType.Id, CompanyId = companyA },
             new FullProduct { Id = "tea", Name = "Chá", Code = "T1", TypeId = productType.Id, CompanyId = companyA },
+            new FullProduct { Id = "juice", Name = "Suco", Code = "J1", TypeId = productType.Id, CompanyId = companyA },
             new FullProduct { Id = "soda", Name = "Refrigerante", Code = "S1", TypeId = productType.Id, CompanyId = companyB });
         var sessionA = new MachineSession { Id = Guid.NewGuid(), CompanyId = companyA, MachineId = machineA.Id, State = MachineSessionStates.Completed };
         var sessionB = new MachineSession { Id = Guid.NewGuid(), CompanyId = companyB, MachineId = machineB.Id, State = MachineSessionStates.Completed };
         var transactionA = new PaymentTransaction { Id = Guid.NewGuid(), CompanyId = companyA, MachineId = machineA.Id, Amount = 8m, Status = "Approved" };
+        var pendingTransaction = new PaymentTransaction { Id = Guid.NewGuid(), CompanyId = companyA, MachineId = machineA2.Id, Amount = 50m, Status = "ReconciliationRequired" };
         var transactionB = new PaymentTransaction { Id = Guid.NewGuid(), CompanyId = companyB, MachineId = machineB.Id, Amount = 100m, Status = "Approved" };
-        scenario.Db.MachineSessions.AddRange(sessionA, sessionB);
-        scenario.Db.PaymentTransactions.AddRange(transactionA, transactionB);
+        var pendingSession = new MachineSession { Id = Guid.NewGuid(), CompanyId = companyA, MachineId = machineA2.Id, State = MachineSessionStates.Completed };
+        scenario.Db.MachineSessions.AddRange(sessionA, sessionB, pendingSession);
+        scenario.Db.PaymentTransactions.AddRange(transactionA, transactionB, pendingTransaction);
         scenario.Db.MachineProductSlots.AddRange(
             new MachineProductSlot { CompanyId = companyA, MachineId = machineA.Id, ItemNumber = 1, ProductId = "coffee", Capacity = 20 },
             new MachineProductSlot { CompanyId = companyA, MachineId = machineA.Id, ItemNumber = 2, ProductId = "tea", Capacity = 20 },
+            new MachineProductSlot { CompanyId = companyA, MachineId = machineA.Id, ItemNumber = 3, ProductId = "juice", Capacity = 20 },
             new MachineProductSlot { CompanyId = companyB, MachineId = machineB.Id, ItemNumber = 1, ProductId = "soda", Capacity = 20 });
         scenario.Db.SaleRecords.AddRange(
             new SaleRecord
@@ -291,22 +401,40 @@ public sealed class DatabaseDataServiceScopeTests
                 CompanyId = companyB, MachineId = machineB.Id, SessionId = sessionB.Id,
                 TransactionId = transactionB.Id, ItemNumber = 1, ProductId = "soda",
                 ProductNameSnapshot = "Refrigerante", Quantity = 1, GrossAmount = 100m, SoldAt = DateTime.UtcNow
+            },
+            new SaleRecord
+            {
+                CompanyId = companyA, MachineId = machineA2.Id, SessionId = pendingSession.Id,
+                TransactionId = pendingTransaction.Id, ItemNumber = 2, ProductId = "tea",
+                ProductNameSnapshot = "Chá", Quantity = 1, GrossAmount = 50m,
+                FinancialStatus = "ReconciliationRequired", SoldAt = DateTime.UtcNow
             });
         await scenario.Db.SaveChangesAsync();
 
         var service = new DatabaseDataService(scenario.Db);
-        var top = Assert.Single(service.GetTopProducts(companyA));
+        var top = service.GetTopProducts(companyA);
         var bottom = service.GetBottomProducts(companyA);
         var stats = service.GetDashboardStats(companyA);
 
-        Assert.Equal("Café", top.Name);
-        Assert.Equal(2, top.TotalSold);
-        Assert.Equal(6m, top.Revenue);
-        Assert.Equal("Chá", bottom.First().Name);
-        Assert.Equal(0, bottom.First().TotalSold);
+        Assert.Equal("Café", top[0].Name);
+        Assert.Equal(2, top[0].TotalSold);
+        Assert.Equal(6m, top[0].Revenue);
+        Assert.Equal("Suco", bottom[0].Name);
+        Assert.Equal(0, bottom[0].TotalSold);
+        Assert.Equal(0m, bottom[0].Revenue);
+        Assert.Equal("Chá", bottom[1].Name);
+        Assert.Equal(1, bottom[1].TotalSold);
+        Assert.Equal(0m, bottom[1].Revenue);
         Assert.DoesNotContain(bottom, product => product.Name == "Refrigerante");
         Assert.Equal(6m, stats.TotalRevenue30d);
-        Assert.Equal(2, stats.TotalSales30d);
+        Assert.Equal(3, stats.TotalSales30d);
+        var machines = service.GetMachines(companyA);
+        var machine = Assert.Single(machines, item => item.Id == machineA.Id);
+        Assert.Equal(6m, machine.Revenue30d);
+        Assert.Equal(2, machine.TotalSales30d);
+        var pendingMachine = Assert.Single(machines, item => item.Id == machineA2.Id);
+        Assert.Equal(0m, pendingMachine.Revenue30d);
+        Assert.Equal(1, pendingMachine.TotalSales30d);
     }
 
     [Fact]

@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { getErrorMessage } from "@/lib/utils";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 
 export default function Locations() {
     const navigate = useNavigate();
@@ -159,7 +159,7 @@ export default function Locations() {
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                                     <KpiCard title="Total de Localizações" value={totalLocations.toString()} icon={MapPin} subtitle="cadastradas" />
                                     <KpiCard title="Máquinas Vinculadas" value={linkedMachines.toString()} icon={Box} subtitle="em localizações" />
-                                    <KpiCard title="Faturamento Gerado" value={`R$ ${totalRevenue.toLocaleString("pt-BR")}`} icon={DollarSign} subtitle="últimos 30 dias" />
+                                    <KpiCard title="Faturamento Gerado" value={`R$ ${totalRevenue.toLocaleString("pt-BR")}`} icon={DollarSign} subtitle="30 dias; faturamento pendente de conciliação excluído" />
                                     <KpiCard title="Volume de Vendas" value={totalSales.toLocaleString("pt-BR")} icon={ShoppingCart} subtitle="pagamentos aprovados" />
                                 </div>
 

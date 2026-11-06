@@ -21,6 +21,18 @@ public static class DbInitializer
         {
             context.Database.EnsureCreated();
             EnsureSqliteCompatibilitySchema(context);
+            if (!context.SessionAdmissionGates.Any())
+            {
+                context.SessionAdmissionGates.Add(new SessionAdmissionGate
+                {
+                    Id = SessionAdmissionGate.SingletonId,
+                    NewSessionsPaused = false,
+                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedBy = "sqlite-initializer",
+                    Reason = "default"
+                });
+                context.SaveChanges();
+            }
         }
         else if (seedDemoData)
         {
@@ -231,15 +243,6 @@ public static class DbInitializer
             context.Users.Add(partnerUser);
         }
 
-        // Compatibilidade com a conta de plataforma criada pelas versões antigas.
-        // Depois desta promoção, a autorização usa a role persistida no usuário.
-        var platformAdmin = context.Users.FirstOrDefault(u =>
-            u.Email.ToLower() == "dev.ivan@gmail.com");
-        if (platformAdmin != null && platformAdmin.Role != AppRoles.PlatformAdmin)
-        {
-            platformAdmin.Role = AppRoles.PlatformAdmin;
-        }
-
         foreach (var entry in context.ChangeTracker.Entries<Machine>())
         {
             var serial = entry.Entity.SerialNumber?.Trim().ToUpperInvariant();
@@ -254,6 +257,17 @@ public static class DbInitializer
 
     private static void EnsureSqliteCompatibilitySchema(AppDbContext context)
     {
+        EnsureSqliteColumn(context, "SystemSettings", "IsSingleton", "INTEGER NOT NULL DEFAULT 1");
+        if (context.SystemSettings.Count() > 1)
+        {
+            throw new InvalidOperationException(
+                "O banco SQLite contém mais de uma configuração global; consolide os registros antes de iniciar a aplicação.");
+        }
+
+        context.Database.ExecuteSqlRaw("""
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_SystemSettings_IsSingleton" ON "SystemSettings" ("IsSingleton");
+""");
+
         context.Database.ExecuteSqlRaw("""
 CREATE TABLE IF NOT EXISTS "Locations" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Locations" PRIMARY KEY,
@@ -381,6 +395,8 @@ CREATE TABLE IF NOT EXISTS "MachineConnectionStates" (
     "ConnectionId" TEXT NULL,
     "OwnerNodeId" TEXT NULL,
     "OwnerConnectionId" TEXT NULL,
+    "CommandRoutingVersion" INTEGER NULL,
+    "OwnerLeaseExpiresAt" TEXT NULL,
     "ConnectedAt" TEXT NULL,
     "DisconnectedAt" TEXT NULL,
     "LastSeenAt" TEXT NULL,
@@ -404,6 +420,8 @@ CREATE INDEX IF NOT EXISTS "IX_MachineConnectionStates_CompanyId_IsOnline" ON "M
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatus", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerNodeId", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerConnectionId", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "CommandRoutingVersion", "INTEGER NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerLeaseExpiresAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRaw", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusUpdatedAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRequestAt", "TEXT NULL");

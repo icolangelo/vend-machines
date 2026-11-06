@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using VendingMachines.Api.Controllers;
 using VendingMachines.Api.Services;
@@ -10,6 +12,73 @@ namespace VendingMachines.Api.Tests;
 
 public sealed class RoleMatrixTests
 {
+    [Fact]
+    public void EveryControllerActionDeclaresAuthorizationOrAnAnonymousException()
+    {
+        var unsecuredActions = typeof(AuthController).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && typeof(ControllerBase).IsAssignableFrom(type))
+            .SelectMany(controller => controller
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .Where(method => method.GetCustomAttributes<HttpMethodAttribute>(inherit: true).Any())
+                .Where(method =>
+                    !controller.GetCustomAttributes<AuthorizeAttribute>(inherit: true).Any() &&
+                    !method.GetCustomAttributes<AuthorizeAttribute>(inherit: true).Any() &&
+                    !method.GetCustomAttributes<AllowAnonymousAttribute>(inherit: true).Any())
+                .Select(method => $"{controller.Name}.{method.Name}"))
+            .ToArray();
+
+        Assert.Empty(unsecuredActions);
+    }
+
+    [Fact]
+    public void EveryMutatingControllerActionRequiresARoleOrAReviewedUserScopedException()
+    {
+        var reviewedRolelessWrites = new HashSet<string>(StringComparer.Ordinal)
+        {
+            // This writes only the current user's receipt after checking alert company scope.
+            $"{nameof(AlertsController)}.{nameof(AlertsController.MarkRead)}",
+            // This issues a short-lived ticket for the authenticated user's read-only telemetry panel.
+            $"{nameof(TelemetryController)}.{nameof(TelemetryController.CreateSocketTicket)}"
+        };
+        var writeVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "POST", "PUT", "PATCH", "DELETE"
+        };
+
+        var actions = typeof(AuthController).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && typeof(ControllerBase).IsAssignableFrom(type))
+            .SelectMany(controller => controller
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                .Where(method => method.GetCustomAttributes<HttpMethodAttribute>(inherit: true)
+                    .Any(route => route.HttpMethods.Any(writeVerbs.Contains)))
+                .Select(method => (Controller: controller, Method: method)))
+            .ToArray();
+
+        var unreviewedRolelessWrites = new List<string>();
+        var observedRolelessWrites = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (controller, method) in actions)
+        {
+            if (controller.GetCustomAttributes<AllowAnonymousAttribute>(inherit: true).Any() ||
+                method.GetCustomAttributes<AllowAnonymousAttribute>(inherit: true).Any())
+                continue;
+
+            var authorization = controller.GetCustomAttributes<AuthorizeAttribute>(inherit: true)
+                .Concat(method.GetCustomAttributes<AuthorizeAttribute>(inherit: true))
+                .ToArray();
+            if (authorization.Any(attribute => !string.IsNullOrWhiteSpace(attribute.Roles)))
+                continue;
+
+            var actionName = $"{controller.Name}.{method.Name}";
+            if (reviewedRolelessWrites.Contains(actionName))
+                observedRolelessWrites.Add(actionName);
+            else
+                unreviewedRolelessWrites.Add(actionName);
+        }
+
+        Assert.Empty(unreviewedRolelessWrites);
+        Assert.Equal(reviewedRolelessWrites.OrderBy(x => x), observedRolelessWrites.OrderBy(x => x));
+    }
+
     [Theory]
     [InlineData(typeof(MachinesController), nameof(MachinesController.Create))]
     [InlineData(typeof(MachinesController), nameof(MachinesController.Update))]
@@ -22,6 +91,7 @@ public sealed class RoleMatrixTests
     [InlineData(typeof(ProductsController), nameof(ProductsController.UpdateProduct))]
     [InlineData(typeof(ProductsController), nameof(ProductsController.CreateProductType))]
     [InlineData(typeof(ProductsController), nameof(ProductsController.UpdateProductType))]
+    [InlineData(typeof(ProductsController), nameof(ProductsController.DeleteProductType))]
     [InlineData(typeof(ProductsController), nameof(ProductsController.DeleteProduct))]
     [InlineData(typeof(InventoryController), nameof(InventoryController.ConfigureSlot))]
     [InlineData(typeof(InventoryController), nameof(InventoryController.Restock))]
@@ -30,6 +100,7 @@ public sealed class RoleMatrixTests
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.StartSession))]
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.RequestMdbStatus))]
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.CancelSession))]
+    [InlineData(typeof(TelemetryController), nameof(TelemetryController.ResolveIncompleteClosure))]
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.SendCommand))]
     [InlineData(typeof(PaymentsController), nameof(PaymentsController.OAuthCallback))]
     [InlineData(typeof(PaymentsController), nameof(PaymentsController.DisconnectIntegration))]

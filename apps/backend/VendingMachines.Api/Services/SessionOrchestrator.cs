@@ -24,7 +24,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     };
 
     private readonly AppDbContext _db;
-    private readonly TelemetryConnectionManager _connections;
+    private readonly ITelemetryConnectionOperations _connections;
     private readonly TelemetryPanelHub _panelHub;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
@@ -33,7 +33,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
     public SessionOrchestrator(
         AppDbContext db,
-        TelemetryConnectionManager connections,
+        ITelemetryConnectionOperations connections,
         TelemetryPanelHub panelHub,
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
@@ -60,6 +60,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         await gate.WaitAsync(cancellationToken);
         try
         {
+            using var sessionStartAdmission = _connections.TryBeginSessionStart()
+                ?? throw new InvalidOperationException("server_restarting");
             return await StartSessionCoreAsync(machineId, companyId, userId, source, cancellationToken);
         }
         finally
@@ -79,8 +81,15 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             x => x.Id == machineId && x.CompanyId == companyId, cancellationToken)
             ?? throw new KeyNotFoundException("Máquina não encontrada.");
 
+        await using var admissionTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        if (!await MachineOperationLock.AcquireAsync(_db, machineId, companyId, cancellationToken))
+            throw new KeyNotFoundException("Máquina não encontrada.");
+        await _db.Entry(machine).ReloadAsync(cancellationToken);
+
         if (!await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
             throw new InvalidOperationException("machine_offline");
+        if (!await _connections.HasCommandRouteAsync(machine.SerialNumber, cancellationToken))
+            throw new InvalidOperationException("machine_owner_unknown");
 
         var automatic = string.Equals(source, "automatic_mdb", StringComparison.Ordinal);
         if (automatic && !machine.AutoOpenSessionEnabled)
@@ -112,19 +121,39 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             cancellationToken);
         if (existing != null) throw new InvalidOperationException("session_already_active");
 
+        var locationNameSnapshot = string.IsNullOrWhiteSpace(machine.ClientName)
+            ? machine.Location
+            : machine.ClientName;
+        if (machine.LocationId is Guid assignedLocationId)
+        {
+            locationNameSnapshot = await _db.Locations.AsNoTracking()
+                .Where(location => location.Id == assignedLocationId && location.CompanyId == companyId)
+                .Select(location => location.Name)
+                .FirstOrDefaultAsync(cancellationToken) ?? locationNameSnapshot;
+        }
+
         var session = new MachineSession
         {
             MachineId = machineId,
             CompanyId = companyId,
+            LocationIdSnapshot = machine.LocationId,
+            LocationNameSnapshot = locationNameSnapshot,
             StartedByUserId = userId,
             Source = source,
             State = MachineSessionStates.Opening
         };
+        var admissionGate = await new SessionAdmissionGateService(_db).LockForSessionStartAsync(cancellationToken);
+        if (admissionGate is null && _db.Database.IsNpgsql())
+            throw new InvalidOperationException("session_admission_gate_unavailable");
+        if (admissionGate?.NewSessionsPaused == true)
+            throw new InvalidOperationException("deployment_draining");
+
         _db.MachineSessions.Add(session);
         await AddEventAsync(session, "session.opening", "Sessão MDB solicitada.", userId, null, cancellationToken);
         try
         {
             await _db.SaveChangesAsync(cancellationToken);
+            await admissionTransaction.CommitAsync(cancellationToken);
         }
         catch (DbUpdateException ex) when (IsOpenSessionConstraintViolation(ex))
         {
@@ -152,6 +181,54 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         return session;
     }
 
+    public async Task<MachineSession> ResolveIncompleteClosureAsync(
+        Guid sessionId,
+        Guid companyId,
+        Guid userId,
+        string? evidenceReference,
+        CancellationToken cancellationToken)
+    {
+        var reference = evidenceReference?.Trim();
+        if (string.IsNullOrEmpty(reference) || reference.Length is < 3 or > 64 ||
+            reference.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_' or '.' or '/' or ':')))
+            throw new InvalidOperationException("closure_evidence_reference_invalid");
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        var session = await _db.MachineSessions.FirstOrDefaultAsync(
+            item => item.Id == sessionId && item.CompanyId == companyId,
+            cancellationToken);
+        if (session is null) throw new KeyNotFoundException("Sessão não encontrada.");
+        if (session.State != MachineSessionStates.ClosureIncomplete || session.ClosedAt is null)
+            throw new InvalidOperationException("closure_not_incomplete");
+
+        var now = DateTime.UtcNow;
+        var claimed = await _db.MachineSessions
+            .Where(item => item.Id == sessionId && item.CompanyId == companyId &&
+                           item.State == MachineSessionStates.ClosureIncomplete && item.ClosedAt != null)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.State, MachineSessionStates.ClosureVerified)
+                .SetProperty(item => item.LastEventAt, now), cancellationToken);
+        if (claimed == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw new InvalidOperationException("closure_not_incomplete");
+        }
+
+        session.State = MachineSessionStates.ClosureVerified;
+        session.LastEventAt = now;
+        await AddEventAsync(
+            session,
+            "session.closure_verified",
+            "Responsável confirmou que a máquina foi inspecionada, está ociosa e pode receber nova sessão.",
+            userId,
+            JsonSerializer.Serialize(new { evidenceReference = reference }),
+            cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        await BroadcastSessionAsync(session);
+        return session;
+    }
+
     public async Task<MachineSession> CancelSessionAsync(
         Guid sessionId,
         Guid companyId,
@@ -165,6 +242,12 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
         if (session.ClosedAt.HasValue) return session;
         var machine = session.Machine ?? throw new InvalidOperationException("Máquina da sessão não encontrada.");
+        var commandRouteAvailable = await _connections.HasCommandRouteAsync(machine.SerialNumber, cancellationToken);
+        var machineOnline = await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken);
+        if (machineOnline && !commandRouteAvailable)
+            throw new InvalidOperationException("machine_owner_unknown");
+        if ((session.State is MachineSessionStates.Opening or MachineSessionStates.AwaitingSelection) && !commandRouteAvailable)
+            throw new InvalidOperationException("machine_offline");
 
         if (session.State is MachineSessionStates.Opening or MachineSessionStates.AwaitingSelection)
         {
@@ -178,7 +261,9 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         }
         else if (session.State == MachineSessionStates.PaymentPending)
         {
-            await CancelPendingPaymentAsync(session, reason, userId, cancellationToken);
+            var cancelled = await CancelPendingPaymentAsync(session, reason, userId, cancellationToken);
+            if (!cancelled)
+                throw new InvalidOperationException("payment_already_approved");
         }
         else
         {
@@ -206,8 +291,35 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         var type = GetString(data, "type");
         if (string.IsNullOrWhiteSpace(command) || string.IsNullOrWhiteSpace(type)) return;
 
-        var session = await ActiveSessions().Include(x => x.Machine).Include(x => x.Transaction)
+        MachineSession? session = null;
+        List<MachineSession> recentClosedDeliverySessions = [];
+        var deliverySuccessWithoutTransaction = command == "vend" && type == "success" && IsMissingTransactionId(data);
+        if (command == "vend" && type == "success")
+        {
+            if (deliverySuccessWithoutTransaction)
+                recentClosedDeliverySessions = await FindRecentClosedDeliverySessionsAsync(message, cancellationToken);
+            else
+                session = await FindClosedDeliverySessionByTransactionAsync(message, data, cancellationToken);
+        }
+
+        session ??= await ActiveSessions().Include(x => x.Machine).Include(x => x.Transaction)
             .FirstOrDefaultAsync(x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId, cancellationToken);
+
+        if (deliverySuccessWithoutTransaction && recentClosedDeliverySessions.Count > 0)
+        {
+            if (session != null || recentClosedDeliverySessions.Count > 1)
+            {
+                await AddStandaloneEventAsync(
+                    message,
+                    "delivery.ambiguous_session_correlation",
+                    "Success recebido sem transactionId enquanto há sessão ativa ou mais de uma sessão recente encerrada com entrega registrada; nenhum estado de sessão foi alterado.",
+                    message.DataJson,
+                    cancellationToken);
+                return;
+            }
+
+            session = recentClosedDeliverySessions[0];
+        }
         if (session == null)
         {
             await AddStandaloneEventAsync(message, $"{command}.{type}", "Evento recebido sem sessão ativa.", message.DataJson, cancellationToken);
@@ -215,7 +327,12 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         }
 
         session.LastEventAt = message.ReceivedAt;
-        await AddEventAsync(session, $"{command}.{type}", null, null, message.DataJson, cancellationToken);
+        var deliverySuccessAlreadyResolved = command == "vend" && type == "success" &&
+            session.State is MachineSessionStates.Completed or MachineSessionStates.DeliveryFailed or
+                MachineSessionStates.RefundPending or MachineSessionStates.Refunded or
+                MachineSessionStates.ReconciliationRequired;
+        if (!deliverySuccessAlreadyResolved)
+            await AddEventAsync(session, $"{command}.{type}", null, null, message.DataJson, cancellationToken);
 
         var transactionCorrelation = GetTransactionCorrelation(session, data);
         if (transactionCorrelation is TransactionCorrelation.Invalid or TransactionCorrelation.Mismatch)
@@ -256,8 +373,24 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                 }
                 else
                 {
+                    var selectedSlot = await _db.MachineProductSlots.AsNoTracking()
+                        .Where(slot => slot.CompanyId == session.CompanyId &&
+                                       slot.MachineId == session.MachineId &&
+                                       slot.ItemNumber == item)
+                        .Select(slot => new
+                        {
+                            slot.ProductId,
+                            ProductName = _db.Products
+                                .Where(product => product.Id == slot.ProductId &&
+                                                  (product.CompanyId == null || product.CompanyId == session.CompanyId))
+                                .Select(product => product.Name)
+                                .FirstOrDefault()
+                        })
+                        .FirstOrDefaultAsync(cancellationToken);
                     session.ItemNumber = item;
                     session.AmountCents = price;
+                    session.SelectedProductIdSnapshot = selectedSlot?.ProductId;
+                    session.SelectedProductNameSnapshot = selectedSlot?.ProductName;
                     session.SelectionDeadlineAt = null;
                     await _db.SaveChangesAsync(cancellationToken);
                     await CreateAndSendPixAsync(session, price, item, cancellationToken);
@@ -300,6 +433,42 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         await BroadcastSessionAsync(session);
     }
 
+    private async Task<MachineSession?> FindClosedDeliverySessionByTransactionAsync(
+        InboundDeviceMessage message,
+        JsonElement data,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(GetString(data, "transactionId"), out var transactionId))
+            return null;
+
+        var matches = await _db.MachineSessions.Include(x => x.Transaction)
+            .Where(x => x.MachineId == message.MachineId &&
+                        x.CompanyId == message.CompanyId &&
+                        x.ClosedAt != null &&
+                        x.TransactionId == transactionId &&
+                        x.ItemNumber != null)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private async Task<List<MachineSession>> FindRecentClosedDeliverySessionsAsync(
+        InboundDeviceMessage message,
+        CancellationToken cancellationToken)
+    {
+        var lowerBound = message.ReceivedAt.AddMinutes(-2);
+        return await _db.MachineSessions.Include(x => x.Transaction)
+            .Where(x => x.MachineId == message.MachineId &&
+                        x.CompanyId == message.CompanyId &&
+                        x.ClosedAt != null && x.ClosedAt >= lowerBound && x.ClosedAt <= message.ReceivedAt &&
+                        x.TransactionId != null &&
+                        x.ItemNumber != null)
+            .OrderByDescending(x => x.ClosedAt)
+            .Take(2)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task HandlePaymentResultAsync(Guid transactionId, bool approved, string reason, CancellationToken cancellationToken)
     {
         var session = await _db.MachineSessions.Include(x => x.Machine).Include(x => x.Transaction)
@@ -311,7 +480,37 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                 cancellationToken);
         if (session == null || session.Transaction == null || session.Machine == null) return;
 
-        if (session.State != MachineSessionStates.PaymentPending)
+        var claimedPendingResult = false;
+        if (session.State == MachineSessionStates.PaymentPending)
+        {
+            var now = DateTime.UtcNow;
+            var deliveryDeadline = approved ? now.AddSeconds(60) : (DateTime?)null;
+            var claimed = await _db.MachineSessions
+                .Where(item => item.Id == session.Id && item.State == MachineSessionStates.PaymentPending)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, approved
+                        ? MachineSessionStates.PaymentApproved
+                        : MachineSessionStates.DeniedAwaitingClosure)
+                    .SetProperty(item => item.PaymentDeadlineAt, (DateTime?)null)
+                    .SetProperty(item => item.DeliveryDeadlineAt, deliveryDeadline), cancellationToken);
+
+            if (claimed > 0)
+            {
+                claimedPendingResult = true;
+                session.State = approved
+                    ? MachineSessionStates.PaymentApproved
+                    : MachineSessionStates.DeniedAwaitingClosure;
+                session.PaymentDeadlineAt = null;
+                session.DeliveryDeadlineAt = deliveryDeadline;
+            }
+            else
+            {
+                await _db.Entry(session).ReloadAsync(cancellationToken);
+                await _db.Entry(session.Transaction).ReloadAsync(cancellationToken);
+            }
+        }
+
+        if (!claimedPendingResult && session.State != MachineSessionStates.PaymentPending)
         {
             if (approved && session.State is MachineSessionStates.DeniedAwaitingClosure or MachineSessionStates.Denied)
             {
@@ -326,13 +525,15 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             return;
         }
 
+        if (!claimedPendingResult)
+        {
+            throw new InvalidOperationException("Não foi possível reivindicar o resultado do pagamento para a sessão.");
+        }
+
         if (approved)
         {
             session.Transaction.Status = "Approved";
-            session.Transaction.CompletedAt = DateTime.UtcNow;
-            session.State = MachineSessionStates.PaymentApproved;
-            session.PaymentDeadlineAt = null;
-            session.DeliveryDeadlineAt = DateTime.UtcNow.AddSeconds(60);
+            session.Transaction.CompletedAt ??= DateTime.UtcNow;
             await AddEventAsync(session, "payment.approved", reason, null, null, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             var result = await SendTrackedCommandAsync(session.Machine, session, "VENDA_APROVADA", null, cancellationToken);
@@ -342,9 +543,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         {
             session.Transaction.Status = "Rejected";
             session.Transaction.CompletedAt = DateTime.UtcNow;
-            session.State = MachineSessionStates.DeniedAwaitingClosure;
             session.CloseReason = reason;
-            session.PaymentDeadlineAt = null;
             await AddEventAsync(session, "payment.denied", reason, null, null, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             await SendTrackedCommandAsync(session.Machine, session, "VENDA_NEGADA", null, cancellationToken);
@@ -357,18 +556,27 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     public async Task ProcessDeadlinesAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var connectionFreshnessCutoff = now - MachineConnectionFreshness.Window;
         var sessions = await ActiveSessions().Include(x => x.Machine).Include(x => x.Transaction)
-            .Where(x => (x.SelectionDeadlineAt != null && x.SelectionDeadlineAt <= now) ||
-                        (x.PaymentDeadlineAt != null && x.PaymentDeadlineAt <= now) ||
-                        (x.DeliveryDeadlineAt != null && x.DeliveryDeadlineAt <= now) ||
-                        ((x.State == MachineSessionStates.ClosingWithoutSelection ||
-                          x.State == MachineSessionStates.DeviceClosingBeforeSelection ||
-                          x.State == MachineSessionStates.DeniedAwaitingClosure ||
-                          x.State == MachineSessionStates.DeliveryFailed ||
-                          x.State == MachineSessionStates.RefundPending ||
-                          x.State == MachineSessionStates.Refunded ||
-                          x.State == MachineSessionStates.ReconciliationRequired ||
-                          x.State == MachineSessionStates.Completed) && x.LastEventAt <= now.AddSeconds(-30)))
+            .Where(session => !_db.MachineConnectionStates.AsNoTracking().Any(state =>
+                            state.MachineId == session.MachineId &&
+                            state.IsOnline && state.LastSeenAt >= connectionFreshnessCutoff &&
+                            (state.OwnerNodeId == null || state.OwnerNodeId == "" ||
+                             state.ConnectionId == null || state.ConnectionId == "" ||
+                             state.OwnerConnectionId != state.ConnectionId ||
+                             state.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion ||
+                             state.OwnerLeaseExpiresAt == null || state.OwnerLeaseExpiresAt <= now)))
+                        .Where(session => (session.SelectionDeadlineAt != null && session.SelectionDeadlineAt <= now) ||
+                                         (session.PaymentDeadlineAt != null && session.PaymentDeadlineAt <= now) ||
+                                         (session.DeliveryDeadlineAt != null && session.DeliveryDeadlineAt <= now) ||
+                                         ((session.State == MachineSessionStates.ClosingWithoutSelection ||
+                                           session.State == MachineSessionStates.DeviceClosingBeforeSelection ||
+                                           session.State == MachineSessionStates.DeniedAwaitingClosure ||
+                                           session.State == MachineSessionStates.DeliveryFailed ||
+                                           session.State == MachineSessionStates.RefundPending ||
+                                           session.State == MachineSessionStates.Refunded ||
+                                           session.State == MachineSessionStates.ReconciliationRequired ||
+                                           session.State == MachineSessionStates.Completed) && session.LastEventAt <= now.AddSeconds(-30)))
             .ToListAsync(cancellationToken);
 
         foreach (var session in sessions)
@@ -383,7 +591,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             }
             else if (session.DeliveryDeadlineAt <= now && session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
             {
-                await BeginRefundAsync(session, "delivery_timeout", cancellationToken);
+                await BeginDeliveryTimeoutRefundAsync(session, now, cancellationToken);
             }
             else if (session.LastEventAt <= now.AddSeconds(-30))
             {
@@ -399,123 +607,270 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    private async Task BeginDeliveryTimeoutRefundAsync(
+        MachineSession session,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (session.Transaction == null || !session.TransactionId.HasValue)
+            return;
+
+        await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+        var claimed = await _db.MachineSessions
+            .Where(item => item.Id == session.Id &&
+                item.TransactionId != null &&
+                item.DeliveryDeadlineAt != null && item.DeliveryDeadlineAt <= now &&
+                (item.State == MachineSessionStates.PaymentApproved ||
+                 item.State == MachineSessionStates.AwaitingDeliveryResult))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.State, MachineSessionStates.RefundPending)
+                .SetProperty(item => item.DeliveryDeadlineAt, (DateTime?)null), cancellationToken);
+
+        if (claimed == 0)
+        {
+            await transactionScope.RollbackAsync(cancellationToken);
+            await _db.Entry(session).ReloadAsync(cancellationToken);
+            return;
+        }
+
+        session.State = MachineSessionStates.RefundPending;
+        session.DeliveryDeadlineAt = null;
+        var refundQueued = await QueueRefundAsync(session, "delivery_timeout", cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        await transactionScope.CommitAsync(cancellationToken);
+
+        if (refundQueued)
+            await ProcessOutboxAsync(cancellationToken);
+        await BroadcastSessionAsync(session);
+    }
+
     public async Task ProcessOutboxAsync(CancellationToken cancellationToken)
     {
         var now = DateTime.UtcNow;
+        var legacyOverlapActive = !string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"]);
+        var claimableStatus = legacyOverlapActive ? "deferred_legacy_overlap" : "pending";
         var sessionsToBroadcast = new List<MachineSession>();
+        var refundedTransactionIds = new HashSet<Guid>();
+
+        // The previous API consumes only Pending rows and cannot claim them atomically.
+        // During overlap, process only candidate-owned deferred rows; the old binary
+        // ignores that status, so it cannot race the candidate for these provider calls.
+        if (!legacyOverlapActive)
+        {
+            await _db.OutboxMessages
+                .Where(message => message.Status == "deferred_legacy_overlap")
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(message => message.Status, "pending")
+                    .SetProperty(message => message.NextAttemptAt, now)
+                    .SetProperty(message => message.LastError, (string?)null), cancellationToken);
+        }
+
+        await _db.OutboxMessages
+            .Where(x => x.Status == "processing" && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.Status, claimableStatus)
+                .SetProperty(x => x.NextAttemptAt, now)
+                .SetProperty(x => x.LastError, "worker_lease_expired"), cancellationToken);
+
         var messages = await _db.OutboxMessages
-            .Where(x => x.Status == "pending" && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
+            .Where(x => x.Status == claimableStatus && (x.NextAttemptAt == null || x.NextAttemptAt <= now))
             .OrderBy(x => x.CreatedAt)
             .Take(25)
             .ToListAsync(cancellationToken);
 
         foreach (var message in messages)
         {
-            var transaction = message.TransactionId.HasValue
-                ? await _db.PaymentTransactions.FirstOrDefaultAsync(x => x.Id == message.TransactionId, cancellationToken)
-                : null;
-            var session = message.SessionId.HasValue
-                ? await _db.MachineSessions.FirstOrDefaultAsync(x => x.Id == message.SessionId, cancellationToken)
-                : null;
-            if (transaction == null)
+            var claimTime = DateTime.UtcNow;
+            var leaseExpiresAt = claimTime.AddMinutes(2);
+            int claimed;
+            try
             {
-                message.Status = "failed";
-                message.LastError = "transaction_not_found";
-                message.ProcessedAt = now;
-                continue;
+                claimed = await _db.OutboxMessages
+                    .Where(x => x.Id == message.Id &&
+                                x.Status == claimableStatus &&
+                                (x.NextAttemptAt == null || x.NextAttemptAt <= claimTime))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.Status, "processing")
+                        .SetProperty(x => x.NextAttemptAt, leaseExpiresAt)
+                        .SetProperty(x => x.LastError, (string?)null), cancellationToken);
             }
-
-            var associationIsValid = transaction.CompanyId == message.CompanyId &&
-                                     transaction.MachineId == message.MachineId &&
-                                     (!message.SessionId.HasValue ||
-                                      session != null &&
-                                      session.CompanyId == message.CompanyId &&
-                                      session.MachineId == message.MachineId &&
-                                      session.TransactionId == transaction.Id);
-            if (!associationIsValid)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                message.Status = "failed";
-                message.LastError = "association_mismatch";
-                message.ProcessedAt = now;
-                _logger.LogError(
-                    "Outbox financeiro {OutboxId} foi encerrado porque sessão, cobrança e máquina não correspondem.",
-                    message.Id);
-                continue;
+                await ReleaseOutboxClaimAfterShutdownAsync(message.Id, leaseExpiresAt);
+                throw;
             }
+            if (claimed == 0) continue;
 
-            var success = message.MessageType switch
+            try
             {
-                "refund_payment" => await RefundProviderPaymentAsync(transaction, cancellationToken),
-                "cancel_payment" => await CancelProviderPaymentAsync(transaction, cancellationToken),
-                _ => true
-            };
+                // ExecuteUpdate bypasses EF's tracked snapshot. Reload the successful claim so a later
+                // failure transition from Processing back to Pending is detected and persisted.
+                await _db.Entry(message).ReloadAsync(cancellationToken);
 
-            message.Attempts++;
-            if (success)
-            {
-                message.Status = "processed";
-                message.ProcessedAt = now;
-                if (message.MessageType == "refund_payment" && session != null)
+                if (message.MessageType is not ("refund_payment" or "cancel_payment"))
                 {
-                    session.State = MachineSessionStates.Refunded;
-                    transaction.Status = "Refunded";
-                    var sale = await _db.SaleRecords.FirstOrDefaultAsync(
-                        record => record.TransactionId == transaction.Id &&
-                                  record.CompanyId == transaction.CompanyId &&
-                                  record.MachineId == transaction.MachineId,
-                        cancellationToken);
-                    if (sale != null)
+                    message.Status = "failed";
+                    message.LastError = "unsupported_message_type";
+                    message.ProcessedAt = DateTime.UtcNow;
+                    _logger.LogError(
+                        "Outbox financeiro {OutboxId} foi encerrado por tipo de mensagem não suportado.",
+                        message.Id);
+                    await _db.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                var transaction = message.TransactionId.HasValue
+                    ? await _db.PaymentTransactions.FirstOrDefaultAsync(x => x.Id == message.TransactionId, cancellationToken)
+                    : null;
+                var session = message.SessionId.HasValue
+                    ? await _db.MachineSessions.FirstOrDefaultAsync(x => x.Id == message.SessionId, cancellationToken)
+                    : null;
+                if (transaction == null)
+                {
+                    message.Status = "failed";
+                    message.LastError = "transaction_not_found";
+                    message.ProcessedAt = now;
+                    await _db.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                var associationIsValid = transaction.CompanyId == message.CompanyId &&
+                                         transaction.MachineId == message.MachineId &&
+                                         (!message.SessionId.HasValue ||
+                                          session != null &&
+                                          session.CompanyId == message.CompanyId &&
+                                          session.MachineId == message.MachineId &&
+                                          session.TransactionId == transaction.Id);
+                if (!associationIsValid)
+                {
+                    message.Status = "failed";
+                    message.LastError = "association_mismatch";
+                    message.ProcessedAt = now;
+                    _logger.LogError(
+                        "Outbox financeiro {OutboxId} foi encerrado porque sessão, cobrança e máquina não correspondem.",
+                        message.Id);
+                    await _db.SaveChangesAsync(cancellationToken);
+                    continue;
+                }
+
+                var success = message.MessageType switch
+                {
+                    "refund_payment" => await RefundProviderPaymentAsync(transaction, cancellationToken),
+                    "cancel_payment" => await CancelProviderPaymentAsync(transaction, cancellationToken),
+                    _ => false
+                };
+
+                var processedAt = DateTime.UtcNow;
+                message.Attempts++;
+                if (success)
+                {
+                    message.Status = "processed";
+                    message.ProcessedAt = processedAt;
+                    if (message.MessageType == "refund_payment" && session != null)
                     {
-                        sale.RefundedAmount = sale.GrossAmount;
-                        sale.FinancialStatus = "Refunded";
-                    }
-                    await AddEventAsync(session, "refund.completed", null, null, null, cancellationToken);
-                    sessionsToBroadcast.Add(session);
-                }
-                else if (message.MessageType == "cancel_payment")
-                {
-                    transaction.Status = "Cancelled";
-                    transaction.CompletedAt = now;
-                }
-            }
-            else if (message.Attempts >= 5)
-            {
-                message.Status = "failed";
-                message.LastError = "provider_operation_failed";
-                if (message.MessageType == "refund_payment" && session != null)
-                {
-                    session.State = MachineSessionStates.ReconciliationRequired;
-                    transaction.Status = "ReconciliationRequired";
-                    await AddEventAsync(session, "refund.failed", "Estorno falhou após cinco tentativas.", null, null, cancellationToken);
-                    sessionsToBroadcast.Add(session);
-                }
-                else if (message.MessageType == "cancel_payment")
-                {
-                    transaction.Status = "ReconciliationRequired";
-                    if (session != null)
-                    {
-                        session.State = MachineSessionStates.ReconciliationRequired;
-                        await AddEventAsync(
-                            session,
-                            "payment.cancellation_failed",
-                            "Cancelamento financeiro falhou após cinco tentativas.",
-                            null,
-                            null,
+                        session.State = MachineSessionStates.Refunded;
+                        transaction.Status = "Refunded";
+                        refundedTransactionIds.Add(transaction.Id);
+                        var sale = await _db.SaleRecords.FirstOrDefaultAsync(
+                            record => record.TransactionId == transaction.Id &&
+                                      record.CompanyId == transaction.CompanyId &&
+                                      record.MachineId == transaction.MachineId,
                             cancellationToken);
+                        if (sale != null)
+                        {
+                            sale.RefundedAmount = sale.GrossAmount;
+                            sale.FinancialStatus = "Refunded";
+                        }
+                        await AddEventAsync(session, "refund.completed", null, null, null, cancellationToken);
                         sessionsToBroadcast.Add(session);
                     }
+                    else if (message.MessageType == "cancel_payment")
+                    {
+                        transaction.Status = "Cancelled";
+                        transaction.CompletedAt = processedAt;
+                    }
                 }
+                else if (message.Attempts >= 5)
+                {
+                    message.Status = "failed";
+                    message.LastError = "provider_operation_failed";
+                    message.ProcessedAt = processedAt;
+                    if (message.MessageType == "refund_payment" && session != null)
+                    {
+                        session.State = MachineSessionStates.ReconciliationRequired;
+                        transaction.Status = "ReconciliationRequired";
+                        await AddEventAsync(session, "refund.failed", "Estorno falhou após cinco tentativas.", null, null, cancellationToken);
+                        sessionsToBroadcast.Add(session);
+                    }
+                    else if (message.MessageType == "cancel_payment")
+                    {
+                        transaction.Status = "ReconciliationRequired";
+                        if (session != null)
+                        {
+                            session.State = MachineSessionStates.ReconciliationRequired;
+                            await AddEventAsync(
+                                session,
+                                "payment.cancellation_failed",
+                                "Cancelamento financeiro falhou após cinco tentativas.",
+                                null,
+                                null,
+                                cancellationToken);
+                            sessionsToBroadcast.Add(session);
+                        }
+                    }
+                }
+                else
+                {
+                    message.Status = claimableStatus;
+                    message.LastError = "provider_operation_failed";
+                    message.NextAttemptAt = DateTime.UtcNow.AddSeconds(Math.Min(300, 5 * Math.Pow(2, message.Attempts)));
+                }
+
+                // Persist this item's terminal/retry state before spending time on the next
+                // provider request, so a batch cannot outlive earlier items' two-minute leases.
+                await _db.SaveChangesAsync(cancellationToken);
             }
-            else
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                message.LastError = "provider_operation_failed";
-                message.NextAttemptAt = now.AddSeconds(Math.Min(300, 5 * Math.Pow(2, message.Attempts)));
+                await ReleaseOutboxClaimAfterShutdownAsync(message.Id, leaseExpiresAt);
+                throw;
             }
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+        foreach (var transactionId in refundedTransactionIds)
+            await SynchronizeRefundedSaleAsync(transactionId, cancellationToken);
         foreach (var session in sessionsToBroadcast.DistinctBy(x => x.Id))
             await BroadcastSessionAsync(session);
+    }
+
+    private async Task ReleaseOutboxClaimAfterShutdownAsync(Guid outboxId, DateTime leaseExpiresAt)
+    {
+        try
+        {
+            using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var retryAt = DateTime.UtcNow;
+            var retryStatus = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
+                ? "pending"
+                : "deferred_legacy_overlap";
+            var released = await _db.OutboxMessages
+                .Where(message => message.Id == outboxId &&
+                    message.Status == "processing" && message.NextAttemptAt == leaseExpiresAt)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(message => message.Status, retryStatus)
+                    .SetProperty(message => message.NextAttemptAt, (DateTime?)retryAt)
+                    .SetProperty(message => message.LastError, (string?)null), cleanupTimeout.Token);
+
+            if (released > 0)
+                _logger.LogInformation("Outbox financeiro {OutboxId} liberado para retomada após cancelamento do worker.", outboxId);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                "Não foi possível liberar o lease do outbox financeiro {OutboxId} durante o encerramento; ele será retomado após expiração do lease. Tipo de erro: {ExceptionType}.",
+                outboxId,
+                exception.GetType().Name);
+        }
     }
 
     private async Task CreateAndSendPixAsync(MachineSession session, int amountCents, int itemNumber, CancellationToken cancellationToken)
@@ -530,46 +885,70 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         var existing = session.TransactionId.HasValue
             ? await _db.PaymentTransactions.FirstOrDefaultAsync(x => x.Id == session.TransactionId.Value, cancellationToken)
             : null;
-        if (existing != null)
+        if (existing != null &&
+            (existing.Status != "Pending" || !string.IsNullOrWhiteSpace(existing.MercadoPagoPaymentId)))
         {
             await SendPixPayloadAsync(machine, session, existing, cancellationToken);
             return;
         }
 
-        var amount = amountCents / 100m;
-        var settings = await _db.SystemSettings.FirstOrDefaultAsync(cancellationToken);
-        var feePercent = settings?.ApplicationFeePercent ?? 5m;
-        var fee = Math.Round(amount * feePercent / 100m, 2);
-        var transaction = new PaymentTransaction
+        PaymentTransaction transaction;
+        decimal amount;
+        decimal fee;
+        if (existing != null)
         {
-            MachineId = machine.Id,
-            CompanyId = session.CompanyId,
-            Amount = amount,
-            ApplicationFee = fee,
-            Status = "Pending",
-            SendTelemetryToMachine = true
-        };
-        _db.PaymentTransactions.Add(transaction);
-        session.TransactionId = transaction.Id;
-        session.State = MachineSessionStates.PaymentPending;
-        session.PaymentDeadlineAt = DateTime.UtcNow.AddMinutes(5);
-        await _db.SaveChangesAsync(cancellationToken);
+            transaction = existing;
+            amount = transaction.Amount;
+            fee = transaction.ApplicationFee;
+        }
+        else
+        {
+            amount = amountCents / 100m;
+            var feePercent = await PlatformFeeSettingsReader.ReadValidFeePercentAsync(_db, cancellationToken);
+            if (!feePercent.HasValue)
+            {
+                await DenyWithoutPaymentAsync(session, "invalid_application_fee", cancellationToken);
+                return;
+            }
+
+            fee = Math.Round(amount * feePercent.Value / 100m, 2);
+            if (fee <= 0m || fee >= amount)
+            {
+                await DenyWithoutPaymentAsync(session, "invalid_application_fee", cancellationToken);
+                return;
+            }
+
+            transaction = new PaymentTransaction
+            {
+                MachineId = machine.Id,
+                CompanyId = session.CompanyId,
+                Amount = amount,
+                ApplicationFee = fee,
+                Status = "Pending",
+                SendTelemetryToMachine = true
+            };
+            _db.PaymentTransactions.Add(transaction);
+            session.TransactionId = transaction.Id;
+            session.State = MachineSessionStates.PaymentPending;
+            session.PaymentDeadlineAt = DateTime.UtcNow.AddMinutes(5);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
 
         try
         {
-            var integration = await _db.MercadoPagoIntegrations.FirstOrDefaultAsync(
-                x => x.CompanyId == session.CompanyId && x.IsActive, cancellationToken)
-                ?? throw new InvalidOperationException("Integração Mercado Pago não configurada.");
-            var accessToken = EncryptionService.Decrypt(integration.AccessToken);
             if (_environment.IsDevelopment())
             {
-                transaction.MercadoPagoPaymentId = $"mock_mp_{Guid.NewGuid():N}";
+                transaction.MercadoPagoPaymentId = $"mock_mp_{transaction.Id:N}";
                 transaction.MercadoPagoStatus = "pending";
                 transaction.MercadoPagoStatusDetail = "pending_waiting_transfer";
                 transaction.QrCode = $"000201-vendmachine-{transaction.Id:N}";
             }
             else
             {
+                var integration = await _db.MercadoPagoIntegrations.FirstOrDefaultAsync(
+                    x => x.CompanyId == session.CompanyId && x.IsActive, cancellationToken)
+                    ?? throw new InvalidOperationException("Integração Mercado Pago não configurada.");
+                var accessToken = EncryptionService.Decrypt(integration.AccessToken);
                 if (accessToken.Contains("mock", StringComparison.OrdinalIgnoreCase) || accessToken.Length < 15)
                     throw new InvalidOperationException("Credenciais Mercado Pago de simulação ou inválidas não podem ser usadas fora do ambiente de desenvolvimento.");
 
@@ -603,6 +982,11 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             await _db.SaveChangesAsync(cancellationToken);
             await SendPixPayloadAsync(machine, session, transaction, cancellationToken);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Keep the durable pending transaction so the inbox retry can resume with the same idempotency key.
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Falha ao criar Pix para a sessão {SessionId}.", session.Id);
@@ -633,70 +1017,235 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     {
         if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
         {
+            await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var claimed = await _db.MachineSessions
+                .Where(item => item.Id == session.Id &&
+                    (item.State == MachineSessionStates.PaymentApproved ||
+                     item.State == MachineSessionStates.AwaitingDeliveryResult))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, MachineSessionStates.Completed)
+                    .SetProperty(item => item.DeliveryDeadlineAt, (DateTime?)null), cancellationToken);
+
+            if (claimed == 0)
+            {
+                await transactionScope.RollbackAsync(cancellationToken);
+                await _db.Entry(session).ReloadAsync(cancellationToken);
+                if (session.Transaction != null)
+                    await _db.Entry(session.Transaction).ReloadAsync(cancellationToken);
+                if (session.State == MachineSessionStates.Completed)
+                    await AddEventAsync(session, "delivery.duplicate_result", "Success duplicado recebido pela máquina.", null, data.GetRawText(), cancellationToken);
+                else if (session.State is MachineSessionStates.DeliveryFailed or MachineSessionStates.RefundPending or
+                         MachineSessionStates.Refunded or MachineSessionStates.ReconciliationRequired)
+                {
+                    await RecordConflictingDeliveryAsync(session, cancellationToken);
+                    await AddEventAsync(session, "delivery.conflicting_result", "Success recebido depois de failure.", null, data.GetRawText(), cancellationToken);
+                }
+                return;
+            }
+
             session.State = MachineSessionStates.Completed;
             session.DeliveryDeadlineAt = null;
-            if (session.Transaction is { Status: "Approved" } transaction && session.ItemNumber.HasValue &&
-                !await _db.SaleRecords.AnyAsync(sale => sale.TransactionId == transaction.Id, cancellationToken))
-            {
-                var slot = await _db.MachineProductSlots.FirstOrDefaultAsync(
-                    candidate => candidate.CompanyId == session.CompanyId &&
-                                 candidate.MachineId == session.MachineId &&
-                                 candidate.ItemNumber == session.ItemNumber.Value,
-                    cancellationToken);
-                var productName = slot == null
-                    ? null
-                    : await _db.Products.Where(product => product.Id == slot.ProductId &&
-                                                          (product.CompanyId == null || product.CompanyId == session.CompanyId))
-                        .Select(product => product.Name).FirstOrDefaultAsync(cancellationToken);
-                var sale = new SaleRecord
-                {
-                    CompanyId = session.CompanyId,
-                    MachineId = session.MachineId,
-                    SessionId = session.Id,
-                    TransactionId = transaction.Id,
-                    ItemNumber = session.ItemNumber.Value,
-                    ProductId = slot?.ProductId,
-                    ProductNameSnapshot = productName,
-                    Quantity = 1,
-                    GrossAmount = transaction.Amount,
-                    ApplicationFee = transaction.ApplicationFee,
-                    NetAmount = transaction.Amount - transaction.ApplicationFee,
-                    SoldAt = DateTime.UtcNow
-                };
-                _db.SaleRecords.Add(sale);
-
-                if (slot != null)
-                {
-                    slot.CurrentStock--;
-                    slot.UpdatedAt = DateTime.UtcNow;
-                    _db.InventoryMovements.Add(new InventoryMovement
-                    {
-                        CompanyId = session.CompanyId,
-                        MachineId = session.MachineId,
-                        ItemNumber = session.ItemNumber.Value,
-                        ProductId = slot.ProductId,
-                        SaleRecordId = sale.Id,
-                        MovementType = "Sale",
-                        QuantityDelta = -1,
-                        QuantityAfter = slot.CurrentStock,
-                        Reason = "Entrega confirmada pela máquina.",
-                        CreatedAt = sale.SoldAt
-                    });
-                }
-            }
+            if (session.Transaction is { Status: "Approved" } transaction)
+                await RecordDeliverySaleAsync(session, transaction, "Settled", 0m, cancellationToken);
             if (session.Transaction != null) session.Transaction.Status = "Approved";
             await AddEventAsync(session, "delivery.success", "Entrega confirmada pela máquina.", null, data.GetRawText(), cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await transactionScope.CommitAsync(cancellationToken);
         }
-        else if (session.State is MachineSessionStates.DeliveryFailed or MachineSessionStates.RefundPending or MachineSessionStates.Refunded)
+        else if (session.State == MachineSessionStates.Completed)
         {
+            await AddEventAsync(session, "delivery.duplicate_result", "Success duplicado recebido pela máquina.", null, data.GetRawText(), cancellationToken);
+        }
+        else if (session.State is MachineSessionStates.DeliveryFailed or MachineSessionStates.RefundPending or
+                 MachineSessionStates.Refunded or MachineSessionStates.ReconciliationRequired)
+        {
+            await RecordConflictingDeliveryAsync(session, cancellationToken);
             await AddEventAsync(session, "delivery.conflicting_result", "Success recebido depois de failure.", null, data.GetRawText(), cancellationToken);
         }
+        else if (session.Transaction != null && session.ItemNumber.HasValue)
+        {
+            await RecordConflictingDeliveryAsync(session, cancellationToken);
+            await AddEventAsync(
+                session,
+                "delivery.conflicting_result",
+                "Success recebido depois do encerramento ou da transição de pagamento da sessão.",
+                null,
+                data.GetRawText(),
+                cancellationToken);
+        }
+    }
+
+    private async Task RecordConflictingDeliveryAsync(MachineSession session, CancellationToken cancellationToken)
+    {
+        if (session.Transaction == null || !session.ItemNumber.HasValue)
+            return;
+
+        await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+        var (financialStatus, refundedAmount) = GetConflictingDeliveryFinancialState(session.Transaction);
+        await RecordDeliverySaleAsync(session, session.Transaction, financialStatus, refundedAmount, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        await transactionScope.CommitAsync(cancellationToken);
+        await SynchronizeRefundedSaleAsync(session.Transaction.Id, cancellationToken);
+    }
+
+    private async Task SynchronizeRefundedSaleAsync(Guid transactionId, CancellationToken cancellationToken)
+    {
+        var transaction = await _db.PaymentTransactions.AsNoTracking()
+            .Where(item => item.Id == transactionId)
+            .Select(item => new { item.CompanyId, item.MachineId, item.Status, item.Amount })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (transaction?.Status != "Refunded")
+            return;
+
+        await _db.SaleRecords
+            .Where(sale => sale.TransactionId == transactionId &&
+                           sale.CompanyId == transaction.CompanyId &&
+                           sale.MachineId == transaction.MachineId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(sale => sale.RefundedAmount, transaction.Amount)
+                .SetProperty(sale => sale.FinancialStatus, "Refunded"), cancellationToken);
+    }
+
+    private static (string FinancialStatus, decimal RefundedAmount) GetConflictingDeliveryFinancialState(
+        PaymentTransaction transaction) => transaction.Status switch
+    {
+        "Approved" => ("Settled", 0m),
+        "Refunded" => ("Refunded", transaction.Amount),
+        "Chargeback" when transaction.MercadoPagoStatusDetail == "settled" => ("Chargeback", transaction.Amount),
+        "Chargeback" => ("Disputed", 0m),
+        "Disputed" => ("Disputed", 0m),
+        _ => ("ReconciliationRequired", 0m)
+    };
+
+    private async Task RecordDeliverySaleAsync(
+        MachineSession session,
+        PaymentTransaction transaction,
+        string financialStatus,
+        decimal refundedAmount,
+        CancellationToken cancellationToken)
+    {
+        if (!session.ItemNumber.HasValue)
+            return;
+        if (!await MachineOperationLock.AcquireAsync(_db, session.MachineId, session.CompanyId, cancellationToken))
+            throw new InvalidOperationException("sale_machine_not_found");
+        if (await _db.SaleRecords.AnyAsync(sale => sale.TransactionId == transaction.Id, cancellationToken))
+            return;
+
+        var slot = await _db.MachineProductSlots.AsNoTracking().FirstOrDefaultAsync(
+            candidate => candidate.CompanyId == session.CompanyId &&
+                         candidate.MachineId == session.MachineId &&
+                         candidate.ItemNumber == session.ItemNumber.Value,
+            cancellationToken);
+        var productId = session.SelectedProductIdSnapshot ?? slot?.ProductId;
+        var productName = session.SelectedProductIdSnapshot != null
+            ? session.SelectedProductNameSnapshot
+            : slot == null
+                ? null
+                : await _db.Products.Where(product => product.Id == slot.ProductId &&
+                                                      (product.CompanyId == null || product.CompanyId == session.CompanyId))
+                    .Select(product => product.Name).FirstOrDefaultAsync(cancellationToken);
+        var sale = new SaleRecord
+        {
+            CompanyId = session.CompanyId,
+            MachineId = session.MachineId,
+            SessionId = session.Id,
+            TransactionId = transaction.Id,
+            ItemNumber = session.ItemNumber.Value,
+            ProductId = productId,
+            ProductNameSnapshot = productName,
+            LocationIdSnapshot = session.LocationIdSnapshot,
+            LocationNameSnapshot = session.LocationNameSnapshot,
+            Quantity = 1,
+            GrossAmount = transaction.Amount,
+            ApplicationFee = transaction.ApplicationFee,
+            NetAmount = transaction.Amount - transaction.ApplicationFee,
+            RefundedAmount = Math.Clamp(refundedAmount, 0m, transaction.Amount),
+            FinancialStatus = financialStatus,
+            SoldAt = DateTime.UtcNow
+        };
+        _db.SaleRecords.Add(sale);
+
+        if (slot == null)
+            return;
+
+        if (session.SelectedProductIdSnapshot is string selectedProductId &&
+            !string.Equals(slot.ProductId, selectedProductId, StringComparison.Ordinal))
+        {
+            var mappingReason = $"Venda confirmada para o produto selecionado na sessão no compartimento {session.ItemNumber.Value}, após remapeamento. O saldo não foi baixado automaticamente; um Admin deve conferir fisicamente e registrar o ajuste necessário.";
+            _logger.LogWarning(
+                "Venda {SaleId} da máquina {MachineId}, compartimento {ItemNumber}, chegou após o remapeamento do produto; baixa automática de estoque ignorada.",
+                sale.Id,
+                session.MachineId,
+                session.ItemNumber.Value);
+            _db.InventoryMovements.Add(new InventoryMovement
+            {
+                CompanyId = session.CompanyId,
+                MachineId = session.MachineId,
+                ItemNumber = session.ItemNumber.Value,
+                ProductId = slot.ProductId,
+                SaleRecordId = sale.Id,
+                MovementType = "SaleMappingMismatch",
+                QuantityDelta = 0,
+                QuantityAfter = slot.CurrentStock,
+                Reason = mappingReason,
+                CreatedAt = sale.SoldAt
+            });
+            return;
+        }
+
+        var stockUpdated = await _db.MachineProductSlots
+            .Where(candidate => candidate.CompanyId == session.CompanyId &&
+                                candidate.MachineId == session.MachineId &&
+                                candidate.ItemNumber == session.ItemNumber.Value)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(candidate => candidate.CurrentStock, candidate => candidate.CurrentStock - 1)
+                .SetProperty(candidate => candidate.UpdatedAt, sale.SoldAt), cancellationToken);
+        if (stockUpdated == 0)
+            return;
+
+        var stockAfterDelivery = await _db.MachineProductSlots.AsNoTracking()
+            .Where(candidate => candidate.CompanyId == session.CompanyId &&
+                                candidate.MachineId == session.MachineId &&
+                                candidate.ItemNumber == session.ItemNumber.Value)
+            .Select(candidate => candidate.CurrentStock)
+            .SingleAsync(cancellationToken);
+        _db.InventoryMovements.Add(new InventoryMovement
+        {
+            CompanyId = session.CompanyId,
+            MachineId = session.MachineId,
+            ItemNumber = session.ItemNumber.Value,
+            ProductId = sale.ProductId ?? slot.ProductId,
+            SaleRecordId = sale.Id,
+            MovementType = "Sale",
+            QuantityDelta = -1,
+            QuantityAfter = stockAfterDelivery,
+            Reason = "Entrega confirmada pela máquina.",
+            CreatedAt = sale.SoldAt
+        });
     }
 
     private async Task HandleDeliveryFailureAsync(MachineSession session, JsonElement data, string rawData, CancellationToken cancellationToken)
     {
         if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
         {
+            await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var claimed = await _db.MachineSessions
+                .Where(item => item.Id == session.Id &&
+                    (item.State == MachineSessionStates.PaymentApproved ||
+                     item.State == MachineSessionStates.AwaitingDeliveryResult))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, MachineSessionStates.DeliveryFailed)
+                    .SetProperty(item => item.DeliveryDeadlineAt, (DateTime?)null), cancellationToken);
+
+            if (claimed == 0)
+            {
+                await transactionScope.RollbackAsync(cancellationToken);
+                await _db.Entry(session).ReloadAsync(cancellationToken);
+                if (session.State == MachineSessionStates.Completed)
+                    await AddEventAsync(session, "delivery.conflicting_result", "Failure recebido depois de success.", null, rawData, cancellationToken);
+                return;
+            }
+
             var original = GetString(data, "reason") ?? "unknown";
             var normalized = original is "out_of_cup" or "out_of_product" or "mechanism_error" ? original : "unknown";
             if (session.TransactionId.HasValue && !await _db.DeliveryFailures.AnyAsync(x => x.TransactionId == session.TransactionId, cancellationToken))
@@ -714,8 +1263,11 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             session.State = MachineSessionStates.DeliveryFailed;
             session.DeliveryDeadlineAt = null;
             await AddEventAsync(session, "delivery.failure", normalized, null, rawData, cancellationToken);
+            var refundQueued = await QueueRefundAsync(session, $"delivery_failure:{normalized}", cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
-            await BeginRefundAsync(session, $"delivery_failure:{normalized}", cancellationToken);
+            await transactionScope.CommitAsync(cancellationToken);
+            if (refundQueued) await ProcessOutboxAsync(cancellationToken);
+            await BroadcastSessionAsync(session);
         }
         else if (session.State == MachineSessionStates.Completed)
         {
@@ -727,6 +1279,90 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     {
         var processFinancialOutbox = false;
 
+        if (session.State == MachineSessionStates.PaymentPending)
+        {
+            await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var closedAt = DateTime.UtcNow;
+            var claimed = await _db.MachineSessions
+                .Where(item => item.Id == session.Id && item.State == MachineSessionStates.PaymentPending)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, MachineSessionStates.Denied)
+                    .SetProperty(item => item.CloseReason, "device_closed_during_payment")
+                    .SetProperty(item => item.ClosedAt, closedAt)
+                    .SetProperty(item => item.PaymentDeadlineAt, (DateTime?)null), cancellationToken);
+
+            if (claimed == 0)
+            {
+                await transactionScope.RollbackAsync(cancellationToken);
+                await _db.Entry(session).ReloadAsync(cancellationToken);
+                if (session.Transaction != null)
+                    await _db.Entry(session.Transaction).ReloadAsync(cancellationToken);
+                await HandleEndSessionAsync(session, data, cancellationToken);
+                return;
+            }
+
+            session.State = MachineSessionStates.Denied;
+            session.CloseReason = "device_closed_during_payment";
+            session.ClosedAt = closedAt;
+            session.PaymentDeadlineAt = null;
+            session.SelectionDeadlineAt = null;
+            session.DeliveryDeadlineAt = null;
+            if (session.Transaction != null)
+            {
+                session.Transaction.Status = "CancellationPending";
+                await EnqueueOutboxAsync(session, "cancel_payment", new { reason = session.CloseReason }, cancellationToken);
+            }
+            await AddEventAsync(session, "payment.cancelled", session.CloseReason, null, null, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await transactionScope.CommitAsync(cancellationToken);
+            return;
+        }
+
+        if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
+        {
+            await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var closedAt = DateTime.UtcNow;
+            var claimed = await _db.MachineSessions
+                .Where(item => item.Id == session.Id &&
+                    (item.State == MachineSessionStates.PaymentApproved ||
+                     item.State == MachineSessionStates.AwaitingDeliveryResult))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, MachineSessionStates.RefundPending)
+                    .SetProperty(item => item.CloseReason, item => item.CloseReason ?? "delivery_result_missing")
+                    .SetProperty(item => item.ClosedAt, closedAt)
+                    .SetProperty(item => item.DeliveryDeadlineAt, (DateTime?)null), cancellationToken);
+
+            if (claimed == 0)
+            {
+                await transactionScope.RollbackAsync(cancellationToken);
+                await _db.Entry(session).ReloadAsync(cancellationToken);
+                if (session.Transaction != null)
+                    await _db.Entry(session.Transaction).ReloadAsync(cancellationToken);
+                await HandleEndSessionAsync(session, data, cancellationToken);
+                return;
+            }
+
+            session.State = MachineSessionStates.RefundPending;
+            session.CloseReason ??= "delivery_result_missing";
+            session.ClosedAt = closedAt;
+            session.SelectionDeadlineAt = null;
+            session.PaymentDeadlineAt = null;
+            session.DeliveryDeadlineAt = null;
+            await AddEventAsync(
+                session,
+                "delivery.result_missing",
+                "A máquina encerrou a sessão sem informar success ou failure.",
+                null,
+                data.GetRawText(),
+                cancellationToken);
+            processFinancialOutbox = await QueueRefundAsync(session, "delivery_result_missing", cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+            await transactionScope.CommitAsync(cancellationToken);
+            if (processFinancialOutbox)
+                await ProcessOutboxAsync(cancellationToken);
+            return;
+        }
+
         if (session.State == MachineSessionStates.ClosingWithoutSelection)
             session.State = MachineSessionStates.ClosedWithoutSelection;
         else if (session.State is MachineSessionStates.Opening or MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.AwaitingSelection)
@@ -737,44 +1373,6 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         }
         else if (session.State == MachineSessionStates.DeniedAwaitingClosure)
             session.State = MachineSessionStates.Denied;
-        else if (session.State == MachineSessionStates.PaymentPending)
-        {
-            session.State = MachineSessionStates.Denied;
-            session.CloseReason = "device_closed_during_payment";
-            if (session.Transaction != null)
-            {
-                session.Transaction.Status = "CancellationPending";
-                await EnqueueOutboxAsync(
-                    session,
-                    "cancel_payment",
-                    new { reason = session.CloseReason },
-                    cancellationToken);
-            }
-            await AddEventAsync(
-                session,
-                "payment.cancelled",
-                session.CloseReason,
-                null,
-                null,
-                cancellationToken);
-        }
-        else if (session.State is MachineSessionStates.PaymentApproved or MachineSessionStates.AwaitingDeliveryResult)
-        {
-            session.CloseReason ??= "delivery_result_missing";
-            session.DeliveryDeadlineAt = null;
-            await AddEventAsync(
-                session,
-                "delivery.result_missing",
-                "A máquina encerrou a sessão sem informar success ou failure.",
-                null,
-                data.GetRawText(),
-                cancellationToken);
-            processFinancialOutbox = await QueueRefundAsync(
-                session,
-                "delivery_result_missing",
-                cancellationToken);
-        }
-
         // O encerramento físico é durável antes de qualquer chamada ao provedor. A
         // intenção financeira é salva na mesma unidade de trabalho e pode ser retomada
         // pelo worker mesmo que o processamento imediato falhe.
@@ -801,13 +1399,29 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             await AddEventAsync(session, "alert.repeated_early_close", $"{count} encerramentos antes da seleção em 15 minutos.", null, null, cancellationToken);
     }
 
-    private async Task CancelPendingPaymentAsync(
+    private async Task<bool> CancelPendingPaymentAsync(
         MachineSession session,
         string reason,
         Guid? userId,
         CancellationToken cancellationToken,
         bool notifyMachine = true)
     {
+        await using var transactionScope = await _db.Database.BeginTransactionAsync(cancellationToken);
+        var claimed = await _db.MachineSessions
+            .Where(item => item.Id == session.Id && item.State == MachineSessionStates.PaymentPending)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.State, MachineSessionStates.DeniedAwaitingClosure)
+                .SetProperty(item => item.PaymentDeadlineAt, (DateTime?)null), cancellationToken);
+
+        if (claimed == 0)
+        {
+            await transactionScope.RollbackAsync(cancellationToken);
+            await _db.Entry(session).ReloadAsync(cancellationToken);
+            if (session.Transaction != null)
+                await _db.Entry(session.Transaction).ReloadAsync(cancellationToken);
+            return false;
+        }
+
         session.State = MachineSessionStates.DeniedAwaitingClosure;
         session.CloseReason = reason;
         session.PaymentDeadlineAt = null;
@@ -818,8 +1432,10 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         }
         await AddEventAsync(session, "payment.cancelled", reason, userId, null, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await transactionScope.CommitAsync(cancellationToken);
         if (notifyMachine && session.Machine != null)
             await SendTrackedCommandAsync(session.Machine, session, "VENDA_NEGADA", userId, cancellationToken);
+        return true;
     }
 
     private async Task DenyWithoutPaymentAsync(MachineSession session, string reason, CancellationToken cancellationToken)
@@ -900,8 +1516,11 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         var machine = await _db.Machines.FirstOrDefaultAsync(
             x => x.Id == message.MachineId && x.CompanyId == message.CompanyId,
             cancellationToken);
-        if (machine?.AutoOpenSessionEnabled != true ||
-            !connectionState.MonitoringEnabled ||
+        if (machine?.AutoOpenSessionEnabled != true || !connectionState.MonitoringEnabled)
+            return;
+
+        var admissionGate = await new SessionAdmissionGateService(_db).GetAsync(cancellationToken);
+        if (admissionGate?.NewSessionsPaused != false ||
             !await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
         {
             return;
@@ -998,19 +1617,36 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
     private async Task<bool> RefundProviderPaymentAsync(PaymentTransaction transaction, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId) || transaction.MercadoPagoPaymentId.StartsWith("mock_")) return true;
+        if (transaction.MercadoPagoPaymentId?.StartsWith("mock_", StringComparison.OrdinalIgnoreCase) == true) return true;
+        if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId))
+        {
+            _logger.LogWarning(
+                "Estorno da transação {TransactionId} requer reconciliação porque não há ID do pagamento no Mercado Pago.",
+                transaction.Id);
+            return false;
+        }
+
         try
         {
             var integration = await _db.MercadoPagoIntegrations.FirstOrDefaultAsync(x => x.CompanyId == transaction.CompanyId && x.IsActive, cancellationToken);
             if (integration == null) return false;
             var client = _httpClientFactory.CreateClient("MercadoPago");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", EncryptionService.Decrypt(integration.AccessToken));
-            
-            client.DefaultRequestHeaders.Add("X-Idempotency-Key", $"refund-{transaction.Id}");
-            var body = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-            
-            var response = await client.PostAsync($"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}/refunds", body, cancellationToken);
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}/refunds")
+            {
+                Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json")
+            };
+            request.Headers.Add("X-Idempotency-Key", $"refund-{transaction.Id}");
+
+            using var response = await client.SendAsync(request, cancellationToken);
             return response.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -1021,7 +1657,15 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
     private async Task<bool> CancelProviderPaymentAsync(PaymentTransaction transaction, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId) || transaction.MercadoPagoPaymentId.StartsWith("mock_")) return true;
+        if (transaction.MercadoPagoPaymentId?.StartsWith("mock_", StringComparison.OrdinalIgnoreCase) == true) return true;
+        if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId))
+        {
+            _logger.LogWarning(
+                "Cancelamento da transação {TransactionId} requer reconciliação porque não há ID do pagamento no Mercado Pago.",
+                transaction.Id);
+            return false;
+        }
+
         try
         {
             var integration = await _db.MercadoPagoIntegrations.FirstOrDefaultAsync(x => x.CompanyId == transaction.CompanyId && x.IsActive, cancellationToken);
@@ -1030,6 +1674,10 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", EncryptionService.Decrypt(integration.AccessToken));
             var response = await client.PutAsJsonAsync($"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}", new { status = "cancelled" }, cancellationToken);
             return response.IsSuccessStatusCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -1060,7 +1708,10 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             TransactionId = session.TransactionId,
             MessageType = messageType,
             PayloadJson = JsonSerializer.Serialize(payload),
-            NextAttemptAt = DateTime.UtcNow
+            NextAttemptAt = DateTime.UtcNow,
+            Status = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
+                ? "pending"
+                : "deferred_legacy_overlap"
         });
     }
 
@@ -1173,6 +1824,11 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
     private static string? GetString(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    private static bool IsMissingTransactionId(JsonElement data) =>
+        !data.TryGetProperty("transactionId", out var value) ||
+        value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined ||
+        (value.ValueKind == JsonValueKind.String && string.IsNullOrWhiteSpace(value.GetString()));
 
     private static int GetInt(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.TryGetInt32(out var parsed) ? parsed : -1;

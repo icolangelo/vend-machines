@@ -33,6 +33,10 @@ FROM "Products"
 WHERE "Id" IN ('p-1', 'p-2', 'p-3')
    OR "Code" IN ('BEB-001', 'ALC-001', 'SNA-001')
 UNION ALL
+SELECT 'seed_product_type_marker', COUNT(*)
+FROM "ProductTypes"
+WHERE "Id" IN ('pt-1', 'pt-2', 'pt-3', 'pt-4', 'pt-5', 'pt-6', 'pt-7', 'pt-8', 'pt-9')
+UNION ALL
 SELECT 'seed_product_performance_rows', COUNT(*)
 FROM "ProductPerformances"
 WHERE "Name" IN (
@@ -47,6 +51,9 @@ WHERE "Id" IN (
     '22222222-2222-2222-2222-222222222222',
     '33333333-3333-3333-3333-333333333333'
 )
+   OR "Email" IN ('dev.ivan@gmail.com', 'joao@vmmanager.com')
+   OR "NormalizedEmail" IN ('DEV.IVAN@GMAIL.COM', 'JOAO@VMMANAGER.COM')
+   OR "NormalizedCpf" IN ('12345678900', '98765432199')
 UNION ALL
 SELECT 'mock_payment_ids', COUNT(*)
 FROM "PaymentTransactions"

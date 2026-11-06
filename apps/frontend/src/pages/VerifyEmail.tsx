@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { resendEmailVerification, verifyEmail } from "@/lib/api";
+import { getErrorMessage } from "@/lib/utils";
 
 export default function VerifyEmail() {
     const [searchParams] = useSearchParams();
@@ -22,7 +23,7 @@ export default function VerifyEmail() {
             const result = await verifyEmail(token);
             setVerificationMessage(result.message);
         } catch (verificationError) {
-            setError(verificationError instanceof Error ? verificationError.message : "Não foi possível confirmar o e-mail.");
+            setError(getErrorMessage(verificationError, "Não foi possível confirmar o e-mail. Tente novamente."));
         } finally {
             setSubmitting(false);
         }
@@ -37,7 +38,7 @@ export default function VerifyEmail() {
             const result = await resendEmailVerification(email);
             setResendMessage(result.message);
         } catch (resendError) {
-            setError(resendError instanceof Error ? resendError.message : "Não foi possível solicitar um novo link.");
+            setError(getErrorMessage(resendError, "Não foi possível solicitar um novo link. Tente novamente."));
         } finally {
             setSubmitting(false);
         }

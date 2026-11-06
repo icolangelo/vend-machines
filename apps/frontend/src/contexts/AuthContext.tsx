@@ -1,5 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AuthContext, type AuthContextType } from "@/contexts/authContextDefinition";
 import {
   clearAuthSession,
   clearLegacyAuthStorage,
@@ -16,33 +17,7 @@ import {
 
 export type User = AuthUser;
 
-interface AuthContextType {
-  user: User | null;
-  token: string | null;
-  loading: boolean;
-  sessionMessage: string | null;
-  clearSessionMessage: () => void;
-  login: (email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
-  register: (
-    name: string,
-    email: string,
-    cpf: string,
-    password: string,
-    companyName: string,
-    companyCnpj: string,
-  ) => Promise<string>;
-  acceptInvitation: (payload: {
-    invitationToken: string;
-    name: string;
-    cpf: string;
-    password: string;
-    acceptedPrivacyPolicy: boolean;
-  }) => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const isTestEnv = () => import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true";
+const testSessionStorageKey = "vm-test-auth-session";
 const TEST_COMPANY_IDS = {
   acme: "11111111-1111-1111-1111-111111111111",
   sabor: "55555555-5555-5555-5555-555555555555",
@@ -72,7 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = subscribeToAuthState(applyState);
     clearLegacyAuthStorage();
 
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+      restoreMockAuthSession();
       setLoading(false);
       return unsubscribe;
     }
@@ -87,7 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [queryClient]);
 
   const login = async (email: string, password: string) => {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
       if (password !== "teste123" && password !== "admin123") {
         throw new Error("Senha incorreta. Por favor, tente novamente.");
       }
@@ -97,7 +73,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isSaborCompany = normalizedEmail.endsWith("@sabor.example");
       const isAcmeCompany = normalizedEmail.endsWith("@acme.example");
       const isTenantAdmin = isSaborCompany || isAcmeCompany;
-      setAuthSession(createMockSession({
+      setMockAuthSession(createMockSession({
         id: isSaborCompany
           ? (isOperator ? "usr-sabor-operator" : "usr-sabor-admin")
           : isAcmeCompany
@@ -127,7 +103,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     companyName: string,
     companyCnpj: string,
   ) => {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
       return "Cadastro recebido. A empresa aguarda análise da equipe da plataforma.";
     }
 
@@ -150,8 +126,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string;
     acceptedPrivacyPolicy: boolean;
   }) => {
-    if (isTestEnv()) {
-      setAuthSession(createMockSession({
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+      setMockAuthSession(createMockSession({
         id: "usr-invited",
         name: payload.name,
         email: "novo.usuario@vendmachine.com.br",
@@ -166,7 +142,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    if (isTestEnv()) {
+    if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
+      clearMockAuthSession();
       clearAuthSession("logout");
       return;
     }
@@ -203,10 +180,40 @@ function createMockSession(user: User): AuthSession {
   };
 }
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth deve ser usado dentro de AuthProvider");
+function setMockAuthSession(session: AuthSession): void {
+  try {
+    sessionStorage.setItem(testSessionStorageKey, JSON.stringify(session));
+  } catch {
+    // O mock continua funcionando na página atual quando o storage está indisponível.
   }
-  return context;
-};
+  setAuthSession(session);
+}
+
+function restoreMockAuthSession(): void {
+  try {
+    const serializedSession = sessionStorage.getItem(testSessionStorageKey);
+    if (!serializedSession) return;
+
+    const session = JSON.parse(serializedSession) as AuthSession;
+    if (Date.parse(session.expiresAt) <= Date.now()) {
+      sessionStorage.removeItem(testSessionStorageKey);
+      return;
+    }
+
+    setAuthSession(session);
+  } catch {
+    try {
+      sessionStorage.removeItem(testSessionStorageKey);
+    } catch {
+      // A sessão simulada permanece somente na memória desta navegação.
+    }
+  }
+}
+
+function clearMockAuthSession(): void {
+  try {
+    sessionStorage.removeItem(testSessionStorageKey);
+  } catch {
+    // Logout do mock não depende da disponibilidade do storage.
+  }
+}

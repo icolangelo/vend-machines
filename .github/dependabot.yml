@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /apps/backend/VendingMachines.Api
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /apps/frontend
+    schedule:
+      interval: weekly

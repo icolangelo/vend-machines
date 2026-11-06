@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/useAuth";
 import { createPasswordResetLink, createUserInvitation, getUsers, revokeUserInvitation, updateUserActiveStatus, updateUserRole, type PaginatedUsers } from "@/lib/api";
 import { ChevronLeft, ChevronRight, Copy, KeyRound, Search, ShieldAlert, UserPlus, Users as UsersIcon, X } from "lucide-react";
 import { toast } from "sonner";
@@ -19,6 +19,8 @@ export default function Users() {
     const [searchInput, setSearchInput] = useState("");
     const [search, setSearch] = useState("");
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState(false);
+    const [confirmedQuery, setConfirmedQuery] = useState<{ page: number; search: string } | null>(null);
     const [changingUserId, setChangingUserId] = useState<string | null>(null);
     const [inviteOpen, setInviteOpen] = useState(false);
     const [inviteEmail, setInviteEmail] = useState("");
@@ -37,20 +39,42 @@ export default function Users() {
     const [creatingReset, setCreatingReset] = useState(false);
 
     const canManageUsers = user?.role === "Admin";
+    const requestTracker = useRef({ version: 0, mounted: false, page, search, canManageUsers });
+    requestTracker.current.page = page;
+    requestTracker.current.search = search;
+    requestTracker.current.canManageUsers = canManageUsers;
+    const dataIsCurrent = !!data && !loading && !loadError && confirmedQuery?.page === page && confirmedQuery.search === search;
+
+    useEffect(() => {
+        const tracker = requestTracker.current;
+        tracker.mounted = true;
+        return () => { tracker.mounted = false; tracker.version++; };
+    }, []);
 
     const loadUsers = useCallback(async () => {
+        const tracker = requestTracker.current;
+        if (!tracker.mounted || !tracker.canManageUsers || tracker.page !== page || tracker.search !== search) return;
+        const version = ++tracker.version;
+        const isCurrent = () => tracker.mounted && tracker.version === version && tracker.canManageUsers && tracker.page === page && tracker.search === search;
         setLoading(true);
+        setLoadError(false);
         try {
-            setData(await getUsers(page, 10, search));
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Não foi possível carregar os usuários.");
+            const result = await getUsers(page, 10, search);
+            if (isCurrent()) {
+                setData(result);
+                setConfirmedQuery({ page, search });
+            }
+        } catch {
+            if (isCurrent()) setLoadError(true);
         } finally {
-            setLoading(false);
+            if (isCurrent()) setLoading(false);
         }
     }, [page, search]);
 
     useEffect(() => {
+        const tracker = requestTracker.current;
         if (canManageUsers) void loadUsers();
+        return () => { tracker.version++; };
     }, [canManageUsers, loadUsers]);
 
     const submitSearch = (event: FormEvent<HTMLFormElement>) => {
@@ -60,6 +84,7 @@ export default function Users() {
     };
 
     const changeRole = async (userId: string, role: "Admin" | "Operator") => {
+        if (!dataIsCurrent) return;
         if (!window.confirm("Alterar o papel encerrará as sessões ativas desta pessoa. Deseja continuar?")) {
             return;
         }
@@ -76,6 +101,7 @@ export default function Users() {
     };
 
     const changeActiveStatus = async (userId: string, isActive: boolean) => {
+        if (!dataIsCurrent) return;
         const action = isActive ? "reativar" : "desativar";
         if (!window.confirm(`Deseja ${action} este usuário? ${isActive ? "Ele poderá entrar novamente." : "As sessões ativas serão encerradas."}`)) {
             return;
@@ -138,6 +164,7 @@ export default function Users() {
     };
 
     const createRecoveryLink = async (userId: string, name: string) => {
+        if (!dataIsCurrent || changingUserId !== null) return;
         if (!window.confirm(`Gerar um link de recuperação para ${name}? Qualquer link anterior será invalidado.`)) return;
         setCreatingReset(true);
         setResetEmailSent(false);
@@ -251,6 +278,13 @@ export default function Users() {
                                 </form>
                             </CardHeader>
                             <CardContent className="p-0">
+                                {loadError && (
+                                    <div role="alert" className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+                                        <span>{data ? "Não foi possível atualizar a lista. Os dados exibidos podem estar desatualizados." : "Não foi possível carregar os usuários. Confira sua conexão e tente novamente."}</span>
+                                        <Button variant="outline" size="sm" onClick={() => void loadUsers()} disabled={loading}>Tentar novamente</Button>
+                                    </div>
+                                )}
+                                {loading && data && <p role="status" className="px-4 pt-3 text-sm text-muted-foreground">Atualizando usuários...</p>}
                                 <div className="overflow-x-auto">
                                     <Table>
                                         <TableHeader>
@@ -264,8 +298,10 @@ export default function Users() {
                                             </TableRow>
                                         </TableHeader>
                                         <TableBody>
-                                            {loading ? (
+                                            {loading && !data ? (
                                                 <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">Carregando usuários...</TableCell></TableRow>
+                                            ) : loadError && !data ? (
+                                                <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">Falha ao carregar usuários. Tente novamente.</TableCell></TableRow>
                                             ) : data?.items.length ? data.items.map((item) => (
                                                 <TableRow key={item.id}>
                                                     <TableCell className="font-medium">{item.name}{item.id === user?.id && <span className="ml-2 text-xs text-muted-foreground">(você)</span>}</TableCell>
@@ -277,7 +313,7 @@ export default function Users() {
                                                             <select
                                                                 aria-label={`Papel de ${item.name}`}
                                                                 value={item.role === "Admin" ? "Admin" : "Operator"}
-                                                                disabled={changingUserId === item.id}
+                                                                disabled={!dataIsCurrent || changingUserId !== null || creatingReset}
                                                                 onChange={(event) => void changeRole(item.id, event.target.value as "Admin" | "Operator")}
                                                                 className="h-9 rounded-md border border-input bg-background px-3 text-sm disabled:opacity-50"
                                                             >
@@ -293,7 +329,7 @@ export default function Users() {
                                                             <Button
                                                                 variant={item.isActive ? "outline" : "secondary"}
                                                                 size="sm"
-                                                                disabled={changingUserId === item.id}
+                                                                disabled={!dataIsCurrent || changingUserId !== null || creatingReset}
                                                                 onClick={() => void changeActiveStatus(item.id, !item.isActive)}
                                                             >
                                                                 {item.isActive ? "Desativar" : "Reativar"}
@@ -302,7 +338,7 @@ export default function Users() {
                                                     </TableCell>
                                                     <TableCell>
                                                         {item.id === user?.id ? <span className="text-sm text-muted-foreground">—</span> : (
-                                                            <Button variant="ghost" size="sm" disabled={!item.isActive || creatingReset} onClick={() => void createRecoveryLink(item.id, item.name)}>
+                                                            <Button variant="ghost" size="sm" disabled={!dataIsCurrent || !item.isActive || creatingReset || changingUserId !== null} onClick={() => void createRecoveryLink(item.id, item.name)}>
                                                                 <KeyRound className="mr-2 h-4 w-4" />Recuperar acesso
                                                             </Button>
                                                         )}
@@ -319,8 +355,8 @@ export default function Users() {
                                     <div className="flex items-center justify-between border-t px-4 py-3">
                                         <span className="text-sm text-muted-foreground">Página {data.pageNumber} de {data.totalPages} · {data.totalItems} usuários</span>
                                         <div className="flex gap-2">
-                                            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1 || loading}><ChevronLeft className="mr-1 h-4 w-4" />Anterior</Button>
-                                            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(data.totalPages, value + 1))} disabled={page >= data.totalPages || loading}>Próxima<ChevronRight className="ml-1 h-4 w-4" /></Button>
+                                            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1 || !dataIsCurrent || changingUserId !== null}><ChevronLeft className="mr-1 h-4 w-4" />Anterior</Button>
+                                            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(data.totalPages, value + 1))} disabled={page >= data.totalPages || !dataIsCurrent || changingUserId !== null}>Próxima<ChevronRight className="ml-1 h-4 w-4" /></Button>
                                         </div>
                                     </div>
                                 )}
@@ -342,7 +378,7 @@ export default function Users() {
                                         </>
                                     )}
                                     <p className="text-xs text-muted-foreground">Expira em {new Date(resetExpiresAt).toLocaleString("pt-BR")}.</p>
-                                    <Button type="button" variant="destructive" className="w-full" disabled={creatingReset} onClick={() => void createRecoveryLink(resetTargetId, resetTargetName)}>{resetEmailSent ? "Enviar outro link e invalidar este" : "Gerar outro link e invalidar este"}</Button>
+                                    <Button type="button" variant="destructive" className="w-full" disabled={creatingReset || !dataIsCurrent || changingUserId !== null} onClick={() => void createRecoveryLink(resetTargetId, resetTargetName)}>{resetEmailSent ? "Enviar outro link e invalidar este" : "Gerar outro link e invalidar este"}</Button>
                                     {!resetEmailSent && <p className="text-xs text-muted-foreground">Se o envio de e-mail estiver configurado, ele será enviado ao usuário. Caso contrário, compartilhe o link por um canal seguro; a senha será alterada e as sessões encerradas quando ele for utilizado.</p>}
                                 </div>
                             </DialogContent>
