@@ -838,23 +838,69 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             )
             authorization_header = f"--header=Authorization: Bearer {test_token}"
 
-            start_code, start_response = attempt(
-                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
-                authorization_header,
-                "--header=Content-Type: application/json",
-                "--post-data={}",
-                f"http://candidate-api:8080/api/telemetry/machines/{machine_id}/sessions",
+            concurrent_start_setup = (
+                "CREATE OR REPLACE FUNCTION local_delay_legacy_session_start() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN "
+                f"IF NEW.\"MachineId\"='{machine_id}' THEN PERFORM pg_sleep(1); END IF; "
+                "RETURN NEW; END; $$; "
+                "CREATE TRIGGER local_delay_legacy_session_start BEFORE INSERT ON \"MachineSessions\" "
+                "FOR EACH ROW EXECUTE FUNCTION local_delay_legacy_session_start();"
             )
-            if start_code != 0:
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c", concurrent_start_setup,
+            )
+            start_request_commands = []
+            for candidate_host in ("candidate-api", "candidate-api-secondary"):
+                for _ in range(2):
+                    start_request_commands.append((
+                        "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
+                        authorization_header,
+                        "--header=Content-Type: application/json",
+                        "--post-data={}",
+                        f"http://{candidate_host}:8080/api/telemetry/machines/{machine_id}/sessions",
+                    ))
+            with ThreadPoolExecutor(max_workers=len(start_request_commands)) as executor:
+                start_results = list(executor.map(lambda command: attempt(*command), start_request_commands))
+            start_payloads = []
+            for start_index, (start_code, start_response) in enumerate(start_results, start=1):
+                if start_code != 0:
+                    raise RehearsalError(
+                        f"Início de sessão concorrente {start_index} falhou; "
+                        f"exit={start_code}, body={start_response[-1800:]}"
+                    )
+                try:
+                    start_payload = json.loads(start_response)
+                    start_payload["id"] = str(uuid.UUID(start_payload["id"]))
+                    start_payloads.append(start_payload)
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+                    raise RehearsalError(
+                        f"Início de sessão concorrente {start_index} retornou JSON inválido: {start_response[-1800:]}"
+                    ) from exc
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c",
+                "DROP TRIGGER local_delay_legacy_session_start ON \"MachineSessions\"; "
+                "DROP FUNCTION local_delay_legacy_session_start();",
+            )
+            relayed_session_id = start_payloads[0]["id"]
+            active_session_count = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT COUNT(*) FROM "MachineSessions" WHERE "MachineId"='{machine_id}' AND "ClosedAt" IS NULL;''',
+            )
+            open_command_count = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT COUNT(*) FROM "TelemetryCommands" WHERE "SessionId"='{relayed_session_id}'::uuid AND "Command"='ABRIR_SESSAO';''',
+            )
+            if {payload["id"] for payload in start_payloads} != {relayed_session_id} or \
+                active_session_count != "1" or open_command_count != "1":
                 raise RehearsalError(
-                    "A candidata não encaminhou o início de sessão ao processo que mantém o socket; "
-                    f"exit={start_code}, body={start_response[-1800:]}"
+                    "Inícios simultâneos pelas candidatas devem retornar a mesma sessão e emitir um comando; "
+                    f"returned_ids={[payload['id'] for payload in start_payloads]}, "
+                    f"active_sessions={active_session_count}, open_commands={open_command_count}"
                 )
-            try:
-                start_payload = json.loads(start_response)
-                relayed_session_id = str(uuid.UUID(start_payload["id"]))
-            except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
-                raise RehearsalError(f"Relay de início de sessão retornou resposta inválida: {start_response[-1800:]}") from exc
+            print("candidate_concurrent_legacy_session_start_reused_original=yes")
+            print("candidate_concurrent_legacy_session_start_single_open_command=yes")
             print("candidate_legacy_session_start=accepted")
 
             duplicate_start_code, duplicate_start_response = attempt(

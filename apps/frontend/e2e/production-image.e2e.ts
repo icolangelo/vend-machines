@@ -75,6 +75,11 @@ test("imagem de produção serve login, assets imutáveis, rotas SPA e CSP", asy
     const builtBundle = builtJavaScript.join("\n");
     expect(builtBundle).toContain("https://api.vendmachine.com.br/api");
     expect(builtBundle).not.toContain("VITE_IS_TEST_ENVIRONMENT");
+    expect(builtBundle).not.toContain("11111111-1111-1111-1111-111111111111");
+    expect(builtBundle).not.toContain("55555555-5555-5555-5555-555555555555");
+    expect(builtBundle).not.toContain("ACME Machines LTDA");
+    expect(builtBundle).not.toContain("dev.ivan@gmail.com");
+    expect(builtBundle).not.toContain("joao@vmmanager.com");
     expect(builtBundle).not.toContain("test-session-closure");
     expect(builtBundle).not.toContain("vm-test-closure-alert-evidence");
     expect(builtBundle).not.toContain("Encerramento físico pendente");

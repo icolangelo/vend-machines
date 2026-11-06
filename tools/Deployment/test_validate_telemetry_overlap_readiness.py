@@ -98,6 +98,8 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
                 self.base_url,
                 "--expected-commit",
                 COMMIT,
+                "--minimum-legacy-connections",
+                "2",
                 *extra_args,
             ],
             capture_output=True,
@@ -120,7 +122,7 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
         result = self.run_preflight()
 
         self.assertEqual(result.returncode, 1)
-        self.assertIn("mínimo exigido: 1", result.stderr)
+        self.assertIn("mínimo exigido: 2", result.stderr)
 
     def test_requires_full_git_commit_sha(self):
         command = [
@@ -130,6 +132,8 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
             self.base_url,
             "--expected-commit",
             "a" * 39,
+            "--minimum-legacy-connections",
+            "1",
         ]
         import os
 
@@ -139,6 +143,24 @@ class OverlapReadinessPreflightTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("SHA Git completo", result.stderr)
+
+    def test_requires_an_explicit_fleet_connection_minimum(self):
+        command = [
+            sys.executable,
+            str(SCRIPT),
+            "--api-base-url",
+            self.base_url,
+            "--expected-commit",
+            COMMIT,
+        ]
+        import os
+
+        env = os.environ.copy()
+        env["VENDMACHINES_ADMIN_BEARER_TOKEN"] = TOKEN
+        result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--minimum-legacy-connections", result.stderr)
 
     def test_rejects_commit_with_matching_prefix_but_different_revision(self):
         Handler.source_commit = "a" * 39 + "b"

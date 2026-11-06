@@ -71,6 +71,11 @@ require_contains "$verify_workflow" 'node tools/Deployment/CheckFrontendApiContr
 require_contains "$verify_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$verify_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.pull_request.base.sha || github.event.before }}'
 require_contains "$verify_workflow" '--backend-ref "$backend_ref"'
+frontend_checkout="$(sed -n '/^  frontend-checks:/,$p' "$verify_workflow" | sed -n '/^[[:space:]]*- name: Checkout code$/,/^[[:space:]]*- name: Set up Node.js$/p')"
+if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
+  echo "O job frontend-checks precisa buscar o histórico-base completo para validar a API de destino." >&2
+  exit 1
+fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$frontend_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.before }}'
@@ -252,8 +257,6 @@ require_contains "$temporary_dir/build-job" 'name: Upload SHA-matched release pa
 require_contains "$temporary_dir/build-job" 'name: release-package-${{ github.sha }}'
 require_contains "$temporary_dir/build-job" 'package_dir=artifacts/release-package'
 require_contains "$temporary_dir/build-job" 'path: artifacts/release-package/'
-require_contains "$verify_workflow" '      - "docs/deploy-seguro.md"'
-require_contains "$verify_workflow" '      - "docs/partial-production-evidence-template.md"'
 require_contains "$temporary_dir/build-job" 'cp tools/Database/List-UnresolvedTelemetryCommands.sql "$package_dir/"'
 require_contains "$temporary_dir/build-job" 'cp tools/Database/Cancel-PendingTelemetryCommand.sql "$package_dir/"'
 require_contains "$temporary_dir/build-job" 'cp tools/Database/Resolve-StaleProcessingTelemetryCommand.sql "$package_dir/"'

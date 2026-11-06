@@ -43,8 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--minimum-legacy-connections",
         type=int,
-        default=1,
-        help="Mínimo de conexões legadas online que precisam ser observadas (padrão: 1).",
+        required=True,
+        help="Mínimo de conexões legadas online, informado conforme a frota em operação.",
     )
     parser.add_argument(
         "--timeout-seconds",

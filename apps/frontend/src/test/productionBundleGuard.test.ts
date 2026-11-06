@@ -4,6 +4,11 @@ import { join, resolve, sep } from "node:path";
 import { expect, it } from "vitest";
 
 const forbiddenFixtureMarkers = [
+    "11111111-1111-1111-1111-111111111111",
+    "55555555-5555-5555-5555-555555555555",
+    "ACME Machines LTDA",
+    "dev.ivan@gmail.com",
+    "joao@vmmanager.com",
     "test-session-closure",
     "vm-test-closure-alert-evidence",
     "Encerramento físico pendente",
