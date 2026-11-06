@@ -93,6 +93,16 @@ public sealed class RefreshSessionService
             return new RefreshRotationResult(RefreshRotationStatus.Expired);
         }
 
+        var user = await _context.Users
+            .Include(x => x.Company)
+            .SingleOrDefaultAsync(x => x.Id == current.UserId, cancellationToken);
+        if (user == null || !user.IsActive ||
+            (user.Company != null && user.Company.ActivationStatus != CompanyActivationStatuses.Active))
+        {
+            await RevokeFamilyAsync(current.FamilyId, now, cancellationToken);
+            return new RefreshRotationResult(RefreshRotationStatus.Invalid);
+        }
+
         var replacementId = Guid.NewGuid();
         var replacementToken = GenerateToken();
         var replacement = new RefreshSession
@@ -128,16 +138,6 @@ public sealed class RefreshSessionService
         await _context.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        var user = await _context.Users
-            .Include(x => x.Company)
-            .SingleOrDefaultAsync(x => x.Id == current.UserId, cancellationToken);
-
-        if (user == null)
-        {
-            await RevokeFamilyAsync(current.FamilyId, now, cancellationToken);
-            return new RefreshRotationResult(RefreshRotationStatus.Invalid);
-        }
-
         return new RefreshRotationResult(
             RefreshRotationStatus.Succeeded,
             user,
@@ -149,9 +149,21 @@ public sealed class RefreshSessionService
     {
         var now = UtcNow();
         var tokenHash = HashToken(token);
+        var session = await _context.RefreshSessions
+            .AsNoTracking()
+            .Where(x => x.TokenHash == tokenHash)
+            .Select(x => new { x.Id, x.FamilyId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (session == null) return;
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+        // Lock the presented token first so a refresh that already read it cannot race past logout.
+        // The family update is a separate statement to see any successor committed while this waited.
         await _context.RefreshSessions
-            .Where(x => x.TokenHash == tokenHash && x.RevokedAt == null)
+            .Where(x => x.Id == session.Id)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.RevokedAt, now), cancellationToken);
+        await RevokeFamilyAsync(session.FamilyId, now, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task<RefreshRotationResult> HandleRevokedSessionAsync(

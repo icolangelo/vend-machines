@@ -27,13 +27,8 @@ namespace VendingMachines.Api.Migrations
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "AcceptedPrivacyPolicy",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "PrivacyPolicyAcceptedAt",
-                table: "Users");
+            throw new System.InvalidOperationException(
+                "Esta migration contém prova de aceite da política de privacidade. Reverta somente o binário e preserve o consentimento e sua data.");
         }
     }
 }

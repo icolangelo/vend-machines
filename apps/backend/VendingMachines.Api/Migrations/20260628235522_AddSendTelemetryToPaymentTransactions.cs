@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -42,9 +42,8 @@ END $$;
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "SendTelemetryToMachine",
-                table: "PaymentTransactions");
+            throw new System.InvalidOperationException(
+                "Esta migration contém a preferência persistida de envio do pagamento à máquina. Reverta somente o binário e preserve SendTelemetryToMachine.");
         }
     }
 }

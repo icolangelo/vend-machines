@@ -29,6 +29,7 @@ public class PaymentTransaction
     public string? MercadoPagoPaymentId { get; set; }
     public string? MercadoPagoStatus { get; set; }
     public string? MercadoPagoStatusDetail { get; set; }
+    public string? ReconciliationReason { get; set; }
     public string? RawResponse { get; set; } // Raw JSON string
     
     // Pix details
@@ -37,6 +38,7 @@ public class PaymentTransaction
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
+    public DateTime? LastReconciliationAt { get; set; }
 
     public ICollection<TransactionTelemetryLog> TelemetryLogs { get; set; } = new List<TransactionTelemetryLog>();
 }

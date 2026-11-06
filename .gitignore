@@ -1,6 +1,22 @@
 apps/backend/VendingMachines.Api/vending_machines.db
+apps/backend/VendingMachines.Api/vending_machines.db-*
+apps/backend/VendingMachines.Api/*.sqlite*
 apps/backend/VendingMachines.Api/vending_machines.db-shm
 apps/backend/VendingMachines.Api/vending_machines.db-wal
 .tmp/
+# Configuração por ambiente pode conter segredos; forneça valores pelo runtime.
+**/appsettings.*.json
+!**/appsettings.Development.json
 **/bin/
 **/obj/
+**/TestResults/
+apps/frontend/.codex-*-build/
+apps/frontend/.codex-verify-dist/
+apps/frontend/dist/
+apps/frontend/test-results/
+apps/frontend/playwright-report/
+tools/Deployment/__pycache__/
+**/__pycache__/
+*.py[cod]
+# Scripts PostgreSQL gerados localmente para revisar a release; o workflow recria o pacote.
+artifacts/postgresql-migration*.sql

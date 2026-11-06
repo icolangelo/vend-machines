@@ -16,6 +16,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            throw new System.InvalidOperationException(
+                "Esta migration remove integrações sem ClientId e não consegue recriá-las no Down. O Down agora falha fechado; reverta somente o binário e, se necessário, recupere os registros de backup validado.");
 
         }
     }

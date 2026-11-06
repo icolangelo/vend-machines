@@ -28,13 +28,8 @@ namespace VendingMachines.Api.Migrations
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropColumn(
-                name: "Cpf",
-                table: "Users");
-
-            migrationBuilder.DropColumn(
-                name: "Cnpj",
-                table: "Companies");
+            throw new System.InvalidOperationException(
+                "Esta migration contém identificadores fiscais de usuários e empresas. Reverta somente o binário e preserve Cpf e Cnpj já registrados.");
         }
     }
 }

@@ -6,6 +6,7 @@ public interface IDataService
 {
     List<Machine> GetMachines(Guid? companyId = null);
     List<LocationDto> GetLocations(Guid? companyId = null);
+    LocationDto? GetLocation(Guid locationId, Guid? companyId = null);
     List<Product> GetTopProducts(Guid? companyId = null);
     List<Product> GetBottomProducts(Guid? companyId = null);
     List<FullProduct> GetProducts(Guid? companyId = null);

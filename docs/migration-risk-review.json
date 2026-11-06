@@ -1,0 +1,642 @@
+{
+  "20260609132837_AddUsersAndCompanies": {
+    "operations": [
+      "AddColumn",
+      "AddForeignKey",
+      "CreateIndex"
+    ],
+    "index_tables": [
+      "Machines"
+    ],
+    "impact": "Cria o índice IX_Machines_CompanyId numa tabela existente; o CREATE INDEX padrão pode bloquear gravações enquanto percorre a tabela.",
+    "recovery": "Aplicar com lock_timeout curto e revisar tamanho/duração em cópia; o Down falha fechado para preservar usuários, empresas e vínculos. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "25f0968c017111042355f5ca6ad51b20c190e1c12187fd8911c4f6a2c2d27dc1",
+    "affected_tables": [
+      "Machines"
+    ]
+  },
+  "20260611003133_AddCpfAndCnpj": {
+    "impact": "Adiciona Cpf e Cnpj obrigatórios em Users e Companies com default vazio para linhas atuais; confirmar volume, locks e efeito do backfill posterior.",
+    "recovery": "Medir em cópia recente e manter backup restaurável; o Down falha fechado para preservar identificadores fiscais. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "22bc2f56ca3862a9603909efd33075a6f691b405716819c720b77ab4680b02ce",
+    "affected_tables": [
+      "Companies",
+      "Users"
+    ]
+  },
+  "20260611004508_AddPrivacyPolicyConsent": {
+    "impact": "Adiciona aceite booleano com default false e data opcional em Users; linhas existentes passam a não ter aceite registrado e a tabela pode sofrer lock durante o backfill do default.",
+    "recovery": "Medir em cópia e preservar o backup; o Down falha fechado para manter a prova de consentimento e sua data. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "8c9cc5b44dcfe265d2ff4e8bca87284d12a1343f62d67207e8d312913635f60d",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20260613184854_AddMercadoPagoIntegration": {
+    "impact": "No PostgreSQL, adiciona MercadoPagoEnabled às Machines e cria tabelas financeiras; o ramo SQLite também altera tipos de colunas em tabelas existentes, devendo ser ensaiado separadamente. O ramo PostgreSQL também cria tabelas com FKs para entidades existentes; embora sem backfill, a criação exige locks SHARE ROW EXCLUSIVE breves nas tabelas referenciadas e pode aguardar escritas ativas.",
+    "recovery": "Executar a cadeia por provedor em cópia recente, medir locks e validar valores/defaults; o Down falha fechado para preservar transações e integrações. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn",
+      "AlterColumn",
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "source_sha256": "ef6a68574f3676f374610c55180d978832011d5dd1fd243cb40a5f52b40c9fe9",
+    "affected_tables": [
+      "Companies",
+      "Machines",
+      "ProductPerformances",
+      "ProductTypes",
+      "Products",
+      "Users"
+    ]
+  },
+  "20260627163422_RemoveStaticIntegrations": {
+    "operations": [
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Apaga integrações sem ClientId durante a migration; revisar a contagem e confirmar com a operação que nenhum registro legado precisa ser preservado.",
+    "recovery": "A migration apaga integrações legadas sem ClientId. O Down falha fechado porque não pode reconstruir esses registros; reverta somente o binário e recupere dados apenas de backup validado.",
+    "source_sha256": "219b04adf9637299fa5a974c3abe2998ec347895a54e3b39e9b20275179bd084",
+    "affected_tables": [
+      "MercadoPagoIntegrations"
+    ]
+  },
+  "20260628002415_AddMercadoPagoOAuthDiagnostics": {
+    "impact": "Adiciona campos de diagnóstico e validade de token em MercadoPagoIntegrations; colunas obrigatórias recebem defaults nas linhas atuais e podem gerar lock conforme o volume.",
+    "recovery": "Medir em cópia recente e manter backup; o Down falha fechado para preservar refresh token e estado OAuth. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "1512e581a9b9ce93b5067299969cad39ca76817a679ceeb4d7e4e8ab3d00c992",
+    "affected_tables": [
+      "MercadoPagoIntegrations"
+    ]
+  },
+  "20260628125424_AddLocationsToMachines": {
+    "operations": [
+      "AddColumn",
+      "AddForeignKey",
+      "CreateIndex",
+      "CreateTableForeignKey",
+      "Sql"
+    ],
+    "index_tables": [
+      "Machines"
+    ],
+    "impact": "Cria localizações e associa máquinas por empresa; a consulta também altera ClientName e inclui localizações padrão para empresas sem correspondência. A tabela Locations inclui FK para Companies, que exige lock SHARE ROW EXCLUSIVE na tabela referenciada; a migration também altera Machines e cria índice não concorrente, portanto medir os dois pontos em cópia.",
+    "recovery": "Conferir contagens e mapeamentos em cópia; o Down falha fechado para preservar Locations, LocationId e o nome associado. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "ecaa09e1658062959a964681fc188771cc95cb0e7463d98aae613385e7e24b62",
+    "affected_tables": [
+      "Companies",
+      "Machines"
+    ]
+  },
+  "20260628125500_FixEmptyMachineIds": {
+    "operations": [
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Substitui IDs de máquina vazios e atualiza referências em PaymentTransactions dentro de bloco condicional; preservar a relação entre ambos.",
+    "recovery": "A migration corrige IDs vazios e suas referências financeiras sem manter o mapeamento anterior. O Down falha fechado; reverta somente o binário e corrija IDs apenas com mapeamento validado.",
+    "source_sha256": "f841e6ca85aedcb6222dc758e09c5fafc67dfe269bebd4488779d007e2ded8a7",
+    "affected_tables": [
+      "Machines",
+      "PaymentTransactions"
+    ]
+  },
+  "20260628134337_AddCompanyIdToProducts": {
+    "operations": [
+      "AddColumn",
+      "AddForeignKey",
+      "CreateIndex"
+    ],
+    "index_tables": [
+      "ProductTypes",
+      "Products"
+    ],
+    "impact": "Cria índices por empresa em ProductTypes e Products existentes; a criação padrão pode bloquear gravações durante o scan. A nova FK também referencia Companies e exige lock breve nessa tabela.",
+    "recovery": "Medir em cópia e confirmar índices válidos; o Down falha fechado para preservar o escopo empresarial dos produtos e tipos. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "77ccb771efaa2f5175b325c0e7e2bf94ddb57dfaf7ceda9a94615a39bd48d145",
+    "affected_tables": [
+      "Companies",
+      "ProductTypes",
+      "Products"
+    ]
+  },
+  "20260628151756_AddOriginalIdToProducts": {
+    "impact": "Adiciona colunas opcionais de origem a ProductTypes e Products existentes; confirmar duração de locks e se o mapeamento posterior usa os IDs atuais.",
+    "recovery": "Medir em cópia recente e preservar backup; o Down falha fechado para manter os identificadores de origem e o mapeamento. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "4e530ac65e68768360c3996fcf332a2718fbc3341973b13db43af39b12d81177",
+    "affected_tables": [
+      "ProductTypes",
+      "Products"
+    ]
+  },
+  "20260628235522_AddSendTelemetryToPaymentTransactions": {
+    "operations": [
+      "AddColumn",
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona a opção SendTelemetryToMachine com valor inicial habilitado; validar o default nas linhas existentes e manter a coluna durante rollback da API.",
+    "recovery": "O Down falha fechado para preservar a preferência de envio à máquina; em rollback da API, reverta somente o binário.",
+    "source_sha256": "1ec56c563216fb5c6cd07a48272b0e40f4ba4af8309f95776cd49f3a8b987b9a",
+    "affected_tables": [
+      "PaymentTransactions"
+    ]
+  },
+  "20260715023221_AddTelemetrySessionManagement": {
+    "operations": [
+      "AddColumn",
+      "AlterColumn",
+      "CreateIndex",
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [
+      "Machines"
+    ],
+    "impact": "Cria índice único de NormalizedSerialNumber em Machines existentes; valores duplicados bloqueiam a migration e a construção pode bloquear gravações. Além das alterações de sessões e índices, as tabelas criadas incluem FKs para entidades existentes; as referências podem exigir locks SHARE ROW EXCLUSIVE e aguardar escritas durante a criação.",
+    "recovery": "Executar preflight de duplicatas e medir em cópia; o Down falha fechado para preservar sessões e histórico de telemetria. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "5036870bef3bd039db65298dc3cbc4ed345406efaf54122bb1c18a65263f692e",
+    "affected_tables": [
+      "Companies",
+      "Locations",
+      "Machines",
+      "MercadoPagoIntegrations",
+      "PaymentTransactions",
+      "ProductPerformances",
+      "ProductTypes",
+      "Products",
+      "SystemSettings",
+      "TransactionTelemetryLogs",
+      "Users"
+    ]
+  },
+  "20260730120000_AddMdbStatusAndAutomaticSession": {
+    "operations": [
+      "AddColumn",
+      "CreateIndex",
+      "DropIndex",
+      "Sql"
+    ],
+    "index_tables": [
+      "MachineSessions"
+    ],
+    "impact": "Adiciona campos MDB opcionais e substitui o índice de sessões por índice único parcial criado concorrentemente; exige zero máquinas com sessões abertas duplicadas.",
+    "recovery": "Aplicar apenas após preflight de duplicatas e validar índice pronto/válido; o Down falha fechado para preservar presença/estado MDB e o índice de sessão única. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "5488ecb04ed97aa7fcf0d20380b6298165a5445b032e5a601cdaac99296a2fd3",
+    "affected_tables": [
+      "MachineConnectionStates",
+      "MachineSessions",
+      "Machines"
+    ]
+  },
+  "20260731113749_AddRefreshSessions": {
+    "operations": [
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "impact": "Cria RefreshSessions com FK para Users. A tabela filha inicia vazia, mas criar a FK exige lock SHARE ROW EXCLUSIVE breve em Users e pode aguardar transações de escrita longas.",
+    "recovery": "Aplicar com lock_timeout curto e janela monitorada; se a criação falhar, confirmar rollback transacional antes de repetir. O Down falha fechado para preservar sessões e revogações. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "e3b2d8f1d3e9d4cffd680d78c91597ad66ed26a42039c7b285450eee2e9cb3a2",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20260924103052_AddTelemetryDeviceCredentials": {
+    "impact": "Adiciona hash e timestamps opcionais de credencial a Machines existentes; confirmar tamanho da tabela e compatibilidade gradual com firmware legado.",
+    "recovery": "Medir locks em cópia e manter backup restaurável; o Down falha fechado para preservar credenciais provisionadas e revogações. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "d90de06bfa28a2e0746814882f3e872ed7f31a013f885806ab6f7ded40082c9b",
+    "affected_tables": [
+      "Machines"
+    ]
+  },
+  "20260926165731_AddUserActivation": {
+    "impact": "Adiciona IsActive com default true a Users existentes; confirmar lock/backfill e que as contas existentes permaneçam ativas.",
+    "recovery": "Medir em cópia recente e preservar backup; o Down falha fechado para manter bloqueios de usuários. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "56ce20c7b5b8bd2535dc06dbcd5e2aad6020c786e2f8f8ba7011fac2b5e62bea",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20260926171348_AddUserInvitations": {
+    "operations": [
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "impact": "Cria UserInvitations com FK para Companies. A tabela filha inicia vazia; a criação da FK ainda exige lock SHARE ROW EXCLUSIVE breve em Companies e pode aguardar transações ativas.",
+    "recovery": "Aplicar com lock_timeout curto e confirmar que a migration ficou registrada; o Down falha fechado para preservar convites e aceite. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "01d6118c1b9fc6f2b9b918ea28df9aad3bd95f28c71c1f1ca75d3efc0902f464",
+    "affected_tables": [
+      "Companies"
+    ]
+  },
+  "20260926172341_AddPasswordResetTokens": {
+    "impact": "Adiciona CredentialVersion a Users existentes e cria a tabela PasswordResetTokens; confirmar lock do default e índices/constraints da tabela nova. A nova tabela também declara FK para Users na criação; sem backfill, mas o lock SHARE ROW EXCLUSIVE na tabela referenciada deve ser limitado por lock_timeout.",
+    "recovery": "Medir em cópia e preservar backup; o Down falha fechado para preservar CredentialVersion e tokens de recuperação. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn",
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "source_sha256": "122fc325fe24741627e37f5e35e9f004f2d6f5e0dde8b76af21325f437b45006",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20260926174359_AddPaymentReconciliationTracking": {
+    "operations": [
+      "AddColumn",
+      "CreateIndex",
+      "Sql"
+    ],
+    "index_tables": [
+      "PaymentTransactions"
+    ],
+    "impact": "Adiciona timestamp opcional de conciliação e índice concorrente na fila de pagamentos; a construção pode consumir I/O e aguardar transações longas.",
+    "recovery": "Validar o índice no catálogo do PostgreSQL; o Down falha fechado para preservar LastReconciliationAt e o índice. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "821c2d14023727f9b01c24803369547894d753ad638383c66ea57a86a9ff647c",
+    "affected_tables": [
+      "PaymentTransactions"
+    ]
+  },
+  "20260926175158_AddSalesInventoryLedger": {
+    "operations": [
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "impact": "Cria slots, vendas e movimentos de estoque com FKs para Companies, Machines, Products, MachineSessions e PaymentTransactions existentes. Sem backfill, mas as FKs exigem locks SHARE ROW EXCLUSIVE breves nas tabelas referenciadas e podem aguardar escritas/ sessões MDB.",
+    "recovery": "Medir a criação em cópia recente, aplicar com lock_timeout curto e monitorar transações; evitar janela de alto volume. O Down falha fechado para preservar ledger e estoque. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "de9a956dde407aaf3c31dc2413fd925a519bedc7de074d93ae17ba9f3a2d7337",
+    "affected_tables": [
+      "Companies",
+      "MachineSessions",
+      "Machines",
+      "PaymentTransactions",
+      "Products"
+    ]
+  },
+  "20260926180228_RestrictSalesProductDelete": {
+    "operations": [
+      "AddForeignKey",
+      "DropForeignKey"
+    ],
+    "index_tables": [],
+    "impact": "Troca a exclusão em cascata nula por restrição: produtos referenciados pelo histórico de vendas deixam de poder ser excluídos. A alteração da FK exige lock breve em SaleRecords e Products.",
+    "recovery": "Esta migration preserva o vínculo entre vendas históricas e produtos. O Down falha fechado; reverta somente o binário e mantenha a FK com DeleteBehavior.Restrict.",
+    "source_sha256": "41de4fb0f37995a67e66673888dccb6f240c38857122c1b58afa165b90a2629a",
+    "affected_tables": [
+      "Products",
+      "SaleRecords"
+    ]
+  },
+  "20260926180400_BackfillDeliveredSales": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona apenas a coluna Origin com default em SaleRecords; o lock de schema termina nesta migration antes do backfill histórico separado.",
+    "recovery": "O Down também falha fechado para preservar a origem auditável; a migration de backfill posterior igualmente bloqueia reversão destrutiva. Em rollback, reverta somente o binário e mantenha Origin e SaleRecords.",
+    "source_sha256": "cdc9c90143d4faa89c04b49bb459bbae05c8f8d39177ce96a16fb383d8b82c49",
+    "affected_tables": [
+      "SaleRecords"
+    ]
+  },
+  "20261026035921_BackfillLegacyDeliveredSales": {
+    "operations": [
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Executa um único INSERT ... SELECT transacional sobre o histórico de TelemetryEvents, com deduplicação DISTINCT ON e joins de sessão/pagamento; exige consistência de empresa e máquina entre evento, sessão e pagamento. O índice atual em TelemetryEvents usa empresa/máquina/data, não EventType/SessionId/TransactionId; scan e ordenação amplos são possíveis, além de I/O, WAL, manutenção dos índices de SaleRecords e ocupação temporária. lock_timeout limita espera por lock, não duração da instrução nem I/O.",
+    "recovery": "Antes de aplicar, exija preflight sem conflitos, limites operacionais aprovados e ensaio em cópia recente com plano EXPLAIN (ANALYZE, BUFFERS), duração, I/O, WAL e espaço dentro dos limites. Se medição/limites faltarem ou excederem o orçamento, não aplique; redesenhe para processamento retomável em lotes ou avalie índice parcial concorrente medindo também seu custo. Em falha transacional, confirme rollback e estado do histórico antes de repetir. O Down falha fechado para preservar vendas históricas que possam ter sido conciliadas; reverta somente o binário, sem remover linhas ou desmarcar a migration.",
+    "source_sha256": "a3ff2ffcb9623617e5cb195bc7b191309cb7d60131819b01565bf96ae559d649",
+    "affected_tables": [
+      "MachineSessions",
+      "PaymentTransactions",
+      "SaleRecords",
+      "TelemetryEvents"
+    ]
+  },
+  "20260926180751_TrackSaleRefunds": {
+    "impact": "Adiciona FinancialStatus e RefundedAmount com defaults a SaleRecords; avaliar duração do backfill em todo o razão de vendas e validar totais existentes.",
+    "recovery": "Medir em cópia recente e comparar linhas/totais antes e depois; o Down falha fechado para preservar FinancialStatus e RefundedAmount. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "7b0ebde85977c9e6c003442a5fef8812b938588021354506a88e79cee49f9aaf",
+    "affected_tables": [
+      "SaleRecords"
+    ]
+  },
+  "20260926181536_AddMachineActivationStatus": {
+    "impact": "Adiciona IsActive com default true a Machines existentes; confirmar lock/backfill e que a frota atual continue habilitada.",
+    "recovery": "Medir em cópia, validar a contagem de máquinas ativas e manter backup; o Down falha fechado para preservar bloqueios de máquina. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "0c51c93520cf41ca1cd3ffefba8c8d0571a66cbbd0b7e68966ff76df02daceef",
+    "affected_tables": [
+      "Machines"
+    ]
+  },
+  "20260926211028_AddOperationalAlerts": {
+    "operations": [
+      "CreateTableForeignKey"
+    ],
+    "index_tables": [],
+    "impact": "Cria OperationalAlerts e AlertReadReceipts com FKs para Companies e Users. Não copia dados, mas a declaração das FKs exige locks SHARE ROW EXCLUSIVE breves nas tabelas referenciadas.",
+    "recovery": "Aplicar com lock_timeout curto e confirmar conclusão antes de iniciar a versão que usa alertas. O Down falha fechado para preservar alertas e recibos; em rollback da API, reverta somente o binário.",
+    "source_sha256": "a2b0d4ecafb19e3c0af124942169bdf9a68db82e8583957e5eef29689544c925",
+    "affected_tables": [
+      "Companies",
+      "Users"
+    ]
+  },
+  "20260927160644_NormalizeRegistrationIdentifiers": {
+    "operations": [
+      "AddColumn",
+      "CreateIndex",
+      "Sql"
+    ],
+    "index_tables": [
+      "Companies",
+      "Users"
+    ],
+    "impact": "Preenche identificadores canônicos, instala triggers e índices únicos; colisões interrompem a migration e os preflights podem conter dados pessoais.",
+    "recovery": "Executar preflight restrito e resolver colisões com responsáveis; o Down falha fechado para preservar valores, índices e triggers de unicidade. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "5c9c0d17523d53a87f44ff3980feb53f7b068b175e3c8b7a7508684b8c0fa800",
+    "affected_tables": [
+      "Companies",
+      "Users"
+    ]
+  },
+  "20260927163720_BootstrapPlatformAdmin": {
+    "operations": [
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Confirma uma única identidade reservada ativa como PlatformAdmin; incrementa a versão de credenciais apenas se a role mudar e sempre grava evento de auditoria com o indicador roleChanged. Exige confirmação humana do titular.",
+    "recovery": "Esta migration promove a conta reservada e grava auditoria. O Down falha fechado para não rebaixar uma conta que pode ter sido usada nem apagar a evidência; corrija o papel por procedimento manual auditado.",
+    "source_sha256": "74377e60af9d3f1fc415c0c01180e770b9b1762c94cd38eabbd33008f3d427de",
+    "affected_tables": [
+      "AuditLogs",
+      "Users"
+    ]
+  },
+  "20260927172108_SetMachineSalesTarget": {
+    "impact": "Adiciona meta de vendas opcional a Machines; confirmar lock e que linhas existentes mantenham meta nula até configuração comercial.",
+    "recovery": "Medir em cópia e preservar backup; o Down falha fechado para manter a coluna e as metas configuradas. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "45ac8d861deec273bb81aad5f0446a3d0916d38a6b8eb332dfd6b545acaff940",
+    "affected_tables": [
+      "Machines"
+    ]
+  },
+  "20260927181221_AddCompanyActivationStatus": {
+    "operations": [
+      "AddColumn",
+      "AlterColumn",
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Marca empresas existentes como ativas, muda o default de novos cadastros para pendente e instala trigger que desativa usuários criados por binários antigos em empresas pendentes.",
+    "recovery": "Validar estados e trigger em PostgreSQL isolado; o Down falha fechado para preservar aprovação da empresa e bloqueios de usuários. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "0d723dbe5320f010f84b068033192a69c06ddc5a3147072e9713bd6ae36c6de0",
+    "affected_tables": [
+      "Companies",
+      "Users"
+    ]
+  },
+  "20260927202033_RequireEmailVerification": {
+    "operations": [
+      "AddColumn",
+      "CreateIndex"
+    ],
+    "index_tables": [
+      "Users"
+    ],
+    "impact": "Cria índice único para o hash de confirmação em Users existente; verificar duplicatas, duração do scan e disputa de locks.",
+    "recovery": "Rodar preflight em cópia e aplicar com lock_timeout curto; o Down falha fechado para preservar estado e provas de e-mail. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "69a8565b0068a90833d2186a7413ac353fe0b90d0b1ff44cc652eda7c745d8f0",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20260927204923_PersistTelemetryConnectionOwner": {
+    "impact": "Adiciona OwnerNodeId opcional a MachineConnectionStates; validar lock, compatibilidade com binários legados e reconnect sem apagar presença.",
+    "recovery": "Ensaiar migrations e reconnect legado/atual em cópia; o Down falha fechado para preservar OwnerNodeId. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "385f74dd0707bf68306ebda66845bc27979a5d4b9a0595064488bad9f398af9a",
+    "affected_tables": [
+      "MachineConnectionStates"
+    ]
+  },
+  "20260927212400_RouteMdbStatusToOwner": {
+    "impact": "Adiciona campos de roteamento e correlação a TelemetryCommandDispatches; a tabela pode conter comandos pendentes que precisam ser preservados durante o backfill.",
+    "recovery": "Medir em cópia com fila representativa e preservar backup; o Down falha fechado para manter despachos e resultados MDB. Em rollback da API, reverta somente o binário.",
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "source_sha256": "f2628ea6d0c93563f74c182a2d0c3a613f2c8252ac5fc078107a8e8161b54d7a",
+    "affected_tables": [
+      "TelemetryCommandDispatches"
+    ]
+  },
+  "20260927215538_ClearStaleTelemetryOwnerOnLegacyReconnect": {
+    "operations": [
+      "AddColumn",
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Instala trigger para limpar prova de proprietário antigo quando um binário legado altera ConnectionId, preservando IsOnline e LastSeenAt.",
+    "recovery": "Esta migration protege a propriedade do socket durante reconexão de firmware legado. O Down falha fechado; reverta somente o binário e preserve OwnerConnectionId e o trigger.",
+    "source_sha256": "2a38823c51209109b6558e8622227507fa28c0e837e763f38e9ea9e1f9480fa4",
+    "affected_tables": [
+      "MachineConnectionStates"
+    ]
+  },
+  "20261025150422_AddTelemetryCommandRoutingCapability": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona versão nullable do roteador MDB em MachineConnectionStates; conexões de binários anteriores ficam sem capacidade comprovada e não recebem comandos até reconectar por uma versão compatível.",
+    "source_sha256": "27f4c842b135cd4204bd71c097ebb09fb131d971b66daf88fe5c7f40f5450b91",
+    "affected_tables": [
+      "MachineConnectionStates"
+    ],
+    "recovery": "Esta migration mantém a capacidade de roteamento MDB registrada por conexão. O Down falha fechado; reverta somente o binário e preserve CommandRoutingVersion."
+  },
+  "20261025180955_AddSessionAdmissionGate": {
+    "operations": [
+      "InsertData",
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Cria o registro singleton e trigger BEFORE INSERT em MachineSessions; o lock FOR SHARE serializa novas sessões com a pausa e a criação do trigger exige lock curto na tabela.",
+    "recovery": "Ensaiar em PostgreSQL isolado com lock_timeout curto; em rollback de binário manter tabela/trigger e estado da pausa compatíveis, só liberando a pausa após validar a versão ativa. O Down falha fechado para não remover a barreira; corrija por migration para frente.",
+    "source_sha256": "4d4e7c9a7db5783f251f35740e95481b76ec7616fb74af46dede6a2c824ad78e",
+    "affected_tables": [
+      "MachineSessions"
+    ]
+  },
+  "20261025185728_AddTelemetryCommandResolution": {
+    "operations": [
+      "CreateTableForeignKey",
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Cria uma trilha de reconciliação imutável para comandos MDB com resultado incerto e trigger que valida estado, tipo e justificativa antes de aceitar uma atestação. O trigger também aceita auditoria somente após o cancelamento condicional Pending -> Cancelled anterior ao envio. A tabela de resoluções inclui FK para TelemetryCommandDispatches, que pode conter comandos; sua criação exige lock SHARE ROW EXCLUSIVE breve nessa tabela e deve respeitar lock_timeout.",
+    "recovery": "Ensaiar função, trigger e corrida de cancelamento com o worker em PostgreSQL isolado; no rollback preserve os registros e não limpe comandos incertos sem conferir o estado físico e a evidência operacional. O Down falha fechado para manter as reconciliações auditadas; corrija por migration para frente.",
+    "source_sha256": "c1c8b6aa1e6505ebdbb5d332956107e015f089383ebf5f237794ac67a071c9fc",
+    "affected_tables": [
+      "TelemetryCommandDispatches",
+      "TelemetryCommands"
+    ]
+  },
+  "20261025193143_AddPaymentReconciliationReason": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona ReconciliationReason nullable a PaymentTransactions sem default nem backfill; a alteração exige lock de catálogo breve, limitado pelo lock_timeout do segmento de release.",
+    "recovery": "Aplicar no segmento final após revisar o histórico; o Down falha fechado para preservar os motivos registrados. Em rollback da API, reverta somente o binário.",
+    "source_sha256": "ff9e1318a6ba6198d8a394e44b8cfc661e7b22422d56340510e5ddc5a2074b75",
+    "affected_tables": [
+      "PaymentTransactions"
+    ]
+  },
+  "20261026032226_AddPrivacyPolicyVersion": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona PrivacyPolicyVersion nullable e sem default em Users; não faz backfill nem altera o aceite de contas existentes. A alteração exige lock de catálogo breve, limitado pelo lock_timeout do segmento de release.",
+    "recovery": "O Down falha fechado para preservar a versão da política aceita. Em rollback da API antiga, reverta somente o binário e mantenha os registros existentes.",
+    "source_sha256": "16498cd1030bb0c45f55b538b9925ca4431e774f7a7fb26785a1cd4cdc3c5293",
+    "affected_tables": [
+      "Users"
+    ]
+  },
+  "20261026075639_EnforceSystemSettingsSingleton": {
+    "operations": [
+      "AddCheckConstraint",
+      "AddColumn",
+      "CreateIndex"
+    ],
+    "index_tables": [
+      "SystemSettings"
+    ],
+    "impact": "Adiciona IsSingleton com default true, cria índice único e CHECK em SystemSettings para impedir duplicatas. A migration deve ocorrer somente após o preflight confirmar uma linha; dados duplicados fazem o índice falhar fechado. A tabela é pequena, mas DDL e índice ainda precisam de lock_timeout curto.",
+    "recovery": "Ensaiar em PostgreSQL e SQLite isolados e confirmar uma única linha antes da release. Não remova a restrição no rollback; reverta somente o binário e corrija dados por procedimento controlado, preservando taxa e UpdatedAt.",
+    "source_sha256": "c0dcd9ecce118b57b4767f4c68d589b42afb16b23d7648a299482d50c8e9e4b8",
+    "affected_tables": [
+      "SystemSettings"
+    ]
+  },
+  "20261026082311_AddSaleLocationSnapshot": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona LocationIdSnapshot e LocationNameSnapshot nullable a SaleRecords sem default, backfill ou índice. O PostgreSQL adiciona colunas sem reescrever os registros existentes; ainda há lock breve de catálogo, limitado pelo lock_timeout do segmento de release. Vendas antigas permanecem sem snapshot e continuam usando a localização atual como fallback.",
+    "recovery": "Aplicar após comparar o histórico de migrations. O Down falha fechado para preservar snapshots criados; em rollback, reverta somente o binário e mantenha as colunas/dados.",
+    "source_sha256": "a7a7fa0d2c1ec78de2ce749623ee94ebf140fa6e5670e8434e2d79c8351695cd",
+    "affected_tables": [
+      "SaleRecords"
+    ]
+  },
+  "20261026082904_AddSessionLocationSnapshot": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona LocationIdSnapshot e LocationNameSnapshot nullable a MachineSessions sem default, backfill ou índice. Sessões novas capturam o local no início do fluxo; sessões antigas continuam com valores nulos. O lock breve de catálogo é limitado pelo lock_timeout do segmento de release.",
+    "recovery": "Aplicar após comparar o histórico de migrations. O Down falha fechado para preservar snapshots usados por vendas; em rollback, reverta somente o binário e mantenha as colunas/dados.",
+    "source_sha256": "6509c416f9e6ccacd59be0ebbc38fc78c0d8314d7a2112c17cb8dc887aba09ba",
+    "affected_tables": [
+      "MachineSessions"
+    ]
+  },
+  "20261026083333_AddSessionProductSnapshot": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona SelectedProductIdSnapshot e SelectedProductNameSnapshot nullable a MachineSessions sem default ou backfill. Sessões novas capturam o compartimento e o produto quando o dispositivo pede a venda; sessões antigas permanecem nulas. O lock breve de catálogo é limitado pelo lock_timeout do segmento de release.",
+    "recovery": "Aplicar após comparar o histórico de migrations. O Down falha fechado para preservar a seleção usada por vendas; em rollback, reverta somente o binário e mantenha as colunas/dados.",
+    "source_sha256": "2a13cdd8f4f278f055046848047d63ade79ef4d1b8f15f9702983c0c597e7382",
+    "affected_tables": [
+      "MachineSessions"
+    ]
+  },
+  "20261026091223_IndexInventoryMappingMismatchAlerts": {
+    "operations": [
+      "CreateIndex",
+      "Sql"
+    ],
+    "index_tables": [
+      "InventoryMovements"
+    ],
+    "impact": "Cria índice parcial de forma concorrente para localizar vendas com divergência em InventoryMovements sem bloquear inserções, atualizações ou remoções; ainda realiza scans e pode elevar I/O/CPU ou aguardar transações longas, portanto medir em cópia recente.",
+    "recovery": "A migration valida validade e predicado antes de registrar o histórico. Se uma construção concorrente falhar, remova o índice inválido com DROP INDEX CONCURRENTLY antes de repetir; em rollback de binário mantenha o índice e só execute Down concorrente após confirmar que nenhum binário ativo depende dele.",
+    "source_sha256": "a0638d594923461ff589be2dbc3a81c265bfef6827d08567d76c792125c0c0cc",
+    "affected_tables": [
+      "InventoryMovements"
+    ]
+  },
+  "20261101221552_AddTelemetryConnectionOwnerLease": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona OwnerLeaseExpiresAt nullable a MachineConnectionStates sem default, backfill ou índice. A coluna permite que readiness detecte proprietários de conexões online cujo processo não renova o lease; o lock breve de catálogo é limitado pelo lock_timeout do segmento idempotente.",
+    "recovery": "Aplicar após comparar o histórico de migrations. Em rollback do binário, mantenha a coluna e a migration aplicada; o Down falha fechado porque remover a evidência de validade enfraquece o bloqueio de readiness.",
+    "source_sha256": "e035c56f91f6210ea25b067ee52c54e25963031d42e9ed5ecbdbccf5565ad8c2",
+    "affected_tables": [
+      "MachineConnectionStates"
+    ]
+  },
+  "20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata": {
+    "operations": [
+      "Sql"
+    ],
+    "index_tables": [],
+    "impact": "Substitui a função de trigger da tabela MachineConnectionStates para limpar versão de roteamento e lease quando uma instância antiga altera ConnectionId sem conhecer os campos de owner. A função é atualizada atomicamente em catálogo e não reescreve linhas nem pausa sockets ativos.",
+    "recovery": "Aplicar somente após revisar a cadeia de migrations e ensaiar reconexão legada em PostgreSQL descartável. Down falha fechado para impedir que uma reconexão antiga deixe capacidade e lease obsoletos bloqueando readiness ou permitindo roteamento incorreto.",
+    "source_sha256": "45e39d01a9861cd2d3f6a64e87cb0d720f88aa1b483a9e137db478961a2aeac5",
+    "affected_tables": []
+  }
+}

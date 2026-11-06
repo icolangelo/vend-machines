@@ -4,10 +4,15 @@ export interface Machine {
   locationId?: string;
   clientName: string;
   location: string;
-  status: "online" | "offline" | "warning";
+  status: "online" | "offline" | "warning" | "unmonitored" | "inactive";
+  isActive?: boolean;
+  lowStock?: boolean;
   stockLevel: number; // 0-100
+  inventoryConfigured?: boolean;
   revenue30d: number;
   totalSales30d: number;
+  minimumSalesTarget30d?: number | null;
+  belowSalesTarget?: boolean;
   lastSync: string;
   serialNumber: string;
   mercadoPagoEnabled?: boolean;
@@ -62,12 +67,12 @@ export const productTypes: ProductType[] = [
 
 export const machines: Machine[] = [
   { id: "VM-001", name: "Lobby A1", locationId: "loc-hospital", clientName: "ACME - Hospital", location: "Lobby Principal", status: "online", stockLevel: 82, revenue30d: 4230, totalSales30d: 847, lastSync: "2 min atrás", serialNumber: "SN-123456" },
-  { id: "VM-002", name: "Refeitório B2", locationId: "loc-hospital", clientName: "ACME - Hospital", location: "Refeitório 2º andar", status: "warning", stockLevel: 18, revenue30d: 3890, totalSales30d: 778, lastSync: "5 min atrás", serialNumber: "SN-987654" },
+  { id: "VM-002", name: "Refeitório B2", locationId: "loc-hospital", clientName: "ACME - Hospital", location: "Refeitório 2º andar", status: "warning", lowStock: true, stockLevel: 18, revenue30d: 3890, totalSales30d: 778, minimumSalesTarget30d: 900, belowSalesTarget: true, lastSync: "5 min atrás", serialNumber: "SN-987654" },
   { id: "VM-003", name: "UTI C1", locationId: "loc-hospital", clientName: "ACME - Hospital", location: "Corredor UTI", status: "online", stockLevel: 65, revenue30d: 2150, totalSales30d: 430, lastSync: "1 min atrás", serialNumber: "SN-555555" },
   { id: "VM-004", name: "Recepção D1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Bloco D", status: "online", stockLevel: 91, revenue30d: 5670, totalSales30d: 1134, lastSync: "3 min atrás", serialNumber: "SN-004" },
-  { id: "VM-005", name: "Cantina E1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Cantina Central", status: "offline", stockLevel: 0, revenue30d: 0, totalSales30d: 0, lastSync: "2 dias atrás", serialNumber: "SN-005" },
+  { id: "VM-005", name: "Cantina E1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Cantina Central", status: "offline", lowStock: true, stockLevel: 0, revenue30d: 0, totalSales30d: 0, minimumSalesTarget30d: 100, belowSalesTarget: true, lastSync: "2 dias atrás", serialNumber: "SN-005" },
   { id: "VM-006", name: "Hall F1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Hall de Entrada", status: "online", stockLevel: 45, revenue30d: 1890, totalSales30d: 378, lastSync: "4 min atrás", serialNumber: "SN-006" },
-  { id: "VM-007", name: "Academia G1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Academia", status: "warning", stockLevel: 12, revenue30d: 3420, totalSales30d: 684, lastSync: "8 min atrás", serialNumber: "SN-007" },
+  { id: "VM-007", name: "Academia G1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Academia", status: "warning", lowStock: true, stockLevel: 12, revenue30d: 3420, totalSales30d: 684, minimumSalesTarget30d: 800, belowSalesTarget: true, lastSync: "8 min atrás", serialNumber: "SN-007" },
   { id: "VM-008", name: "Terminal H1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Terminal 3", status: "online", stockLevel: 73, revenue30d: 8940, totalSales30d: 1788, lastSync: "1 min atrás", serialNumber: "SN-008" },
   { id: "VM-009", name: "Embarque I1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Sala de Embarque", status: "online", stockLevel: 56, revenue30d: 7230, totalSales30d: 1446, lastSync: "2 min atrás", serialNumber: "SN-009" },
   { id: "VM-010", name: "Plataforma J1", locationId: "loc-shopping", clientName: "ACME - Shopping", location: "Plataforma 12", status: "warning", stockLevel: 22, revenue30d: 6180, totalSales30d: 1236, lastSync: "15 min atrás", serialNumber: "SN-010" },
@@ -78,6 +83,15 @@ export const machines: Machine[] = [
 export const clients: Client[] = [
   { id: "loc-shopping", name: "ACME - Shopping", machineCount: 9, revenue30d: 42540, totalSales30d: 8508 },
   { id: "loc-hospital", name: "ACME - Hospital", machineCount: 3, revenue30d: 10270, totalSales30d: 2055 },
+];
+
+export const secondaryCompanyMachines: Machine[] = [
+  { id: "VM-101", name: "Cafeteria Norte", locationId: "loc-sabor-centro", clientName: "Sabor & Cia - Centro", location: "Cafeteria Norte", status: "online", stockLevel: 56, revenue30d: 2420, totalSales30d: 121, lastSync: "1 min atrás", serialNumber: "SAB-001" },
+  { id: "VM-102", name: "Recepção Sul", locationId: "loc-sabor-centro", clientName: "Sabor & Cia - Centro", location: "Recepção Sul", status: "offline", lowStock: true, stockLevel: 12, revenue30d: 900, totalSales30d: 45, minimumSalesTarget30d: 100, belowSalesTarget: true, lastSync: "10 min atrás", serialNumber: "SAB-002" },
+];
+
+export const secondaryCompanyClients: Client[] = [
+  { id: "loc-sabor-centro", name: "Sabor & Cia - Centro", machineCount: 2, revenue30d: 3320, totalSales30d: 166 },
 ];
 
 export const topProducts: Product[] = [
@@ -94,6 +108,15 @@ export const bottomProducts: Product[] = [
     { name: "Energético Monster", totalSold: 156, revenue: 1248, trend: -12.8 },
     { name: "Paçoca Amor", totalSold: 178, revenue: 356, trend: -8.5 },
     { name: "Vitamina Yakult", totalSold: 203, revenue: 609, trend: -5.1 },
+];
+
+export const secondaryCompanyTopProducts: Product[] = [
+  { name: "Suco Natural", totalSold: 74, revenue: 740, trend: 8.2 },
+  { name: "Biscoito de Polvilho", totalSold: 51, revenue: 357, trend: 2.1 },
+];
+
+export const secondaryCompanyBottomProducts: Product[] = [
+  { name: "Barra de Castanhas", totalSold: 4, revenue: 36, trend: -12.5 },
 ];
 
 export const products: FullProduct[] = [
@@ -124,6 +147,27 @@ export const products: FullProduct[] = [
         isAlcoholic: false,
         cost: 12.300
     }
+];
+
+export const secondaryCompanyProducts: FullProduct[] = [
+  {
+    id: "sabor-p-1",
+    code: "SAB-001",
+    name: "Suco Natural",
+    description: "Suco de laranja 300ml",
+    typeId: "pt-1",
+    isAlcoholic: false,
+    cost: 4.25,
+  },
+  {
+    id: "sabor-p-2",
+    code: "SAB-002",
+    name: "Biscoito de Polvilho",
+    description: "Pacote individual",
+    typeId: "pt-8",
+    isAlcoholic: false,
+    cost: 2.1,
+  },
 ];
 
 export const revenueByDay = [

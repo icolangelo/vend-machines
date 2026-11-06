@@ -14,11 +14,13 @@ public class LocationsController : BaseApiController
 {
     private readonly AppDbContext _context;
     private readonly IDataService _dataService;
+    private readonly IAuditLogService? _audit;
 
-    public LocationsController(AppDbContext context, IDataService dataService)
+    public LocationsController(AppDbContext context, IDataService dataService, IAuditLogService? audit = null)
     {
         _context = context;
         _dataService = dataService;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -33,38 +35,23 @@ public class LocationsController : BaseApiController
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<IActionResult> GetById(Guid id)
+    public Task<IActionResult> GetById(Guid id)
     {
         if (!TryGetEffectiveCompanyId(out var companyId))
         {
-            return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
+            return Task.FromResult<IActionResult>(BadRequest(new { message = "O usuário não está associado a nenhuma empresa." }));
         }
 
-        var location = await _context.Locations
-            .FirstOrDefaultAsync(l => l.Id == id && l.CompanyId == companyId);
-
+        var location = _dataService.GetLocation(id, companyId);
         if (location == null)
         {
-            return NotFound(new { message = "Localização não encontrada." });
+            return Task.FromResult<IActionResult>(NotFound(new { message = "Localização não encontrada." }));
         }
 
-        var machines = await _context.Machines
-            .Where(m => m.LocationId == location.Id)
-            .ToListAsync();
-
-        return Ok(new LocationDto
-        {
-            Id = location.Id,
-            CompanyId = location.CompanyId,
-            Name = location.Name,
-            MachineCount = machines.Count,
-            Revenue30d = machines.Sum(m => m.Revenue30d),
-            TotalSales30d = machines.Sum(m => m.TotalSales30d),
-            CreatedAt = location.CreatedAt,
-            UpdatedAt = location.UpdatedAt
-        });
+        return Task.FromResult<IActionResult>(Ok(location));
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] LocationRequest request)
     {
@@ -97,6 +84,7 @@ public class LocationsController : BaseApiController
 
         _context.Locations.Add(location);
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.created", location.Id.ToString(), companyId);
 
         return CreatedAtAction(nameof(GetById), new { id = location.Id }, new LocationDto
         {
@@ -107,6 +95,7 @@ public class LocationsController : BaseApiController
         });
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] LocationRequest request)
     {
@@ -150,9 +139,11 @@ public class LocationsController : BaseApiController
         }
 
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.updated", location.Id.ToString(), companyId);
         return NoContent();
     }
 
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
@@ -179,9 +170,14 @@ public class LocationsController : BaseApiController
 
         _context.Locations.Remove(location);
         await _context.SaveChangesAsync();
+        await RecordAuditAsync("location.deleted", location.Id.ToString(), companyId);
 
         return NoContent();
     }
+
+    private Task RecordAuditAsync(string action, string resourceId, Guid companyId) =>
+        _audit?.RecordAsync(action, "Location", resourceId, companyId, cancellationToken: HttpContext.RequestAborted)
+        ?? Task.CompletedTask;
 
 
 }

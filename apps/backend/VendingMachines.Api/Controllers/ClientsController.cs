@@ -8,7 +8,7 @@ namespace VendingMachines.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/[controller]")]
-public class ClientsController : ControllerBase
+public class ClientsController : BaseApiController
 {
     private readonly IDataService _dataService;
 
@@ -20,17 +20,11 @@ public class ClientsController : ControllerBase
     [HttpGet]
     public ActionResult<IEnumerable<LocationDto>> GetAll()
     {
-        if (!TryGetCompanyId(out var companyId))
+        if (!TryGetEffectiveCompanyId(out var companyId))
         {
             return BadRequest(new { message = "O usuário não está associado a nenhuma empresa." });
         }
 
         return Ok(_dataService.GetLocations(companyId));
-    }
-
-    private bool TryGetCompanyId(out Guid companyId)
-    {
-        var companyIdClaim = User.FindFirst("company_id")?.Value;
-        return Guid.TryParse(companyIdClaim, out companyId);
     }
 }

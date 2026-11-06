@@ -1,12 +1,24 @@
 bin/
 obj/
 out/
+.tmp/
 .git/
 .vs/
 .vscode/
 Dockerfile
 .dockerignore
-appsettings.Development.json
+# Configuração específica de ambiente e seus segredos são injetados em runtime.
+appsettings.*.json
+
+# Bancos SQLite locais e arquivos auxiliares nunca entram no contexto da imagem.
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-*
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*

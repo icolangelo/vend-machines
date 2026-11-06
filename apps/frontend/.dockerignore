@@ -1,0 +1,13 @@
+node_modules
+dist
+dist-ssr
+coverage
+test-results
+playwright-report
+e2e
+playwright*
+vitest.config.ts
+.git
+.codex-*
+.env
+.env.*
