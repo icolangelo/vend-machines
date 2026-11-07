@@ -1,27 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import React, { useState, useEffect, useCallback } from "react";
+import { useAuth } from "@/contexts/useAuth";
+import { ImpersonationContext, type ImpersonatedCompany } from "@/contexts/impersonationContextDefinition";
 
-export const SUPER_ADMIN_EMAIL = "dev.ivan@gmail.com";
 const STORAGE_KEY = "impersonatedCompany";
-
-export interface ImpersonatedCompany {
-  id: string;
-  name: string;
-}
-
-interface ImpersonationContextType {
-  isSuperAdmin: boolean;
-  impersonatedCompany: ImpersonatedCompany | null;
-  setImpersonatedCompany: (company: ImpersonatedCompany | null) => void;
-  clearImpersonation: () => void;
-  effectiveCompanyName: string | null;
-}
-
-const ImpersonationContext = createContext<ImpersonationContextType | undefined>(undefined);
 
 export const ImpersonationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
-  const isSuperAdmin = user?.email === SUPER_ADMIN_EMAIL;
+  const isSuperAdmin = user?.role === "PlatformAdmin";
 
   const [impersonatedCompany, setImpersonatedCompanyState] = useState<ImpersonatedCompany | null>(() => {
     try {
@@ -76,12 +61,4 @@ export const ImpersonationProvider: React.FC<{ children: React.ReactNode }> = ({
       {children}
     </ImpersonationContext.Provider>
   );
-};
-
-export const useImpersonation = () => {
-  const context = useContext(ImpersonationContext);
-  if (!context) {
-    throw new Error("useImpersonation deve ser usado dentro de ImpersonationProvider");
-  }
-  return context;
 };

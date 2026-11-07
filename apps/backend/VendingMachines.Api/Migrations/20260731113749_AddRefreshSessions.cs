@@ -54,6 +54,7 @@ public partial class AddRefreshSessions : Migration
 
     protected override void Down(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.DropTable(name: "RefreshSessions");
+        throw new System.InvalidOperationException(
+            "Esta migration contém sessões renováveis e estado de revogação. Reverta somente o binário e preserve RefreshSessions para não desconectar usuários.");
     }
 }

@@ -1,0 +1,28 @@
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace VendingMachines.Api.Migrations
+{
+    /// <inheritdoc />
+    public partial class PersistTelemetryConnectionOwner : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AddColumn<string>(
+                name: "OwnerNodeId",
+                table: "MachineConnectionStates",
+                type: "character varying(32)",
+                maxLength: 32,
+                nullable: true);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            throw new System.InvalidOperationException(
+                "Esta migration contém propriedade persistida da conexão MDB. Reverta somente o binário e preserve OwnerNodeId.");
+        }
+    }
+}

@@ -15,34 +15,200 @@ public class DatabaseDataService : IDataService
 
     public List<Machine> GetMachines(Guid? companyId = null)
     {
-        return GetMachineQuery(companyId).ToList();
+        var now = DateTime.UtcNow;
+        var machines = GetMachineQuery(companyId).ToList();
+        var machineIds = machines.Select(machine => machine.Id).ToList();
+        var since = now.AddDays(-30);
+        var salesQuery = _context.SaleRecords.AsNoTracking()
+            .Where(sale => machineIds.Contains(sale.MachineId) && sale.SoldAt >= since && sale.SoldAt <= now);
+        if (companyId.HasValue)
+        {
+            salesQuery = salesQuery.Where(sale => sale.CompanyId == companyId.Value);
+        }
+        var sales = salesQuery
+            .GroupBy(sale => sale.MachineId)
+            .Select(group => new
+            {
+                MachineId = group.Key,
+                Revenue = group.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                    ? 0m
+                    : sale.GrossAmount - sale.RefundedAmount),
+                Quantity = group.Sum(sale => sale.Quantity)
+            })
+            .ToDictionary(group => group.MachineId);
+
+        var connectionStatesQuery = _context.MachineConnectionStates.AsNoTracking()
+            .Where(state => machineIds.Contains(state.MachineId));
+        if (companyId.HasValue)
+        {
+            connectionStatesQuery = connectionStatesQuery.Where(state => state.CompanyId == companyId.Value);
+        }
+        var connectionStates = connectionStatesQuery
+            .ToDictionary(state => state.MachineId);
+        var stockQuery = _context.MachineProductSlots.AsNoTracking()
+            .Where(slot => machineIds.Contains(slot.MachineId));
+        if (companyId.HasValue)
+        {
+            stockQuery = stockQuery.Where(slot => slot.CompanyId == companyId.Value);
+        }
+        var stockByMachine = stockQuery
+            .GroupBy(slot => slot.MachineId)
+            .Select(group => new
+            {
+                MachineId = group.Key,
+                Capacity = group.Sum(slot => slot.Capacity),
+                Current = group.Sum(slot => slot.CurrentStock),
+                LowStock = group.Any(slot => slot.CurrentStock <= slot.LowStockThreshold)
+            })
+            .ToDictionary(group => group.MachineId);
+
+        foreach (var machine in machines)
+        {
+            if (sales.TryGetValue(machine.Id, out var totals))
+            {
+                machine.Revenue30d = totals.Revenue;
+                machine.TotalSales30d = totals.Quantity;
+            }
+            else
+            {
+                machine.Revenue30d = 0m;
+                machine.TotalSales30d = 0;
+            }
+            if (stockByMachine.TryGetValue(machine.Id, out var stock) && stock.Capacity > 0)
+            {
+                machine.InventoryConfigured = true;
+                machine.LowStock = stock.LowStock;
+                machine.StockLevel = Math.Clamp((int)Math.Round(stock.Current * 100d / stock.Capacity), 0, 100);
+            }
+            else
+            {
+                machine.InventoryConfigured = false;
+                machine.LowStock = false;
+                machine.StockLevel = 0;
+            }
+
+            if (!machine.IsActive)
+            {
+                machine.Status = "inactive";
+                machine.LastSync = "sem monitoramento";
+                continue;
+            }
+
+            if (!connectionStates.TryGetValue(machine.Id, out var connection) || !connection.MonitoringEnabled)
+            {
+                machine.Status = "unmonitored";
+                machine.LastSync = "sem monitoramento";
+                continue;
+            }
+
+            var lastSeen = connection.LastSeenAt ?? connection.ConnectedAt ?? connection.DisconnectedAt;
+            if (connection.ActivatedAt is DateTime activatedAt &&
+                (!lastSeen.HasValue || activatedAt > lastSeen.Value))
+            {
+                lastSeen = activatedAt;
+            }
+            machine.Status = connection.IsOnline && lastSeen >= now.AddMinutes(-2)
+                ? "online"
+                : lastSeen >= now.AddMinutes(-5) ? "warning" : "offline";
+            machine.LastSync = FormatLastSeen(lastSeen, now);
+        }
+
+        return machines;
     }
 
-    public List<LocationDto> GetLocations(Guid? companyId = null)
+    private static string FormatLastSeen(DateTime? lastSeen, DateTime now)
     {
-        var locations = _context.Locations.AsQueryable();
+        if (!lastSeen.HasValue) return "sem comunicação";
+        var elapsed = now - lastSeen.Value;
+        if (elapsed < TimeSpan.FromMinutes(1)) return "agora";
+        if (elapsed < TimeSpan.FromHours(1)) return $"há {(int)elapsed.TotalMinutes} min";
+        if (elapsed < TimeSpan.FromDays(1)) return $"há {(int)elapsed.TotalHours} h";
+        return $"há {(int)elapsed.TotalDays} dias";
+    }
+
+    public List<LocationDto> GetLocations(Guid? companyId = null) => GetLocationSummaries(companyId, null);
+
+    public LocationDto? GetLocation(Guid locationId, Guid? companyId = null) =>
+        GetLocationSummaries(companyId, locationId).SingleOrDefault();
+
+    private List<LocationDto> GetLocationSummaries(Guid? companyId, Guid? requestedLocationId)
+    {
+        var locations = _context.Locations.AsNoTracking().AsQueryable();
         if (companyId.HasValue)
         {
             locations = locations.Where(l => l.CompanyId == companyId.Value);
         }
+        if (requestedLocationId.HasValue)
+        {
+            locations = locations.Where(location => location.Id == requestedLocationId.Value);
+        }
+        var locationList = locations.ToList();
+        var machineQuery = GetMachineQuery(companyId).AsNoTracking();
+        if (requestedLocationId.HasValue)
+        {
+            machineQuery = machineQuery.Where(machine => machine.LocationId == requestedLocationId.Value);
+        }
+        var machineList = machineQuery.ToList();
+        var machineIds = machineList.Select(machine => machine.Id).ToList();
+        var now = DateTime.UtcNow;
+        var since = now.AddDays(-30);
+        var salesInWindow = _context.SaleRecords.AsNoTracking()
+            .Where(sale => sale.SoldAt >= since && sale.SoldAt <= now);
+        if (companyId.HasValue)
+        {
+            salesInWindow = salesInWindow.Where(sale => sale.CompanyId == companyId.Value);
+        }
+        if (requestedLocationId.HasValue)
+        {
+            salesInWindow = salesInWindow.Where(sale => sale.LocationIdSnapshot == requestedLocationId.Value ||
+                (sale.LocationIdSnapshot == null && machineIds.Contains(sale.MachineId)));
+        }
+        var salesByLocation = salesInWindow
+            .Where(sale => sale.LocationIdSnapshot.HasValue)
+            .GroupBy(sale => sale.LocationIdSnapshot!.Value)
+            .Select(group => new
+            {
+                LocationId = group.Key,
+                Revenue = group.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                    ? 0m
+                    : sale.GrossAmount - sale.RefundedAmount),
+                Sales = group.Sum(sale => sale.Quantity)
+            })
+            .ToDictionary(group => group.LocationId);
+        var legacySalesByMachine = salesInWindow
+            .Where(sale => machineIds.Contains(sale.MachineId) && sale.LocationIdSnapshot == null)
+            .GroupBy(sale => sale.MachineId)
+            .Select(group => new
+            {
+                MachineId = group.Key,
+                Revenue = group.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                    ? 0m
+                    : sale.GrossAmount - sale.RefundedAmount),
+                Sales = group.Sum(sale => sale.Quantity)
+            })
+            .ToDictionary(group => group.MachineId);
 
-        return locations
-            .GroupJoin(
-                GetMachineQuery(companyId),
-                location => location.Id,
-                machine => machine.LocationId,
-                (location, machines) => new LocationDto
+        return locationList.Select(location =>
+            {
+                var locationMachines = machineList.Where(machine => machine.LocationId == location.Id).ToList();
+                var legacyMachineTotals = locationMachines
+                    .Where(machine => legacySalesByMachine.ContainsKey(machine.Id))
+                    .Select(machine => legacySalesByMachine[machine.Id])
+                    .ToList();
+                salesByLocation.TryGetValue(location.Id, out var snapshotTotals);
+                return new LocationDto
                 {
                     Id = location.Id,
                     CompanyId = location.CompanyId,
                     Name = location.Name,
-                    MachineCount = machines.Count(),
-                    Revenue30d = machines.Sum(m => (decimal?)m.Revenue30d) ?? 0m,
-                    TotalSales30d = machines.Sum(m => (int?)m.TotalSales30d) ?? 0,
+                    MachineCount = locationMachines.Count,
+                    Revenue30d = (snapshotTotals?.Revenue ?? 0m) + legacyMachineTotals.Sum(total => total.Revenue),
+                    TotalSales30d = (snapshotTotals?.Sales ?? 0) + legacyMachineTotals.Sum(total => total.Sales),
                     CreatedAt = location.CreatedAt,
                     UpdatedAt = location.UpdatedAt
-                })
-            .OrderBy(l => l.Name)
+                };
+            })
+            .OrderBy(location => location.Name)
             .ToList();
     }
 
@@ -110,12 +276,12 @@ public class DatabaseDataService : IDataService
 
     public List<Product> GetTopProducts(Guid? companyId = null)
     {
-        return GetCompanyScopedProductPerformance(companyId);
+        return GetCompanyScopedProductPerformance(companyId, top: true);
     }
 
     public List<Product> GetBottomProducts(Guid? companyId = null)
     {
-        return GetCompanyScopedProductPerformance(companyId);
+        return GetCompanyScopedProductPerformance(companyId, top: false);
     }
 
     public List<FullProduct> GetProducts(Guid? companyId = null)
@@ -145,10 +311,6 @@ public class DatabaseDataService : IDataService
         if (companyId.HasValue)
         {
             var overriddenIds = list.Where(pt => pt.OriginalId != null && pt.CompanyId == companyId.Value).Select(pt => pt.OriginalId).ToList();
-            Console.WriteLine($"[DEBUG] overriddenIds: {string.Join(", ", overriddenIds)}");
-            foreach(var item in list) {
-                Console.WriteLine($"[DEBUG] item Id={item.Id} Name={item.Name} OriginalId={item.OriginalId}");
-            }
             list = list.Where(pt => !overriddenIds.Contains(pt.Id)).ToList();
         }
         return list;
@@ -156,13 +318,17 @@ public class DatabaseDataService : IDataService
 
     public DashboardStats GetDashboardStats(Guid? companyId = null)
     {
-        var machines = GetMachineQuery(companyId).ToList();
-        var approvedTransactions = GetApprovedTransactionQuery(companyId, DateTime.UtcNow.AddDays(-30)).ToList();
-        var performanceHistory = GenerateTransactionHistory(approvedTransactions, 30);
+        var machines = GetMachines(companyId);
+        var now = DateTime.UtcNow;
+        var since = now.AddDays(-30);
+        var sales = GetSalesQuery(companyId, since, now).ToList();
+        var performanceHistory = GenerateSalesHistory(sales, 30);
         return new DashboardStats
         {
-            TotalRevenue30d = approvedTransactions.Sum(t => t.Amount),
-            TotalSales30d = approvedTransactions.Count,
+            TotalRevenue30d = sales.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                ? 0m
+                : sale.GrossAmount - sale.RefundedAmount),
+            TotalSales30d = sales.Sum(sale => sale.Quantity),
             OnlineMachines = machines.Count(m => m.Status == "online"),
             WarningMachines = machines.Count(m => m.Status == "warning"),
             OfflineMachines = machines.Count(m => m.Status == "offline"),
@@ -184,51 +350,116 @@ public class DatabaseDataService : IDataService
         return query;
     }
 
-    private IQueryable<PaymentTransaction> GetApprovedTransactionQuery(Guid? companyId, DateTime startDate)
+    private IQueryable<SaleRecord> GetSalesQuery(Guid? companyId, DateTime startDate, DateTime endDate)
     {
-        var query = _context.PaymentTransactions
-            .Where(t => t.Status == "Approved" && (t.CompletedAt ?? t.CreatedAt) >= startDate);
+        var query = _context.SaleRecords.AsNoTracking()
+            .Where(sale => sale.SoldAt >= startDate && sale.SoldAt <= endDate);
 
         if (companyId.HasValue)
         {
-            query = query.Where(t => t.CompanyId == companyId.Value);
+            query = query.Where(sale => sale.CompanyId == companyId.Value);
         }
 
         return query;
     }
 
-    private List<Product> GetCompanyScopedProductPerformance(Guid? companyId)
+    private List<Product> GetCompanyScopedProductPerformance(Guid? companyId, bool top)
     {
-        if (!companyId.HasValue || !GetMachineQuery(companyId).Any())
+        if (!companyId.HasValue)
         {
             return new List<Product>();
         }
 
-        var hasApprovedSales = GetApprovedTransactionQuery(companyId, DateTime.UtcNow.AddDays(-30)).Any();
-        if (!hasApprovedSales)
+        var now = DateTime.UtcNow;
+        var currentStart = now.AddDays(-30);
+        var previousStart = now.AddDays(-60);
+        var sales = _context.SaleRecords.AsNoTracking()
+            .Where(sale => sale.CompanyId == companyId.Value && sale.ProductId != null &&
+                           sale.SoldAt >= previousStart && sale.SoldAt <= now)
+            .ToList();
+        var currentSales = sales.Where(sale => sale.SoldAt >= currentStart)
+            .GroupBy(sale => sale.ProductId!)
+            .ToDictionary(group => group.Key, group => new
+            {
+                Count = group.Sum(sale => sale.Quantity),
+                Revenue = group.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                    ? 0m
+                    : sale.GrossAmount - sale.RefundedAmount)
+            });
+        var previousSales = sales.Where(sale => sale.SoldAt < currentStart)
+            .GroupBy(sale => sale.ProductId!)
+            .ToDictionary(group => group.Key, group => group.Sum(sale => sale.Quantity));
+
+        var assignedProductIds = _context.MachineProductSlots.AsNoTracking()
+            .Where(slot => slot.CompanyId == companyId.Value)
+            .Select(slot => slot.ProductId)
+            .Distinct()
+            .ToList();
+        var productIds = top
+            ? currentSales.Where(sale => sale.Value.Count > 0).Select(sale => sale.Key).ToList()
+            : assignedProductIds;
+        if (productIds.Count == 0)
         {
             return new List<Product>();
         }
 
-        return new List<Product>();
+        var products = _context.Products.AsNoTracking()
+            .Where(product => productIds.Contains(product.Id) &&
+                              (product.CompanyId == null || product.CompanyId == companyId.Value))
+            .ToDictionary(product => product.Id);
+        var snapshots = sales.Where(sale => sale.ProductId != null && !string.IsNullOrWhiteSpace(sale.ProductNameSnapshot))
+            .GroupBy(sale => sale.ProductId!)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(sale => sale.SoldAt).First().ProductNameSnapshot!);
+
+        var ranked = productIds.Distinct().Select(productId =>
+        {
+            currentSales.TryGetValue(productId, out var current);
+            previousSales.TryGetValue(productId, out var previous);
+            products.TryGetValue(productId, out var product);
+            snapshots.TryGetValue(productId, out var snapshot);
+            var currentCount = current?.Count ?? 0;
+            var previousCount = previous;
+            var trend = previousCount > 0
+                ? (currentCount - previousCount) * 100d / previousCount
+                : currentCount > 0 ? 100d : 0d;
+            return new Product
+            {
+                Name = snapshot ?? product?.Name ?? "Produto removido",
+                TotalSold = currentCount,
+                Revenue = current?.Revenue ?? 0m,
+                Trend = trend
+            };
+        });
+
+        return top
+            ? ranked.OrderByDescending(product => product.TotalSold)
+                .ThenByDescending(product => product.Revenue)
+                .ThenBy(product => product.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(5).ToList()
+            : ranked.OrderBy(product => product.TotalSold)
+                .ThenBy(product => product.Revenue)
+                .ThenBy(product => product.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(5).ToList();
     }
 
-    private List<HistoricalData> GenerateTransactionHistory(List<PaymentTransaction> transactions, int days)
+    private List<HistoricalData> GenerateSalesHistory(List<SaleRecord> sales, int days)
     {
         var data = new List<HistoricalData>();
         var today = DateTime.UtcNow.Date;
-        var transactionsByDate = transactions
-            .GroupBy(t => (t.CompletedAt ?? t.CreatedAt).Date)
+        var salesByDate = sales
+            .GroupBy(sale => sale.SoldAt.Date)
             .ToDictionary(g => g.Key, g => new
             {
-                Revenue = g.Sum(t => t.Amount),
-                Products = g.Count()
+                Revenue = g.Sum(sale => sale.FinancialStatus == "ReconciliationRequired" || sale.FinancialStatus == "Disputed" || sale.FinancialStatus == "Unpaid"
+                    ? 0m
+                    : sale.GrossAmount - sale.RefundedAmount),
+                Products = g.Sum(sale => sale.Quantity)
             });
 
         for (int i = days - 1; i >= 0; i--)
         {
             var date = today.AddDays(-i);
-            transactionsByDate.TryGetValue(date, out var totals);
+            salesByDate.TryGetValue(date, out var totals);
 
             data.Add(new HistoricalData
             {
@@ -439,10 +670,6 @@ public class DatabaseDataService : IDataService
             existing.Name = machine.Name;
             existing.ClientName = machine.ClientName;
             existing.Location = machine.Location;
-            existing.Status = machine.Status;
-            existing.StockLevel = machine.StockLevel;
-            existing.Revenue30d = machine.Revenue30d;
-            existing.TotalSales30d = machine.TotalSales30d;
             existing.LastSync = machine.LastSync;
             existing.SerialNumber = machine.SerialNumber;
             existing.NormalizedSerialNumber = NormalizeSerial(machine.SerialNumber);
@@ -458,6 +685,8 @@ public class DatabaseDataService : IDataService
             existing.LocationId = machine.LocationId;
             existing.MercadoPagoEnabled = machine.MercadoPagoEnabled;
             existing.AutoOpenSessionEnabled = machine.AutoOpenSessionEnabled;
+            existing.IsActive = machine.IsActive;
+            existing.MinimumSalesTarget30d = machine.MinimumSalesTarget30d;
             _context.SaveChanges();
         }
     }

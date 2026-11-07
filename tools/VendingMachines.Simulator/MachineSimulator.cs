@@ -8,6 +8,7 @@ namespace VendingMachines.Simulator;
 
 public sealed class MachineSimulator
 {
+    private static readonly TimeSpan StableConnectionDuration = TimeSpan.FromSeconds(30);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly CliOptions _options;
     private readonly SimulatorLog _log;
@@ -57,10 +58,10 @@ public sealed class MachineSimulator
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            DateTime? connectedAt = null;
             try
             {
                 await RunConnectionAsync(cancellationToken);
-                reconnectAttempt = 0;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -69,18 +70,36 @@ public sealed class MachineSimulator
             }
             finally
             {
+                connectedAt = _connectedAt;
                 SetDisconnected();
             }
 
             if (!_options.Reconnect || cancellationToken.IsCancellationRequested) break;
 
+            if (connectedAt.HasValue && ShouldResetReconnectAttempt(DateTime.UtcNow - connectedAt.Value))
+                reconnectAttempt = 0;
+
             reconnectAttempt++;
-            var delay = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(5, reconnectAttempt - 1))));
+            var delay = CalculateReconnectDelay(reconnectAttempt, Random.Shared.NextDouble());
             _log.Warning(Serial, $"Reconectando em {delay.TotalSeconds:0} segundo(s). Tentativa {reconnectAttempt}.");
             try { await Task.Delay(delay, cancellationToken); }
             catch (OperationCanceledException) { break; }
         }
     }
+
+    public static TimeSpan CalculateReconnectDelay(int attempt, double jitterSample)
+    {
+        if (attempt < 1) throw new ArgumentOutOfRangeException(nameof(attempt));
+        if (jitterSample is < 0 or > 1 || double.IsNaN(jitterSample))
+            throw new ArgumentOutOfRangeException(nameof(jitterSample));
+
+        var exponentialSeconds = Math.Min(30, Math.Pow(2, Math.Min(5, attempt - 1)));
+        var jitteredSeconds = exponentialSeconds * (0.8 + (0.4 * jitterSample));
+        return TimeSpan.FromSeconds(Math.Min(30, jitteredSeconds));
+    }
+
+    public static bool ShouldResetReconnectAttempt(TimeSpan connectionDuration) =>
+        connectionDuration >= StableConnectionDuration;
 
     public void ArmScenario(ScenarioPlan scenario)
     {
@@ -196,7 +215,8 @@ public sealed class MachineSimulator
             {
                 id = startId,
                 type = "start",
-                target = Serial
+                target = Serial,
+                credential = _options.DeviceCredential
             }, JsonOptions), connectionCts.Token);
             _log.Sent(Serial, $"start id={startId} target={Serial}");
 
@@ -246,7 +266,14 @@ public sealed class MachineSimulator
         while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
         {
             var text = await ReadTextAsync(socket, cancellationToken);
-            if (text == null) return;
+            if (text == null)
+            {
+                if (socket.CloseStatus.HasValue)
+                {
+                    _log.Warning(Serial, $"Servidor encerrou a conexão ({socket.CloseStatus}): {socket.CloseStatusDescription}");
+                }
+                return;
+            }
             Interlocked.Increment(ref _receivedMessages);
             await HandleIncomingAsync(text, cancellationToken);
         }

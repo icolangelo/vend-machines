@@ -25,9 +25,11 @@ dotnet run --project tools/VendingMachines.Simulator -- --serial SN-123456
 dotnet run --project tools/VendingMachines.Simulator -- --serial SN-987654
 ```
 
+Para testar o rollout gradual de credenciais em homologação, defina a variável de ambiente `VENDMACHINES_SIMULATOR_CREDENTIAL` com a credencial emitida para a máquina antes de iniciar o simulador. A credencial será enviada somente no handshake inicial e não aparece nos logs nem na linha de comando. O simulador recusa enviar a credencial por `ws://` para host remoto; use `wss://` fora de loopback. Com `Telemetry:RequireDeviceCredentials=false`, a API continua aceitando dispositivos legados sem credencial, mas valida e rejeita qualquer credencial apresentada que não corresponda à máquina.
+
 ## Fluxo
 
-O simulador identifica a máquina, mantém heartbeat e reconecta automaticamente. O painel web continua responsável por iniciar a sessão. Antes de iniciá-la, prepare um cenário no terminal:
+O simulador identifica a máquina, mantém heartbeat e reconecta automaticamente. Em falhas repetidas, usa espera exponencial com variação aleatória de 20% para evitar que várias instâncias tentem reconectar juntas; uma conexão que permanece ativa por pelo menos 30 segundos reinicia a sequência de tentativas. Esse comportamento torna o simulador mais adequado para ensaios de reinício e reconexão, mas não comprova a política de retry do firmware físico. O painel web continua responsável por iniciar a sessão. Antes de iniciá-la, prepare um cenário no terminal:
 
 ```text
 scenario sale-success 2 2200

@@ -8,11 +8,19 @@ namespace VendingMachines.Api.Services;
 
 public sealed class TelemetryPanelHub
 {
+    private const int WebSocketCloseTimeoutSeconds = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<Guid, PanelConnection> _clients = new();
     private readonly ILogger<TelemetryPanelHub> _logger;
+    private readonly PostgresTelemetryPanelEventBus? _eventBus;
+    private readonly SemaphoreSlim _notificationSlots = new(32, 32);
+    private readonly string _nodeId = Guid.NewGuid().ToString("N");
 
-    public TelemetryPanelHub(ILogger<TelemetryPanelHub> logger) => _logger = logger;
+    public TelemetryPanelHub(ILogger<TelemetryPanelHub> logger, PostgresTelemetryPanelEventBus? eventBus = null)
+    {
+        _logger = logger;
+        _eventBus = eventBus;
+    }
 
     public async Task HandleAsync(WebSocket socket, WebSocketTicket ticket, CancellationToken requestAborted)
     {
@@ -60,15 +68,42 @@ public sealed class TelemetryPanelHub
             }
         }
         catch (OperationCanceledException) { }
+        catch (WebSocketException ex)
+        {
+            _logger.LogDebug(ex, "Conexão do painel de telemetria encerrada pelo transporte.");
+        }
         finally
         {
             _clients.TryRemove(client.Id, out _);
             client.Cts.Cancel();
             client.Outbound.Writer.TryComplete();
-            try { await writer; } catch { }
+            try
+            {
+                await writer.WaitAsync(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds));
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug("Writer do painel não encerrou no prazo; abortando o socket.");
+                try { socket.Abort(); } catch { }
+                try { await writer.WaitAsync(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds)); } catch { }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or InvalidOperationException)
+            {
+                _logger.LogDebug(ex, "Writer do painel terminou durante o fechamento da conexão.");
+            }
             if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
             {
-                try { await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Fechado", CancellationToken.None); } catch { }
+                using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(requestAborted);
+                closeTimeout.CancelAfter(TimeSpan.FromSeconds(WebSocketCloseTimeoutSeconds));
+                try
+                {
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Fechado", closeTimeout.Token);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Não foi possível concluir o fechamento do WebSocket do painel.");
+                    try { socket.Abort(); } catch { }
+                }
             }
         }
     }
@@ -76,20 +111,72 @@ public sealed class TelemetryPanelHub
     public Task BroadcastCompanyAsync(Guid companyId, object payload) =>
         BroadcastAsync(companyId, null, payload);
 
+    public Task DisconnectUserAsync(Guid userId)
+    {
+        foreach (var client in _clients.Values)
+        {
+            if (client.UserId == userId)
+                client.Cts.Cancel();
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task BroadcastMachineAsync(Guid companyId, string machineId, object payload) =>
         BroadcastAsync(companyId, machineId, payload);
 
     private Task BroadcastAsync(Guid companyId, string? subscribedMachineId, object payload)
     {
         var json = JsonSerializer.Serialize(payload, JsonOptions);
+        BroadcastLocal(companyId, subscribedMachineId, json);
+        if (_eventBus == null || !_notificationSlots.Wait(0)) return Task.CompletedTask;
+        _ = PublishRemoteNotificationAsync(companyId, subscribedMachineId, json);
+        return Task.CompletedTask;
+    }
+
+    private async Task PublishRemoteNotificationAsync(Guid companyId, string? machineId, string payloadJson)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await _eventBus!.PublishAsync(companyId, machineId, payloadJson, _nodeId, timeout.Token);
+        }
+        catch (Exception ex)
+        {
+            // Local WebSocket delivery must continue when cross-node notifications are
+            // temporarily unavailable. The UI refreshes from the API after reconnect.
+            _logger.LogDebug(ex, "Atualização do painel não foi distribuída a tempo para os outros nós.");
+        }
+        finally { _notificationSlots.Release(); }
+    }
+
+    public void BroadcastRemoteNotification(string notificationJson)
+    {
+        try
+        {
+            var notification = JsonSerializer.Deserialize<PanelNotification>(notificationJson, JsonOptions);
+            if (notification == null || notification.CompanyId == Guid.Empty ||
+                notification.OriginNodeId == _nodeId || string.IsNullOrWhiteSpace(notification.PayloadJson))
+                return;
+            BroadcastLocal(notification.CompanyId, notification.MachineId, notification.PayloadJson);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Notificação de painel entre instâncias inválida.");
+        }
+    }
+
+    private void BroadcastLocal(Guid companyId, string? subscribedMachineId, string json)
+    {
         foreach (var client in _clients.Values)
         {
             if (client.CompanyId != companyId) continue;
             if (subscribedMachineId != null && !client.Subscriptions.ContainsKey(subscribedMachineId)) continue;
             client.Outbound.Writer.TryWrite(json);
         }
-        return Task.CompletedTask;
     }
+
+    public sealed record PanelNotification(Guid CompanyId, string? MachineId, string PayloadJson, string OriginNodeId);
 
     private static async Task WriteLoopAsync(PanelConnection client, CancellationToken cancellationToken)
     {

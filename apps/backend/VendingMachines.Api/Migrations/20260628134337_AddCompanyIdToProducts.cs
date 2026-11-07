@@ -70,29 +70,8 @@ namespace VendingMachines.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropForeignKey(
-                name: "FK_Products_Companies_CompanyId",
-                table: "Products");
-
-            migrationBuilder.DropForeignKey(
-                name: "FK_ProductTypes_Companies_CompanyId",
-                table: "ProductTypes");
-
-            migrationBuilder.DropIndex(
-                name: "IX_ProductTypes_CompanyId",
-                table: "ProductTypes");
-
-            migrationBuilder.DropIndex(
-                name: "IX_Products_CompanyId",
-                table: "Products");
-
-            migrationBuilder.DropColumn(
-                name: "CompanyId",
-                table: "ProductTypes");
-
-            migrationBuilder.DropColumn(
-                name: "CompanyId",
-                table: "Products");
+            throw new System.InvalidOperationException(
+                "Esta migration contém o escopo empresarial de produtos e tipos. Reverta somente o binário e preserve CompanyId e seus índices.");
         }
     }
 }

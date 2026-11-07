@@ -70,6 +70,8 @@ PRAGMA foreign_keys=ON;
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            throw new System.InvalidOperationException(
+                "Esta migration substitui IDs de máquinas vazios e atualiza as referências em pagamentos, sem guardar os IDs anteriores para reversão. O Down agora falha fechado; reverta somente o binário e faça correções futuras com mapeamento validado.");
         }
     }
 }

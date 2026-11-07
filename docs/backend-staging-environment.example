@@ -1,0 +1,42 @@
+# Modelo para cadastrar no gerenciador de configuração/segredos do runtime de Staging.
+# Não use este arquivo diretamente: substitua todos os marcadores antes de iniciar.
+# Staging deve usar PostgreSQL, credenciais de sandbox e banco com dados sintéticos.
+# Não copie secrets de Production, dumps sem sanitização, nem credenciais de máquinas reais.
+ASPNETCORE_ENVIRONMENT=Staging
+DOTNET_ENVIRONMENT=Staging
+
+ConnectionStrings__DefaultConnection=Host=REPLACE_WITH_STAGING_DB_HOST;Database=vendmachines_staging;Username=REPLACE_WITH_STAGING_DB_USER;Password=REPLACE_WITH_STAGING_DB_PASSWORD;SSL Mode=Require
+Jwt__Key=REPLACE_WITH_UNIQUE_STAGING_JWT_SECRET_AT_LEAST_32_BYTES
+Encryption__Key=REPLACE_WITH_UNIQUE_STAGING_ENCRYPTION_SECRET
+Encryption__WriteLegacyFormat=false
+Encryption__RequireLegacyData=false
+
+MercadoPago__ClientId=REPLACE_WITH_TEST_APPLICATION_CLIENT_ID
+MercadoPago__ClientSecret=REPLACE_WITH_TEST_APPLICATION_CLIENT_SECRET
+MercadoPago__WebhookSecret=REPLACE_WITH_TEST_WEBHOOK_SECRET
+MercadoPago__WebhookUrl=https://REPLACE_WITH_STAGING_API_HOST/webhooks/mercadopago
+
+Cors__AllowedOrigins__0=https://REPLACE_WITH_STAGING_FRONTEND_HOST
+WebSockets__AllowedOrigins__0=https://REPLACE_WITH_STAGING_FRONTEND_HOST
+
+# Aponte o SMTP apenas a um inbox/sink de teste; não envie mensagens a clientes reais.
+AccountEmail__Enabled=true
+AccountEmail__PublicBaseUrl=https://REPLACE_WITH_STAGING_FRONTEND_HOST
+AccountEmail__Host=REPLACE_WITH_STAGING_SMTP_SINK_HOST
+AccountEmail__Port=587
+AccountEmail__Username=REPLACE_WITH_STAGING_SMTP_USERNAME
+AccountEmail__Password=REPLACE_WITH_STAGING_SMTP_PASSWORD
+AccountEmail__FromAddress=REPLACE_WITH_STAGING_VERIFIED_SENDER
+AccountEmail__FromName=Vend Machines Staging
+AccountEmail__TimeoutSeconds=15
+
+# Só habilite credenciais obrigatórias depois de provisionar todas as máquinas de bancada.
+Telemetry__RequireDeviceCredentials=false
+Telemetry__ApplicationStoppingDrainTimeoutSeconds=40
+ForwardedHeaders__Enabled=false
+# O rate limit usa o IP remoto. Atrás de proxy, com este valor false, todos os clientes
+# podem compartilhar o limite da conexão do proxy (12 req/min na política auth).
+# Ative somente depois de confirmar os IPs vistos pela API como origem das conexões do proxy.
+# Exemplo: ForwardedHeaders__KnownProxies__0=10.0.0.10
+# Para mais de um proxy, configure índices adicionais e ajuste o limite ao número de saltos confiáveis.
+ForwardedHeaders__ForwardLimit=1

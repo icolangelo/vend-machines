@@ -17,6 +17,122 @@ namespace VendingMachines.Api.Tests;
 
 public sealed class SessionOrchestratorFlowTests
 {
+    [Fact]
+    public async Task SessionStartAfterShutdownBeginsIsRejectedBeforeDatabaseChanges()
+    {
+        using var lifetime = new ApiReadinessEndpointTests.TestApplicationLifetime();
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.AwaitingSelection,
+            lifetime: lifetime);
+        var sessionCount = await scenario.Db.MachineSessions.CountAsync();
+
+        lifetime.BeginStopping();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId,
+            scenario.CompanyId,
+            null,
+            "manual",
+            CancellationToken.None));
+
+        Assert.Equal("server_restarting", error.Message);
+        Assert.Equal(sessionCount, await scenario.Db.MachineSessions.CountAsync());
+    }
+
+    [Fact]
+    public async Task SessionStartForOnlineMachineWithoutCommandRouteIsRejectedBeforeCreatingSession()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.Completed);
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            MonitoringEnabled = true,
+            LastSeenAt = DateTime.UtcNow,
+            OwnerNodeId = null
+        });
+        await scenario.Db.SaveChangesAsync();
+        var sessionCount = await scenario.Db.MachineSessions.CountAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId,
+            scenario.CompanyId,
+            null,
+            "manual",
+            CancellationToken.None));
+
+        Assert.Equal("machine_owner_unknown", error.Message);
+        Assert.Equal(sessionCount, await scenario.Db.MachineSessions.CountAsync());
+        Assert.Empty(await scenario.Db.TelemetryCommands.ToListAsync());
+    }
+
+    [Fact]
+    public async Task SessionStartDuringControlledReleaseIsRejectedBeforeCreatingSession()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.Completed);
+        var priorSession = await scenario.Db.MachineSessions.SingleAsync(x => x.Id == scenario.SessionId);
+        priorSession.ClosedAt = DateTime.UtcNow;
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            MonitoringEnabled = true,
+            LastSeenAt = DateTime.UtcNow,
+            ConnectionId = "another-compatible-connection",
+            OwnerNodeId = "another-compatible-node",
+            OwnerConnectionId = "another-compatible-connection",
+            CommandRoutingVersion = TelemetryConnectionManager.CurrentCommandRoutingVersion
+        });
+        var gate = await scenario.Db.SessionAdmissionGates.SingleAsync();
+        gate.NewSessionsPaused = true;
+        await scenario.Db.SaveChangesAsync();
+        var sessionCount = await scenario.Db.MachineSessions.CountAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId,
+            scenario.CompanyId,
+            null,
+            "manual",
+            CancellationToken.None));
+
+        Assert.Equal("deployment_draining", error.Message);
+        Assert.Equal(sessionCount, await scenario.Db.MachineSessions.CountAsync());
+        Assert.Empty(await scenario.Db.TelemetryCommandDispatches.ToListAsync());
+    }
+
+    [Fact]
+    public async Task CancellingSessionOnOnlineMachineWithoutCommandRouteDoesNotChangeSessionOrPayment()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            MonitoringEnabled = true,
+            LastSeenAt = DateTime.UtcNow,
+            OwnerNodeId = null
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.CancelSessionAsync(
+            scenario.SessionId,
+            scenario.CompanyId,
+            Guid.NewGuid(),
+            "user_cancelled",
+            CancellationToken.None));
+
+        Assert.Equal("machine_owner_unknown", error.Message);
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.PaymentPending, session.State);
+        Assert.Equal("Pending", session.Transaction!.Status);
+        Assert.Equal(0, await scenario.OutboxCountAsync("cancel_payment"));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -109,6 +225,251 @@ public sealed class SessionOrchestratorFlowTests
         Assert.Equal(0, await scenario.EventCountAsync("refund.requested"));
     }
 
+    [Fact]
+    public async Task DuplicatePaymentApproval_RecordsDuplicateWithoutSendingSecondCommandOrCreatingSale()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId, approved: true, "mercado_pago_webhook", CancellationToken.None);
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId, approved: true, "mercado_pago_webhook", CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("payment.approved"));
+        Assert.Equal(1, await scenario.EventCountAsync("payment.duplicate_result"));
+        Assert.Equal(1, await scenario.Db.TelemetryCommands.AsNoTracking()
+            .CountAsync(command => command.SessionId == scenario.SessionId && command.Command == "VENDA_APROVADA"));
+        Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+        Assert.Equal(1, await scenario.OutboxCountAsync("refund_payment"));
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == scenario.TransactionId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ApprovedPaymentForLegacyOnlineOwnerKeepsRefundPendingWithoutDispatchingSaleCommand()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+        await scenario.SetProviderPaymentIdAsync($"provider-{Guid.NewGuid():N}");
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            ConnectionId = "legacy-owner-connection",
+            OwnerNodeId = "legacy-owner-node",
+            OwnerConnectionId = "legacy-owner-connection",
+            CommandRoutingVersion = null,
+            LastSeenAt = DateTime.UtcNow
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId,
+            approved: true,
+            "mercado_pago_webhook",
+            CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.RefundPending, session.State);
+        Assert.Equal("RefundPending", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("payment.approved"));
+        Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+        Assert.Equal(1, await scenario.OutboxCountAsync("refund_payment"));
+        Assert.Equal(0, await scenario.EventCountAsync("refund.completed"));
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        Assert.Empty(await scenario.Db.TelemetryCommandDispatches.AsNoTracking().ToListAsync());
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == scenario.TransactionId).ToListAsync());
+
+        var refund = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.Equal("pending", refund.Status);
+        Assert.Equal(1, refund.Attempts);
+        Assert.Equal("provider_operation_failed", refund.LastError);
+        var saleCommand = await scenario.Db.TelemetryCommands.AsNoTracking()
+            .SingleAsync(command => command.SessionId == scenario.SessionId && command.Command == "VENDA_APROVADA");
+        Assert.Equal("failed", saleCommand.Status);
+    }
+
+    [Fact]
+    public async Task RejectedPaymentForLegacyOnlineOwnerRemainsOpenForOwnerDeadlineWorker()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            ConnectionId = "legacy-owner-connection",
+            OwnerNodeId = "legacy-owner-node",
+            OwnerConnectionId = "legacy-owner-connection",
+            CommandRoutingVersion = null,
+            LastSeenAt = DateTime.UtcNow
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.HandlePaymentResultAsync(
+            scenario.TransactionId,
+            approved: false,
+            "mercado_pago:rejected",
+            CancellationToken.None);
+
+        var deniedSession = await scenario.ReloadSessionAsync();
+        var deniedTransaction = await scenario.Db.PaymentTransactions.AsNoTracking()
+            .SingleAsync(item => item.Id == scenario.TransactionId);
+        var deniedCommand = await scenario.Db.TelemetryCommands.AsNoTracking()
+            .SingleAsync(command => command.SessionId == scenario.SessionId && command.Command == "VENDA_NEGADA");
+        Assert.Equal(MachineSessionStates.DeniedAwaitingClosure, deniedSession.State);
+        Assert.Equal("Rejected", deniedTransaction.Status);
+        Assert.Equal("failed", deniedCommand.Status);
+        Assert.Empty(await scenario.Db.TelemetryCommandDispatches.AsNoTracking().ToListAsync());
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == scenario.TransactionId).ToListAsync());
+
+        var sessionWithExpiredClosureDeadline = await scenario.Db.MachineSessions
+            .SingleAsync(item => item.Id == scenario.SessionId);
+        sessionWithExpiredClosureDeadline.LastEventAt = DateTime.UtcNow.AddSeconds(-31);
+        await scenario.Db.SaveChangesAsync();
+        await scenario.Orchestrator.ProcessDeadlinesAsync(CancellationToken.None);
+
+        var stillOwnedSession = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.DeniedAwaitingClosure, stillOwnedSession.State);
+        Assert.Null(stillOwnedSession.ClosedAt);
+        Assert.Equal("mercado_pago:rejected", stillOwnedSession.CloseReason);
+        Assert.Equal("Rejected", stillOwnedSession.Transaction!.Status);
+        Assert.Empty(await scenario.Db.TelemetryCommandDispatches.AsNoTracking().ToListAsync());
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking()
+            .Where(sale => sale.TransactionId == scenario.TransactionId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ExpiredPaymentDeadlineForLegacyOnlineOwnerIsLeftToPreviousApi()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.PaymentPending,
+            transactionStatus: "Pending");
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId,
+            IsOnline = true,
+            ConnectionId = "legacy-owner-connection",
+            OwnerNodeId = "legacy-owner-node",
+            OwnerConnectionId = "legacy-owner-connection",
+            CommandRoutingVersion = null,
+            LastSeenAt = DateTime.UtcNow
+        });
+        var session = await scenario.Db.MachineSessions.SingleAsync(item => item.Id == scenario.SessionId);
+        session.PaymentDeadlineAt = DateTime.UtcNow.AddSeconds(-1);
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.ProcessDeadlinesAsync(CancellationToken.None);
+
+        var unchanged = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.PaymentPending, unchanged.State);
+        Assert.Equal("Pending", unchanged.Transaction!.Status);
+        Assert.Empty(await scenario.Db.OutboxMessages.AsNoTracking()
+            .Where(message => message.SessionId == scenario.SessionId).ToListAsync());
+        Assert.Empty(await scenario.Db.TelemetryCommands.AsNoTracking()
+            .Where(command => command.SessionId == scenario.SessionId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task IncompletePhysicalClosureRequiresScopedAuditedConfirmationBeforeItCanBeResolved()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.ClosureIncomplete);
+        var session = await scenario.Db.MachineSessions.SingleAsync(item => item.Id == scenario.SessionId);
+        session.ClosedAt = DateTime.UtcNow.AddMinutes(-1);
+        await scenario.Db.SaveChangesAsync();
+        var userId = Guid.NewGuid();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => scenario.Orchestrator.ResolveIncompleteClosureAsync(
+            scenario.SessionId, Guid.NewGuid(), userId, "SUP-1234", CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.ResolveIncompleteClosureAsync(
+            scenario.SessionId, scenario.CompanyId, userId, "invalid ref with spaces", CancellationToken.None));
+        var unresolved = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.ClosureIncomplete, unresolved.State);
+        Assert.Empty(await scenario.Db.TelemetryEvents.AsNoTracking()
+            .Where(item => item.SessionId == scenario.SessionId && item.EventType == "session.closure_verified")
+            .ToListAsync());
+
+        await scenario.Orchestrator.ResolveIncompleteClosureAsync(
+            scenario.SessionId, scenario.CompanyId, userId, "SUP-1234", CancellationToken.None);
+
+        var resolved = await scenario.ReloadSessionAsync();
+        var resolutionEvent = await scenario.SingleEventAsync("session.closure_verified");
+        Assert.Equal(MachineSessionStates.ClosureVerified, resolved.State);
+        Assert.NotNull(resolved.ClosedAt);
+        Assert.Equal(userId, resolutionEvent.UserId);
+        Assert.Contains("SUP-1234", resolutionEvent.DataJson);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.ResolveIncompleteClosureAsync(
+            scenario.SessionId, scenario.CompanyId, userId, "SUP-1234", CancellationToken.None));
+        Assert.Equal(1, await scenario.EventCountAsync("session.closure_verified"));
+    }
+
+    [Fact]
+    public async Task ProductionSessionRejectsMockProviderCredentialsInsteadOfCreatingMockPix()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.AwaitingSelection,
+            environmentName: Environments.Production,
+            addMockIntegration: true);
+
+        await scenario.SendRawAsync(new
+        {
+            command = "vend",
+            type = "request",
+            itemPrice = 200,
+            itemNumber = 1
+        });
+
+        var transaction = await scenario.Db.PaymentTransactions.SingleAsync();
+        Assert.Equal("Failed", transaction.Status);
+        Assert.Null(transaction.MercadoPagoPaymentId);
+        Assert.Empty(transaction.QrCode);
+    }
+
+    [Theory]
+    [InlineData(0, 200)]
+    [InlineData(100, 200)]
+    [InlineData(5, 1)]
+    [InlineData(99.9, 1)]
+    public async Task InvalidEffectiveApplicationFeeDeniesSaleWithoutCreatingPayment(
+        decimal feePercent,
+        int amountCents)
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.AwaitingSelection);
+        scenario.Db.SystemSettings.Add(new SystemSettings { ApplicationFeePercent = feePercent });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.SendRawAsync(new
+        {
+            command = "vend",
+            type = "request",
+            itemPrice = amountCents,
+            itemNumber = 1
+        });
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.DeniedAwaitingClosure, session.State);
+        Assert.Equal("invalid_application_fee", session.CloseReason);
+        Assert.Null(session.TransactionId);
+        Assert.Empty(await scenario.Db.PaymentTransactions.AsNoTracking().ToListAsync());
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        Assert.Contains(await scenario.Db.TelemetryCommands.AsNoTracking().ToListAsync(), command =>
+            command.SessionId == scenario.SessionId && command.Command == "VENDA_NEGADA");
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -194,6 +555,106 @@ public sealed class SessionOrchestratorFlowTests
         Assert.Equal(1, outbox.Attempts);
         Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
         Assert.Equal(0, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Fact]
+    public async Task LegacyApiOverlap_ProcessesCandidateOwnedDeferredOutboxWithoutCompetingWithLegacyWorker()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.AwaitingDeliveryResult,
+            legacyApiConfigured: true);
+        await scenario.SetProviderPaymentIdAsync("mock_overlap_refund");
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
+    }
+
+    [Fact]
+    public async Task LegacyApiOverlap_KeepsFailedCandidateOutboxInLegacyIgnoredStatusForRetry()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.AwaitingDeliveryResult,
+            legacyApiConfigured: true);
+        await scenario.SetProviderPaymentIdAsync("external-payment-without-integration");
+
+        await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
+
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        Assert.Equal("deferred_legacy_overlap", outbox.Status);
+        Assert.Equal("provider_operation_failed", outbox.LastError);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.True(outbox.NextAttemptAt > DateTime.UtcNow);
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.RefundPending, session.State);
+    }
+
+    [Fact]
+    public async Task LegacyApiOverlap_ReclaimsExpiredOutboxLeaseWithoutExposingItToLegacyWorker()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(
+            MachineSessionStates.AwaitingDeliveryResult,
+            legacyApiConfigured: true);
+        await scenario.SetProviderPaymentIdAsync("mock_expired_overlap_refund");
+        scenario.Db.OutboxMessages.Add(new OutboxMessage
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            SessionId = scenario.SessionId,
+            TransactionId = scenario.TransactionId,
+            MessageType = "refund_payment",
+            PayloadJson = "{}",
+            Status = "processing",
+            Attempts = 0,
+            CreatedAt = DateTime.UtcNow.AddMinutes(-3),
+            NextAttemptAt = DateTime.UtcNow.AddMinutes(-1)
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var outbox = await scenario.SingleOutboxAsync("refund_payment");
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(1, outbox.Attempts);
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+    }
+
+    [Fact]
+    public async Task DeferredFinancialOutbox_ResumesAndCompletesAfterLegacyRelayIsRemoved()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        scenario.Db.OutboxMessages.Add(new OutboxMessage
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            SessionId = scenario.SessionId,
+            TransactionId = scenario.TransactionId,
+            MessageType = "refund_payment",
+            PayloadJson = "{}",
+            Status = "deferred_legacy_overlap",
+            NextAttemptAt = DateTime.UtcNow
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        var outbox = await scenario.Db.OutboxMessages.AsNoTracking().SingleAsync();
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal("processed", outbox.Status);
+        Assert.Equal(MachineSessionStates.Refunded, session.State);
+        Assert.Equal("Refunded", session.Transaction!.Status);
+        Assert.Equal(1, await scenario.EventCountAsync("refund.completed"));
     }
 
     [Theory]
@@ -371,6 +832,31 @@ public sealed class SessionOrchestratorFlowTests
     public async Task SuccessAfterRefund_IsRecordedAsConflict(bool includeTransactionId)
     {
         await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        scenario.Db.ProductTypes.Add(new ProductType
+        {
+            Id = "drinks",
+            Name = "Bebidas",
+            CompanyId = scenario.CompanyId
+        });
+        scenario.Db.Products.Add(new FullProduct
+        {
+            Id = "water-500ml",
+            Code = "W500",
+            Name = "Água 500 ml",
+            TypeId = "drinks",
+            CompanyId = scenario.CompanyId
+        });
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            ItemNumber = 2,
+            ProductId = "water-500ml",
+            Capacity = 10,
+            CurrentStock = 3,
+            LowStockThreshold = 2
+        });
+        await scenario.Db.SaveChangesAsync();
 
         await scenario.SendAsync("vend", "failure", includeTransactionId, reason: "out_of_cup");
         await scenario.SendAsync("vend", "success", includeTransactionId);
@@ -380,6 +866,20 @@ public sealed class SessionOrchestratorFlowTests
         Assert.Equal("Refunded", session.Transaction!.Status);
         Assert.Equal(1, await scenario.EventCountAsync("delivery.conflicting_result"));
         Assert.Equal(1, await scenario.EventCountAsync("refund.requested"));
+
+        var sale = await scenario.Db.SaleRecords.AsNoTracking().SingleAsync();
+        var slot = await scenario.Db.MachineProductSlots.AsNoTracking().SingleAsync();
+        var movement = await scenario.Db.InventoryMovements.AsNoTracking().SingleAsync();
+        Assert.Equal("Refunded", sale.FinancialStatus);
+        Assert.Equal(2m, sale.RefundedAmount);
+        Assert.Equal(1, sale.Quantity);
+        Assert.Equal(2, slot.CurrentStock);
+        Assert.Equal(-1, movement.QuantityDelta);
+
+        await scenario.SendAsync("vend", "success", includeTransactionId);
+        Assert.Single(await scenario.Db.SaleRecords.AsNoTracking().ToListAsync());
+        Assert.Single(await scenario.Db.InventoryMovements.AsNoTracking().ToListAsync());
+        Assert.Equal(2, (await scenario.Db.MachineProductSlots.AsNoTracking().SingleAsync()).CurrentStock);
     }
 
     [Theory]
@@ -446,6 +946,206 @@ public sealed class SessionOrchestratorFlowTests
     }
 
     [Fact]
+    public async Task SuccessfulDelivery_RecordsOneSaleAndDecrementsMappedStockOnce()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        scenario.Db.ProductTypes.Add(new ProductType
+        {
+            Id = "drinks",
+            Name = "Bebidas",
+            CompanyId = scenario.CompanyId
+        });
+        scenario.Db.Products.Add(new FullProduct
+        {
+            Id = "water-500ml",
+            Code = "W500",
+            Name = "Água 500 ml",
+            TypeId = "drinks",
+            CompanyId = scenario.CompanyId,
+            Cost = 1.25m
+        });
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            ItemNumber = 2,
+            ProductId = "water-500ml",
+            Capacity = 10,
+            CurrentStock = 3,
+            LowStockThreshold = 2
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+
+        var sale = await scenario.Db.SaleRecords.AsNoTracking().SingleAsync();
+        var slot = await scenario.Db.MachineProductSlots.AsNoTracking().SingleAsync();
+        var movement = await scenario.Db.InventoryMovements.AsNoTracking().SingleAsync();
+        Assert.Equal(scenario.TransactionId, sale.TransactionId);
+        Assert.Equal("water-500ml", sale.ProductId);
+        Assert.Equal("Água 500 ml", sale.ProductNameSnapshot);
+        Assert.Equal(2m, sale.GrossAmount);
+        Assert.Equal(1, sale.Quantity);
+        Assert.Equal(2, slot.CurrentStock);
+        Assert.Equal(-1, movement.QuantityDelta);
+        Assert.Equal(2, movement.QuantityAfter);
+    }
+
+    [Fact]
+    public async Task SuccessfulDeliveryDoesNotSnapshotProductNameFromAnotherCompany()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        var foreignCompanyId = Guid.NewGuid();
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = foreignCompanyId,
+            Name = "Empresa estrangeira",
+            Cnpj = "22222222000122"
+        });
+        scenario.Db.ProductTypes.Add(new ProductType
+        {
+            Id = "foreign-drinks",
+            Name = "Bebidas estrangeiras",
+            CompanyId = foreignCompanyId
+        });
+        scenario.Db.Products.Add(new FullProduct
+        {
+            Id = "foreign-water",
+            Code = "FW500",
+            Name = "Produto confidencial de outra empresa",
+            TypeId = "foreign-drinks",
+            CompanyId = foreignCompanyId
+        });
+        scenario.Db.MachineProductSlots.Add(new MachineProductSlot
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            ItemNumber = 2,
+            ProductId = "foreign-water",
+            Capacity = 10,
+            CurrentStock = 3,
+            LowStockThreshold = 2
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        await scenario.SendAsync("vend", "success", includeTransactionId: true);
+
+        var sale = await scenario.Db.SaleRecords.AsNoTracking().SingleAsync();
+        Assert.Null(sale.ProductNameSnapshot);
+        Assert.Equal("foreign-water", sale.ProductId);
+    }
+
+    [Fact]
+    public async Task DeviceMessageFromNewMachineOwnerDoesNotAdvancePreviousOwnersSession()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        var newCompanyId = Guid.NewGuid();
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = newCompanyId,
+            Name = "Nova empresa proprietária",
+            Cnpj = "33333333000133"
+        });
+        var machine = await scenario.Db.Machines.SingleAsync(item => item.Id == scenario.MachineId);
+        machine.CompanyId = newCompanyId;
+        await scenario.Db.SaveChangesAsync();
+
+        var data = JsonSerializer.Serialize(new
+        {
+            command = "vend",
+            type = "success",
+            transactionId = scenario.TransactionId
+        });
+        await scenario.Orchestrator.HandleDeviceMessageAsync(
+            new InboundDeviceMessage(
+                scenario.MachineId,
+                newCompanyId,
+                machine.SerialNumber,
+                "new-owner-connection",
+                991,
+                data,
+                DateTime.UtcNow),
+            CancellationToken.None);
+
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.AwaitingDeliveryResult, session.State);
+        Assert.Empty(await scenario.Db.SaleRecords.AsNoTracking().ToListAsync());
+        Assert.Contains(await scenario.Db.TelemetryEvents.AsNoTracking().ToListAsync(), item =>
+            item.CompanyId == newCompanyId && item.MachineId == scenario.MachineId && item.SessionId == null);
+    }
+
+    [Fact]
+    public async Task OutboxWithSessionFromAnotherCompanyDoesNotCallProviderOrChangeEitherSession()
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(MachineSessionStates.AwaitingDeliveryResult);
+        await scenario.SetProviderPaymentIdAsync("external-payment-for-outbox-test");
+        scenario.Db.MercadoPagoIntegrations.Add(new MercadoPagoIntegration
+        {
+            CompanyId = scenario.CompanyId,
+            IsActive = true,
+            AccessToken = EncryptionService.Encrypt("test-access-token"),
+            RefreshToken = string.Empty,
+            ClientSecret = string.Empty
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var foreignCompanyId = Guid.NewGuid();
+        var foreignMachine = new Machine
+        {
+            Id = "foreign-outbox-machine",
+            Name = "Máquina de outra empresa",
+            SerialNumber = "FOREIGN-OUTBOX-SERIAL",
+            CompanyId = foreignCompanyId
+        };
+        var foreignSession = new MachineSession
+        {
+            Id = Guid.NewGuid(),
+            MachineId = foreignMachine.Id,
+            CompanyId = foreignCompanyId,
+            State = MachineSessionStates.Completed,
+            ClosedAt = DateTime.UtcNow
+        };
+        scenario.Db.Companies.Add(new Company
+        {
+            Id = foreignCompanyId,
+            Name = "Empresa estrangeira",
+            Cnpj = "44444444000144"
+        });
+        scenario.Db.Machines.Add(foreignMachine);
+        scenario.Db.MachineSessions.Add(foreignSession);
+        var outbox = new OutboxMessage
+        {
+            CompanyId = scenario.CompanyId,
+            MachineId = scenario.MachineId,
+            SessionId = foreignSession.Id,
+            TransactionId = scenario.TransactionId,
+            MessageType = "refund_payment",
+            Status = "pending",
+            NextAttemptAt = DateTime.UtcNow.AddMinutes(-1)
+        };
+        scenario.Db.OutboxMessages.Add(outbox);
+        await scenario.Db.SaveChangesAsync();
+        var outboxId = outbox.Id;
+
+        await scenario.Orchestrator.ProcessOutboxAsync(CancellationToken.None);
+
+        outbox = await scenario.Db.OutboxMessages.AsNoTracking().SingleAsync(message => message.Id == outboxId);
+        var originalSession = await scenario.ReloadSessionAsync();
+        var unchangedForeignSession = await scenario.Db.MachineSessions.AsNoTracking()
+            .SingleAsync(session => session.Id == foreignSession.Id);
+        Assert.Equal("failed", outbox.Status);
+        Assert.Equal("association_mismatch", outbox.LastError);
+        Assert.Equal(0, outbox.Attempts);
+        Assert.Equal(0, scenario.ProviderRequestCount);
+        Assert.Equal(MachineSessionStates.AwaitingDeliveryResult, originalSession.State);
+        Assert.Equal("Approved", originalSession.Transaction!.Status);
+        Assert.Equal(MachineSessionStates.Completed, unchangedForeignSession.State);
+        Assert.DoesNotContain(await scenario.Db.TelemetryEvents.AsNoTracking().ToListAsync(),
+            item => item.SessionId == foreignSession.Id && item.EventType == "refund.completed");
+    }
+
+    [Fact]
     public async Task Database_AllowsOnlyOneOpenSessionPerMachine()
     {
         await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
@@ -462,24 +1162,30 @@ public sealed class SessionOrchestratorFlowTests
     private sealed class TestScenario : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
+        private readonly ServiceProvider _services;
+        private readonly TestHttpClientFactory _httpClientFactory;
         private int _messageId;
 
         private TestScenario(
             SqliteConnection connection,
+            ServiceProvider services,
             AppDbContext db,
             SessionOrchestrator orchestrator,
             Guid companyId,
             string machineId,
             Guid sessionId,
-            Guid? transactionId)
+            Guid? transactionId,
+            TestHttpClientFactory httpClientFactory)
         {
             _connection = connection;
+            _services = services;
             Db = db;
             Orchestrator = orchestrator;
             CompanyId = companyId;
             MachineId = machineId;
             SessionId = sessionId;
             TransactionId = transactionId ?? Guid.Empty;
+            _httpClientFactory = httpClientFactory;
         }
 
         public AppDbContext Db { get; }
@@ -488,17 +1194,37 @@ public sealed class SessionOrchestratorFlowTests
         public string MachineId { get; }
         public Guid SessionId { get; }
         public Guid TransactionId { get; }
+        public int ProviderRequestCount => _httpClientFactory.RequestCount;
 
-        public static Task<TestScenario> CreatePaidAsync(string state, string transactionStatus = "Approved") =>
-            CreateAsync(state, includeTransaction: true, transactionStatus);
+        public static Task<TestScenario> CreatePaidAsync(
+            string state,
+            string transactionStatus = "Approved",
+            bool legacyApiConfigured = false) =>
+            CreateAsync(state, includeTransaction: true, transactionStatus, legacyApiConfigured: legacyApiConfigured);
 
-        public static Task<TestScenario> CreateWithoutTransactionAsync(string state) =>
-            CreateAsync(state, includeTransaction: false, transactionStatus: "Pending");
+        public static Task<TestScenario> CreateWithoutTransactionAsync(
+            string state,
+            string? environmentName = null,
+            bool addMockIntegration = false,
+            IHostApplicationLifetime? lifetime = null,
+            bool legacyApiConfigured = false) =>
+            CreateAsync(
+                state,
+                includeTransaction: false,
+                transactionStatus: "Pending",
+                environmentName: environmentName ?? Environments.Development,
+                addMockIntegration: addMockIntegration,
+                lifetime: lifetime,
+                legacyApiConfigured: legacyApiConfigured);
 
         private static async Task<TestScenario> CreateAsync(
             string state,
             bool includeTransaction,
-            string transactionStatus)
+            string transactionStatus,
+            string? environmentName = null,
+            bool addMockIntegration = false,
+            IHostApplicationLifetime? lifetime = null,
+            bool legacyApiConfigured = false)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -507,6 +1233,16 @@ public sealed class SessionOrchestratorFlowTests
                 .Options;
             var db = new AppDbContext(options);
             await db.Database.EnsureCreatedAsync();
+            db.SessionAdmissionGates.Add(new SessionAdmissionGate
+            {
+                Id = SessionAdmissionGate.SingletonId,
+                NewSessionsPaused = false,
+                UpdatedBy = "test",
+                Reason = "session fixture"
+            });
+            var services = new ServiceCollection()
+                .AddDbContext<AppDbContext>(builder => builder.UseSqlite(connection))
+                .BuildServiceProvider();
 
             var company = new Company
             {
@@ -515,12 +1251,13 @@ public sealed class SessionOrchestratorFlowTests
                 Cnpj = "00000000000000",
                 CreatedByUserId = Guid.NewGuid()
             };
+            var serial = $"SERIAL-{Guid.NewGuid():N}";
             var machine = new Machine
             {
                 Id = $"machine-{Guid.NewGuid():N}",
                 Name = "Máquina de teste",
-                SerialNumber = $"SERIAL-{Guid.NewGuid():N}",
-                NormalizedSerialNumber = $"SERIAL-{Guid.NewGuid():N}".ToUpperInvariant(),
+                SerialNumber = serial,
+                NormalizedSerialNumber = serial.ToUpperInvariant(),
                 CompanyId = company.Id,
                 MercadoPagoEnabled = true
             };
@@ -561,32 +1298,52 @@ public sealed class SessionOrchestratorFlowTests
 
             db.Companies.Add(company);
             db.Machines.Add(machine);
+            if (addMockIntegration)
+            {
+                db.MercadoPagoIntegrations.Add(new MercadoPagoIntegration
+                {
+                    CompanyId = company.Id,
+                    IsActive = true,
+                    AccessToken = "mock_access_token",
+                    RefreshToken = string.Empty,
+                    ClientSecret = string.Empty
+                });
+                db.SystemSettings.Add(new SystemSettings { ApplicationFeePercent = 5m });
+            }
             if (transaction != null) db.PaymentTransactions.Add(transaction);
             db.MachineSessions.Add(session);
             await db.SaveChangesAsync();
 
             var panelHub = new TelemetryPanelHub(NullLogger<TelemetryPanelHub>.Instance);
             var connectionManager = new TelemetryConnectionManager(
-                new UnusedScopeFactory(),
+                services.GetRequiredService<IServiceScopeFactory>(),
                 panelHub,
-                NullLogger<TelemetryConnectionManager>.Instance);
+                NullLogger<TelemetryConnectionManager>.Instance,
+                lifetime: lifetime);
+            var httpClientFactory = new TestHttpClientFactory();
             var orchestrator = new SessionOrchestrator(
                 db,
                 connectionManager,
                 panelHub,
-                new TestHttpClientFactory(),
-                new ConfigurationBuilder().Build(),
-                new TestWebHostEnvironment(),
+                httpClientFactory,
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(legacyApiConfigured
+                        ? new Dictionary<string, string?> { ["Telemetry:LegacyApiBaseUrl"] = "http://legacy-api.internal" }
+                        : new Dictionary<string, string?>())
+                    .Build(),
+                new TestWebHostEnvironment(environmentName ?? Environments.Development),
                 NullLogger<SessionOrchestrator>.Instance);
 
             return new TestScenario(
                 connection,
+                services,
                 db,
                 orchestrator,
                 company.Id,
                 machine.Id,
                 session.Id,
-                transaction?.Id);
+                transaction?.Id,
+                httpClientFactory);
         }
 
         public async Task SendAsync(
@@ -678,33 +1435,37 @@ public sealed class SessionOrchestratorFlowTests
 
         public async ValueTask DisposeAsync()
         {
+            await _services.DisposeAsync();
             await Db.DisposeAsync();
             await _connection.DisposeAsync();
         }
     }
 
-    private sealed class UnusedScopeFactory : IServiceScopeFactory
-    {
-        public IServiceScope CreateScope() => throw new InvalidOperationException("Escopo não utilizado nos testes.");
-    }
-
     private sealed class TestHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new(new RejectExternalRequestsHandler());
+        private int _requestCount;
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        public HttpClient CreateClient(string name) => new(new RejectExternalRequestsHandler(
+            () => Interlocked.Increment(ref _requestCount)));
     }
 
-    private sealed class RejectExternalRequestsHandler : HttpMessageHandler
+    private sealed class RejectExternalRequestsHandler(Action onRequest) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            onRequest();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }
     }
 
-    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    private sealed class TestWebHostEnvironment(string environmentName) : IWebHostEnvironment
     {
         public string ApplicationName { get; set; } = "VendingMachines.Api.Tests";
         public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
         public string WebRootPath { get; set; } = string.Empty;
-        public string EnvironmentName { get; set; } = Environments.Development;
+        public string EnvironmentName { get; set; } = environmentName;
         public string ContentRootPath { get; set; } = string.Empty;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }

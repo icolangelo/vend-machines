@@ -4,6 +4,7 @@ using System.Data;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using VendingMachines.Api.Models;
+using VendingMachines.Api.Services;
 
 namespace VendingMachines.Api.Data;
 
@@ -11,18 +12,52 @@ public static class DbInitializer
 {
     public static void Initialize(AppDbContext context, bool seedDemoData)
     {
-        // Executar migrations automáticas se necessário ou apenas garantir a criação para SQLite
+        // A configuração "Development" sozinha não garante que a conexão aponta
+        // para um banco descartável. Nunca misture dados fictícios com PostgreSQL.
+        seedDemoData = CanSeedDemoData(context.Database, seedDemoData);
+
+        // SQLite continua sendo um caminho somente de desenvolvimento e testes locais.
         if (context.Database.IsSqlite())
         {
             context.Database.EnsureCreated();
             EnsureSqliteCompatibilitySchema(context);
+            if (!context.SessionAdmissionGates.Any())
+            {
+                context.SessionAdmissionGates.Add(new SessionAdmissionGate
+                {
+                    Id = SessionAdmissionGate.SingletonId,
+                    NewSessionsPaused = false,
+                    UpdatedAt = DateTime.UtcNow,
+                    UpdatedBy = "sqlite-initializer",
+                    Reason = "default"
+                });
+                context.SaveChanges();
+            }
+        }
+        else if (seedDemoData)
+        {
+            // Em desenvolvimento, manter a inicialização conveniente.
+            context.Database.Migrate();
         }
         else
         {
-            context.Database.Migrate();
+            // Em produção, não altere o schema durante o boot do servidor. Migrações
+            // devem ser revisadas e aplicadas antes do deploy, quando a versão antiga
+            // ainda está servindo as máquinas. A inicialização só verifica o estado.
+            var pendingMigrations = context.Database.GetPendingMigrations().ToList();
+            if (pendingMigrations.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Há {pendingMigrations.Count} migração(ões) pendente(s). Revise e aplique o script de release antes de iniciar a API.");
+            }
         }
 
-        CleanUpEmptyMachineIds(context);
+        if (seedDemoData)
+        {
+            // Correções de dados legados não devem alterar IDs de máquinas durante o
+            // startup de produção; trate qualquer reparo como uma migração revisada.
+            CleanUpEmptyMachineIds(context);
+        }
 
         if (!seedDemoData)
         {
@@ -57,7 +92,9 @@ public static class DbInitializer
                 Name = "ACME Machines LTDA",
                 CreatedByUserId = adminUserId,
                 CreatedAt = DateTime.UtcNow,
-                Cnpj = "12.345.678/0001-99"
+                Cnpj = "12.345.678/0001-99",
+                NormalizedCnpj = RegistrationIdentity.NormalizeCnpj("12.345.678/0001-99"),
+                ActivationStatus = CompanyActivationStatuses.Active
             };
             context.Companies.Add(defaultCompany);
         }
@@ -176,10 +213,12 @@ public static class DbInitializer
                 Id = adminUserId,
                 Name = "Admin Ivan",
                 Email = "dev.ivan@gmail.com",
-                Role = "Admin",
+                NormalizedEmail = RegistrationIdentity.NormalizeEmail("dev.ivan@gmail.com"),
+                Role = AppRoles.PlatformAdmin,
                 CompanyId = companyId,
                 CreatedAt = DateTime.UtcNow,
                 Cpf = "123.456.789-00",
+                NormalizedCpf = RegistrationIdentity.NormalizeCpf("123.456.789-00"),
                 AcceptedPrivacyPolicy = true,
                 PrivacyPolicyAcceptedAt = DateTime.UtcNow
             };
@@ -191,10 +230,12 @@ public static class DbInitializer
                 Id = joaoUserId,
                 Name = "João da Silva",
                 Email = "joao@vmmanager.com",
-                Role = "Admin",
+                NormalizedEmail = RegistrationIdentity.NormalizeEmail("joao@vmmanager.com"),
+                Role = AppRoles.Admin,
                 CompanyId = companyId,
                 CreatedAt = DateTime.UtcNow,
                 Cpf = "987.654.321-99",
+                NormalizedCpf = RegistrationIdentity.NormalizeCpf("987.654.321-99"),
                 AcceptedPrivacyPolicy = true,
                 PrivacyPolicyAcceptedAt = DateTime.UtcNow
             };
@@ -211,8 +252,22 @@ public static class DbInitializer
         context.SaveChanges();
     }
 
+    public static bool CanSeedDemoData(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade database, bool requested) =>
+        requested && database.IsSqlite();
+
     private static void EnsureSqliteCompatibilitySchema(AppDbContext context)
     {
+        EnsureSqliteColumn(context, "SystemSettings", "IsSingleton", "INTEGER NOT NULL DEFAULT 1");
+        if (context.SystemSettings.Count() > 1)
+        {
+            throw new InvalidOperationException(
+                "O banco SQLite contém mais de uma configuração global; consolide os registros antes de iniciar a aplicação.");
+        }
+
+        context.Database.ExecuteSqlRaw("""
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_SystemSettings_IsSingleton" ON "SystemSettings" ("IsSingleton");
+""");
+
         context.Database.ExecuteSqlRaw("""
 CREATE TABLE IF NOT EXISTS "Locations" (
     "Id" TEXT NOT NULL CONSTRAINT "PK_Locations" PRIMARY KEY,
@@ -270,6 +325,58 @@ ALTER TABLE "Machines" ADD COLUMN "LocationId" TEXT NULL;
         EnsureSqliteColumn(context, "PaymentTransactions", "SendTelemetryToMachine", "INTEGER NOT NULL DEFAULT 1");
         EnsureSqliteColumn(context, "Machines", "NormalizedSerialNumber", "TEXT NULL");
         EnsureSqliteColumn(context, "Machines", "AutoOpenSessionEnabled", "INTEGER NOT NULL DEFAULT 0");
+        EnsureSqliteColumn(context, "Machines", "IsActive", "INTEGER NOT NULL DEFAULT 1");
+        EnsureSqliteColumn(context, "Machines", "TelemetryCredentialHash", "TEXT NULL");
+        EnsureSqliteColumn(context, "Machines", "TelemetryCredentialCreatedAt", "TEXT NULL");
+        EnsureSqliteColumn(context, "Machines", "TelemetryCredentialRevokedAt", "TEXT NULL");
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "OperationalAlerts" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_OperationalAlerts" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL,
+    "MachineId" TEXT NULL,
+    "SessionId" TEXT NULL,
+    "TransactionId" TEXT NULL,
+    "DeduplicationKey" TEXT NOT NULL,
+    "Type" TEXT NOT NULL,
+    "Severity" TEXT NOT NULL,
+    "Status" TEXT NOT NULL,
+    "Title" TEXT NOT NULL,
+    "Description" TEXT NOT NULL,
+    "OccurredAt" TEXT NOT NULL,
+    "UpdatedAt" TEXT NOT NULL,
+    "ResolvedAt" TEXT NULL,
+    "Resolution" TEXT NULL,
+    CONSTRAINT "FK_OperationalAlerts_Companies_CompanyId" FOREIGN KEY ("CompanyId") REFERENCES "Companies" ("Id") ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_OperationalAlerts_CompanyId_DeduplicationKey" ON "OperationalAlerts" ("CompanyId", "DeduplicationKey");
+CREATE INDEX IF NOT EXISTS "IX_OperationalAlerts_CompanyId_Status_UpdatedAt" ON "OperationalAlerts" ("CompanyId", "Status", "UpdatedAt");
+
+CREATE TABLE IF NOT EXISTS "AlertReadReceipts" (
+    "AlertId" TEXT NOT NULL,
+    "UserId" TEXT NOT NULL,
+    "ReadAt" TEXT NOT NULL,
+    CONSTRAINT "PK_AlertReadReceipts" PRIMARY KEY ("AlertId", "UserId"),
+    CONSTRAINT "FK_AlertReadReceipts_OperationalAlerts_AlertId" FOREIGN KEY ("AlertId") REFERENCES "OperationalAlerts" ("Id") ON DELETE CASCADE,
+    CONSTRAINT "FK_AlertReadReceipts_Users_UserId" FOREIGN KEY ("UserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS "IX_AlertReadReceipts_UserId" ON "AlertReadReceipts" ("UserId");
+""");
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "AuditLogs" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_AuditLogs" PRIMARY KEY,
+    "CompanyId" TEXT NULL,
+    "ActorUserId" TEXT NULL,
+    "Action" TEXT NOT NULL,
+    "ResourceType" TEXT NOT NULL,
+    "ResourceId" TEXT NULL,
+    "IpAddress" TEXT NULL,
+    "UserAgent" TEXT NULL,
+    "MetadataJson" TEXT NULL,
+    "CreatedAt" TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_AuditLogs_CompanyId_CreatedAt" ON "AuditLogs" ("CompanyId", "CreatedAt");
+CREATE INDEX IF NOT EXISTS "IX_AuditLogs_ActorUserId_CreatedAt" ON "AuditLogs" ("ActorUserId", "CreatedAt");
+""");
 
         context.Database.ExecuteSqlRaw("""
 UPDATE "Machines" SET "NormalizedSerialNumber" = upper(trim("SerialNumber"))
@@ -286,6 +393,10 @@ CREATE TABLE IF NOT EXISTS "MachineConnectionStates" (
     "MonitoringEnabled" INTEGER NOT NULL DEFAULT 0,
     "IsOnline" INTEGER NOT NULL DEFAULT 0,
     "ConnectionId" TEXT NULL,
+    "OwnerNodeId" TEXT NULL,
+    "OwnerConnectionId" TEXT NULL,
+    "CommandRoutingVersion" INTEGER NULL,
+    "OwnerLeaseExpiresAt" TEXT NULL,
     "ConnectedAt" TEXT NULL,
     "DisconnectedAt" TEXT NULL,
     "LastSeenAt" TEXT NULL,
@@ -307,12 +418,46 @@ CREATE INDEX IF NOT EXISTS "IX_MachineConnectionStates_CompanyId_IsOnline" ON "M
 """);
 
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatus", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerNodeId", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerConnectionId", "TEXT NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "CommandRoutingVersion", "INTEGER NULL");
+        EnsureSqliteColumn(context, "MachineConnectionStates", "OwnerLeaseExpiresAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRaw", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusUpdatedAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRequestAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "MdbStatusRequestMessageId", "INTEGER NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "AutoOpenLastAttemptAt", "TEXT NULL");
         EnsureSqliteColumn(context, "MachineConnectionStates", "AutoOpenLastError", "TEXT NULL");
+
+        context.Database.ExecuteSqlRaw("""
+CREATE TABLE IF NOT EXISTS "TelemetryCommandDispatches" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_TelemetryCommandDispatches" PRIMARY KEY,
+    "CompanyId" TEXT NOT NULL,
+    "MachineId" TEXT NOT NULL,
+    "OwnerNodeId" TEXT NOT NULL,
+    "Operation" TEXT NOT NULL DEFAULT 'Command',
+    "TimeoutMilliseconds" INTEGER NOT NULL DEFAULT 15000,
+    "PayloadJson" TEXT NOT NULL,
+    "Status" TEXT NOT NULL,
+    "CreatedAt" TEXT NOT NULL,
+    "ProcessingStartedAt" TEXT NULL,
+    "CompletedAt" TEXT NULL,
+    "MessageId" INTEGER NULL,
+    "Attempts" INTEGER NULL,
+    "Success" INTEGER NULL,
+    "Error" TEXT NULL,
+    "ResponseStatus" TEXT NULL,
+    "ResponseDataJson" TEXT NULL,
+    "ResponseAt" TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS "IX_TelemetryCommandDispatches_OwnerNodeId_Status_CreatedAt"
+ON "TelemetryCommandDispatches" ("OwnerNodeId", "Status", "CreatedAt");
+""");
+        EnsureSqliteColumn(context, "TelemetryCommandDispatches", "Operation", "TEXT NOT NULL DEFAULT 'Command'");
+        EnsureSqliteColumn(context, "TelemetryCommandDispatches", "TimeoutMilliseconds", "INTEGER NOT NULL DEFAULT 15000");
+        EnsureSqliteColumn(context, "TelemetryCommandDispatches", "ResponseStatus", "TEXT NULL");
+        EnsureSqliteColumn(context, "TelemetryCommandDispatches", "ResponseDataJson", "TEXT NULL");
+        EnsureSqliteColumn(context, "TelemetryCommandDispatches", "ResponseAt", "TEXT NULL");
 
         context.Database.ExecuteSqlRaw("""
 CREATE TABLE IF NOT EXISTS "MachineSessions" (
@@ -365,6 +510,18 @@ CREATE TABLE IF NOT EXISTS "TelemetryEvents" (
     "Detail" TEXT NULL, "DataJson" TEXT NULL, "CreatedAt" TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS "IX_TelemetryEvents_CompanyId_MachineId_CreatedAt" ON "TelemetryEvents" ("CompanyId", "MachineId", "CreatedAt");
+
+CREATE TABLE IF NOT EXISTS "DeviceMessageInbox" (
+    "Id" TEXT NOT NULL CONSTRAINT "PK_DeviceMessageInbox" PRIMARY KEY,
+    "IdempotencyKey" TEXT NOT NULL, "MachineId" TEXT NOT NULL, "CompanyId" TEXT NOT NULL,
+    "Serial" TEXT NOT NULL, "ConnectionId" TEXT NOT NULL, "MessageId" INTEGER NOT NULL,
+    "DataJson" TEXT NOT NULL, "ReceivedAt" TEXT NOT NULL, "Status" TEXT NOT NULL,
+    "Attempts" INTEGER NOT NULL, "NextAttemptAt" TEXT NULL, "ProcessingStartedAt" TEXT NULL,
+    "ProcessedAt" TEXT NULL, "LastError" TEXT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_DeviceMessageInbox_IdempotencyKey" ON "DeviceMessageInbox" ("IdempotencyKey");
+CREATE INDEX IF NOT EXISTS "IX_DeviceMessageInbox_Status_NextAttemptAt_ReceivedAt" ON "DeviceMessageInbox" ("Status", "NextAttemptAt", "ReceivedAt");
+CREATE INDEX IF NOT EXISTS "IX_DeviceMessageInbox_MachineId_Status_ReceivedAt" ON "DeviceMessageInbox" ("MachineId", "Status", "ReceivedAt");
 """);
 
         context.Database.ExecuteSqlRaw("""
