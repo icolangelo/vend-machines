@@ -678,14 +678,18 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             print(f"synthetic_presence_after={after}")
         if args.schema_mode == "candidate" and migrations_before != migrations_after:
             raise RehearsalError("O startup anterior alterou __EFMigrationsHistory.")
-        if args.schema_mode == "candidate" and not args.skip_database_initialization and after != "offline:null:null":
-            raise RehearsalError(f"Startup anterior inesperado: {after}")
+        previous_startup = (worktree / "apps/backend/VendingMachines.Api/Program.cs").read_text(encoding="utf-8")
+        resets_presence = "context.MachineConnectionStates.ExecuteUpdate(" in previous_startup
+        expected_presence = "offline:null:null" if resets_presence else before
+        if args.schema_mode == "candidate" and not args.skip_database_initialization and after != expected_presence:
+            raise RehearsalError(f"Startup anterior inesperado: {after}; esperado: {expected_presence}")
         if args.schema_mode == "baseline":
             print("Controle baseline saudável.")
         elif args.skip_database_initialization:
             print("Host da revisão anterior saudável com inicialização do banco ignorada para diagnóstico.")
         else:
-            print("Startup anterior compatível com o schema; presença MDB zerada conforme esperado.")
+            behavior = "zerada" if resets_presence else "preservada"
+            print(f"Startup anterior compatível com o schema; presença MDB {behavior} conforme esperado.")
 
         if args.candidate_image:
             if args.schema_mode != "candidate" or args.skip_database_initialization:
@@ -720,7 +724,8 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             live_presence = ""
             for _ in range(45):
                 live_presence = query(names["postgres"], "vendmachines", live_presence_query)
-                if live_presence.count("|") == 2 and live_presence.split("|")[1] == "true":
+                if (live_presence.count("|") == 2 and live_presence.split("|")[1] == "true"
+                        and live_presence.split("|")[0] not in {"", connection_id}):
                     break
                 status_code, simulator_state = attempt(
                     "docker", "inspect", "--format", "{{.State.Status}}", names["simulator"],
@@ -729,7 +734,8 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     _, simulator_logs = attempt("docker", "logs", names["simulator"])
                     raise RehearsalError(f"O simulador encerrou antes de conectar à API anterior: {simulator_logs[-2500:]}")
                 time.sleep(1)
-            if live_presence.count("|") != 2 or live_presence.split("|")[1] != "true":
+            if (live_presence.count("|") != 2 or live_presence.split("|")[1] != "true"
+                    or live_presence.split("|")[0] in {"", connection_id}):
                 _, simulator_logs = attempt("docker", "logs", names["simulator"])
                 raise RehearsalError(f"O simulador não conectou à API anterior. presence={live_presence}; logs={simulator_logs[-2500:]}")
             old_connection_id = live_presence.split("|")[0]
