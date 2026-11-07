@@ -84,6 +84,12 @@ require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$workflow" 'FRONTEND_COMPAT_REF: ${{ github.event.before }}'
 require_contains "$workflow" '--frontend-ref "$frontend_ref"'
+require_contains "$workflow" 'vars.PRODUCTION_BACKEND_REF'
+require_contains "$workflow" 'git cat-file -e "${previous_ref}^{commit}"'
+if grep -Fq 'PREVIOUS_BACKEND_REF: ${{ github.event.before }}' "$workflow"; then
+  echo "O ensaio de sobreposição precisa usar a revisão publicada, não o push anterior." >&2
+  exit 1
+fi
 require_contains "$backend_context_test" 'sensitive_field_detector_is_valid'
 require_contains "$backend_context_test" 'find_populated_sensitive_fields'
 require_contains "$backend_context_test" 'ls-files'

@@ -465,13 +465,12 @@ jobs:
       - name: Verify previous API overlap while a legacy MDB socket stays connected
         env:
           BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
-          PREVIOUS_BACKEND_REF: ${{ github.event.before }}
+          # Baseline de produção confirmado; atualizar após publicação bem-sucedida.
+          PREVIOUS_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
         run: |
           set -euo pipefail
           previous_ref="$PREVIOUS_BACKEND_REF"
-          if [[ -z "$previous_ref" || "$previous_ref" =~ ^0+$ ]]; then
-            previous_ref="$(git rev-parse "${GITHUB_SHA}^")"
-          fi
+          git cat-file -e "${previous_ref}^{commit}"
           python tools/Database/Test-PreviousBackendRollbackCompatibility.py \
             --segments artifacts \
             --previous-ref "$previous_ref" \
