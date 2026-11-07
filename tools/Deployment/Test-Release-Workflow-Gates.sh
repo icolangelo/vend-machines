@@ -78,7 +78,12 @@ if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
 fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
-require_contains "$frontend_workflow" 'BACKEND_COMPAT_REF: ${{ github.event.before }}'
+require_contains "$frontend_workflow" 'vars.PRODUCTION_BACKEND_REF'
+require_contains "$frontend_workflow" 'git cat-file -e "${backend_ref}^{commit}"'
+if grep -Fq 'BACKEND_COMPAT_REF: ${{ github.event.before }}' "$frontend_workflow"; then
+  echo "A publicação frontend precisa validar a API publicada, não o push anterior." >&2
+  exit 1
+fi
 require_contains "$frontend_workflow" '--backend-ref "$backend_ref"'
 require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'

@@ -190,7 +190,9 @@ public sealed class PostgresTelemetryPanelEventBusTests
         {
             var worker = Assert.Single(health.GetSnapshots(), item =>
                 item.Name == BackgroundWorkerNames.TelemetryPanelEventRelay);
-            if (worker.Status == expectedStatus)
+            // Started already reports Healthy; LISTEN is ready only after ReportSuccess.
+            if (worker.Status == expectedStatus &&
+                (expectedStatus != BackgroundWorkerStatus.Healthy || worker.LastSuccessAt.HasValue))
                 return;
 
             await Task.Delay(20, cancellationToken);

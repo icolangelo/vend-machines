@@ -56,15 +56,13 @@ jobs:
           node tools/Deployment/CheckFrontendApiContract.mjs
           node --test tools/Deployment/test_frontend_api_contract.mjs
 
-      - name: Verify frontend compatibility with the previous API
+      - name: Verify frontend compatibility with the production API
         env:
-          BACKEND_COMPAT_REF: ${{ github.event.before }}
+          BACKEND_COMPAT_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
         run: |
           set -euo pipefail
           backend_ref="$BACKEND_COMPAT_REF"
-          if [[ -z "$backend_ref" || "$backend_ref" =~ ^0+$ ]]; then
-            backend_ref="$(git rev-parse "${GITHUB_SHA}^")"
-          fi
+          git cat-file -e "${backend_ref}^{commit}"
           node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
 
       - name: Audit frontend dependencies
