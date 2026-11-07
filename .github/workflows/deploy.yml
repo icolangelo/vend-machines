@@ -309,6 +309,8 @@ jobs:
           cp tools/Database/Rehearse-PostgresMigrations.ps1 "$package_dir/"
           cp docs/deploy-preflight.sql "$package_dir/"
           cp docs/deploy-seguro.md "$package_dir/"
+          cp docs/telemetry-continuity-architecture.md "$package_dir/"
+          cp docs/partial-production-rollout.md "$package_dir/"
           cp docs/backup-restore-rehearsal.md "$package_dir/"
           cp docs/demo-data-preflight.sql "$package_dir/"
           cp docs/frontend-release.md "$package_dir/"
