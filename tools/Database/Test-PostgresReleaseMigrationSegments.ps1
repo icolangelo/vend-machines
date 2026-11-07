@@ -38,8 +38,9 @@ foreach ($segmentName in $segmentNames) {
 
 $containerName = "vendmachines-release-migrations-$([Guid]::NewGuid().ToString('N'))"
 $temporaryPassword = "release-fixture-$([Guid]::NewGuid().ToString('N'))"
-$bootstrapFixturePath = Join-Path $env:TEMP "vendmachines-release-bootstrap-$([Guid]::NewGuid().ToString('N')).sql"
-$queryFixturePath = Join-Path $env:TEMP "vendmachines-release-query-$([Guid]::NewGuid().ToString('N')).sql"
+$temporaryDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } elseif ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
+$bootstrapFixturePath = Join-Path $temporaryDirectory "vendmachines-release-bootstrap-$([Guid]::NewGuid().ToString('N')).sql"
+$queryFixturePath = Join-Path $temporaryDirectory "vendmachines-release-query-$([Guid]::NewGuid().ToString('N')).sql"
 $containerStarted = $false
 
 function Invoke-DockerChecked {
