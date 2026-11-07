@@ -72,7 +72,7 @@ on:
         default: "none"
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && 'production-release' || format('backend-build-{0}', github.run_id) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && 'production-release' || format('backend-build-{0}', github.ref) }}
   cancel-in-progress: false
 
 permissions:
@@ -494,6 +494,22 @@ jobs:
           path: artifacts/release-package/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Promote validated main image to latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SOURCE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          remote_head="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          if [[ "$remote_head" != "$SOURCE_TAG" ]]; then
+            echo "::notice::Uma revisão mais recente chegou à main; esta execução não moverá latest."
+            exit 0
+          fi
+          image_repository="${REGISTRY,,}/${IMAGE_NAME,,}"
+          docker buildx imagetools create \
+            --tag "$image_repository:latest" \
+            "$image_repository:$SOURCE_TAG"
 
   deploy-production:
     name: Deploy confirmed release to Coolify

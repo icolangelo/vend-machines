@@ -102,7 +102,7 @@ require_contains "$backend_context_test" '**/*.db-*'
 require_contains "$workflow" 'type=raw,value=${{ github.sha }}'
 backend_tag_rules="$(sed -n '/^[[:space:]]*- name: Extract metadata (tags, labels)/,/^[[:space:]]*- name: Build candidate backend image without publishing/p' "$workflow" | sed -n '/^[[:space:]]*tags: |$/,/^[[:space:]]*labels: /p' | sed '1d;$d' | sed 's/^[[:space:]]*//')"
 if [[ "$backend_tag_rules" != 'type=raw,value=${{ github.sha }}' ]]; then
-  echo "O build automático do backend deve publicar somente a tag imutável do SHA completo." >&2
+  echo "A imagem candidata do backend deve ser construída com a tag imutável do SHA completo." >&2
   exit 1
 fi
 require_contains "$workflow" 'VENDMACHINES_DESIGNTIME_POSTGRES:'
@@ -418,7 +418,22 @@ require_contains "$temporary_dir/build-job" 'tools/VendingMachines.EncryptionRot
 require_contains "$verify_workflow" 'tools/VendingMachines.Simulator/VendingMachines.Simulator.csproj'
 require_contains "$verify_workflow" 'tools/VendingMachines.EncryptionRotation/VendingMachines.EncryptionRotation.csproj'
 if grep -Eq 'type=[^[:space:]]*value=latest' "$workflow"; then
-  echo "A build automática não pode publicar a tag latest." >&2
+  echo "A tag latest só pode ser promovida após as validações, não no build da candidata." >&2
+  exit 1
+fi
+require_contains "$temporary_dir/build-job" 'name: Promote validated main image to latest'
+latest_promotion="$(sed -n '/name: Promote validated main image to latest/,/^  deploy-production:/p' "$temporary_dir/build-job")"
+if ! grep -Fq "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" <<< "$latest_promotion" ||
+   ! grep -Fq 'git ls-remote --exit-code origin refs/heads/main' <<< "$latest_promotion" ||
+   ! grep -Fq '"$remote_head" != "$SOURCE_TAG"' <<< "$latest_promotion" ||
+   ! grep -Fq -- '--tag "$image_repository:latest"' <<< "$latest_promotion" ||
+   ! grep -Fq '"$image_repository:$SOURCE_TAG"' <<< "$latest_promotion"; then
+  echo "A promoção automática de latest exige o SHA validado no push atual da main." >&2
+  exit 1
+fi
+latest_promotion_line="$(grep -nF 'name: Promote validated main image to latest' "$temporary_dir/build-job" | head -n 1 | cut -d: -f1)"
+if (( package_upload_line >= latest_promotion_line )); then
+  echo "latest só pode ser promovida após validar/publicar a imagem e enviar o pacote da release." >&2
   exit 1
 fi
 
@@ -672,4 +687,4 @@ if grep -Eq 'value=latest|tags:[[:space:]]*latest|Coolify|push:[[:space:]]*true'
   exit 1
 fi
 
-echo "Release workflow gates: API exige confirmação completa; frontend publica somente SHA depois de todos os gates e não aciona Coolify."
+echo "Release workflow gates: main promove latest após os gates; deploy da API exige confirmação; frontend publica somente SHA."
