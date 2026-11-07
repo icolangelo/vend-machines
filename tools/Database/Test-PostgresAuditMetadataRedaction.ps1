@@ -32,7 +32,7 @@ try {
     $consecutiveReadyChecks = 0
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     while ([DateTime]::UtcNow -lt $deadline) {
-        & docker exec $containerName pg_isready -U postgres -d postgres *> $null
+        & docker exec $containerName pg_isready -h 127.0.0.1 -U postgres -d postgres *> $null
         if ($LASTEXITCODE -eq 0) {
             $consecutiveReadyChecks++
             if ($consecutiveReadyChecks -ge 3) {

@@ -73,14 +73,11 @@ try {
     ) | Out-Null
     $containerStarted = $true
 
-    # The official image first starts a temporary PostgreSQL server to create
-    # its initial database, then restarts the server. Wait past that bootstrap
-    # window before polling so pg_isready cannot report the temporary server.
-    Start-Sleep -Seconds 5
+    # TCP readiness excludes the Unix-socket-only bootstrap server.
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
     $consecutiveReadyChecks = 0
     while ([DateTime]::UtcNow -lt $deadline) {
-        & docker exec $containerName pg_isready -U postgres *> $null
+        & docker exec $containerName pg_isready -h 127.0.0.1 -U postgres *> $null
         if ($LASTEXITCODE -eq 0) {
             $consecutiveReadyChecks++
             if ($consecutiveReadyChecks -ge 3) { break }

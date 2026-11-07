@@ -133,7 +133,8 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
     $postgresReady = $false
     while ([DateTime]::UtcNow -lt $deadline) {
-        & docker exec $postgresContainer pg_isready -U postgres -d vendmachines *> $null
+        # O servidor temporário do bootstrap só aceita socket Unix; TCP aguarda o servidor definitivo.
+        & docker exec $postgresContainer pg_isready -h 127.0.0.1 -U postgres -d vendmachines *> $null
         if ($LASTEXITCODE -eq 0) {
             $postgresReady = $true
             break
