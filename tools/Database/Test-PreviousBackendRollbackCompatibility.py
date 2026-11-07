@@ -488,7 +488,9 @@ def main() -> int:
 
         ready = False
         for _ in range(60):
-            code, _ = attempt("docker", "exec", names["postgres"], "pg_isready", "-U", "postgres", "-d", "postgres")
+            # The image's bootstrap server accepts Unix-socket connections only.
+            # TCP readiness waits for the final server after bootstrap restarts it.
+            code, _ = attempt("docker", "exec", names["postgres"], "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres")
             if code == 0:
                 ready = True
                 break
