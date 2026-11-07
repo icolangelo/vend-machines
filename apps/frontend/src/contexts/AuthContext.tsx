@@ -13,6 +13,7 @@ import {
   subscribeToAuthState,
   type AuthSession,
   type AuthUser,
+  type RegistrationResult,
 } from "@/lib/authClient";
 
 export type User = AuthUser;
@@ -102,9 +103,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string,
     companyName: string,
     companyCnpj: string,
-  ) => {
+  ): Promise<RegistrationResult> => {
     if ((import.meta.env.VITE_IS_TEST_ENVIRONMENT === "true")) {
-      return "Cadastro recebido. A empresa aguarda análise da equipe da plataforma.";
+      return { kind: "pending", status: "Pending", message: "Cadastro recebido. A empresa aguarda análise da equipe da plataforma." };
     }
 
     const result = await registerSession({
@@ -116,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       companyCnpj,
       acceptedPrivacyPolicy: true,
     });
-    return result.message;
+    return result;
   };
 
   const acceptInvitation = async (payload: {

@@ -1,5 +1,5 @@
 import { createContext } from "react";
-import type { AuthUser } from "@/lib/authClient";
+import type { AuthUser, RegistrationResult } from "@/lib/authClient";
 
 export type User = AuthUser;
 
@@ -18,7 +18,7 @@ export interface AuthContextType {
     password: string,
     companyName: string,
     companyCnpj: string,
-  ) => Promise<string>;
+  ) => Promise<RegistrationResult>;
   acceptInvitation: (payload: {
     invitationToken: string;
     name: string;

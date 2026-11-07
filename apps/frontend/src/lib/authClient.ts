@@ -27,6 +27,10 @@ export interface AuthSession {
   user: AuthUser;
 }
 
+export type RegistrationResult =
+  | { kind: "session"; session: AuthSession }
+  | { kind: "pending"; status?: string; message: string };
+
 export type AuthStateReason = "updated" | "expired" | "logout";
 type AuthStateListener = (session: AuthSession | null, reason: AuthStateReason) => void;
 
@@ -102,7 +106,7 @@ export async function registerSession(payload: {
   companyName: string;
   companyCnpj: string;
   acceptedPrivacyPolicy: boolean;
-}): Promise<{ status: string; message: string }> {
+}): Promise<RegistrationResult> {
   const response = await fetch(`${API_BASE_URL}/auth/register`, {
     method: "POST",
     credentials: "include",
@@ -115,7 +119,24 @@ export async function registerSession(payload: {
     throw new Error(error);
   }
 
-  return response.json();
+  const result: unknown = await response.json();
+  if (isAuthSession(result)) {
+    setAuthSession(result);
+    return { kind: "session", session: result };
+  }
+
+  if (result && typeof result === "object") {
+    const pending = result as { status?: unknown; message?: unknown };
+    if (typeof pending.message === "string" && pending.message.trim()) {
+      return {
+        kind: "pending",
+        ...(typeof pending.status === "string" ? { status: pending.status } : {}),
+        message: pending.message,
+      };
+    }
+  }
+
+  throw new Error("A API recebeu o cadastro, mas retornou uma resposta inesperada. Tente entrar ou contate o suporte.");
 }
 
 export async function acceptInvitationSession(payload: {
