@@ -31,6 +31,25 @@ public sealed class LegacyRelayLoopGuardMiddlewareTests
     }
 
     [Fact]
+    public async Task WebhookRelayHopReturningToCandidateIsRejectedBeforeEndpointExecution()
+    {
+        var endpointInvoked = false;
+        var middleware = new LegacyRelayLoopGuardMiddleware(_ =>
+        {
+            endpointInvoked = true;
+            return Task.CompletedTask;
+        });
+        var context = new DefaultHttpContext();
+        context.Request.Headers[LegacyTelemetryRequestRelay.WebhookRelayHopHeaderName] = "1";
+        context.Response.Body = new MemoryStream();
+
+        await middleware.InvokeAsync(context);
+
+        Assert.False(endpointInvoked);
+        Assert.Equal(StatusCodes.Status508LoopDetected, context.Response.StatusCode);
+    }
+
+    [Fact]
     public async Task OrdinaryRequestContinuesToEndpoint()
     {
         var endpointInvoked = false;

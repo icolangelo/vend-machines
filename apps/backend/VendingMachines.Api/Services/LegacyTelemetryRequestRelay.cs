@@ -16,6 +16,7 @@ public sealed class LegacyTelemetryRequestRelay
 {
     private const string ClientName = "TelemetryLegacyOwner";
     public const string RelayHopHeaderName = "X-VendMachines-Legacy-Relay-Hop";
+    public const string WebhookRelayHopHeaderName = "X-VendMachines-Legacy-Webhook-Relay-Hop";
     private const string RelayHopHeaderValue = "1";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan ReadinessCacheDuration = TimeSpan.FromSeconds(5);
@@ -168,7 +169,7 @@ public sealed class LegacyTelemetryRequestRelay
 
         var relativePath = $"webhooks/mercadopago{context.Request.QueryString.Value}";
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(_baseAddress, relativePath));
-        request.Headers.TryAddWithoutValidation(RelayHopHeaderName, RelayHopHeaderValue);
+        request.Headers.TryAddWithoutValidation(WebhookRelayHopHeaderName, RelayHopHeaderValue);
         request.Content = new StringContent(
             rawJsonBody,
             Encoding.UTF8,

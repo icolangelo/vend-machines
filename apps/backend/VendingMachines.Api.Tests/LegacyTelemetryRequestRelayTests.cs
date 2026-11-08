@@ -388,7 +388,7 @@ public sealed class LegacyTelemetryRequestRelayTests
 
         Assert.Equal((int)HttpStatusCode.Accepted, response?.StatusCode);
         Assert.Equal("http://legacy-api.internal/webhooks/mercadopago?data.id=123456789&type=payment", handler.RequestUri?.ToString());
-        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.RelayHopHeaderName]);
+        Assert.Equal("1", handler.Headers[LegacyTelemetryRequestRelay.WebhookRelayHopHeaderName]);
         Assert.Equal("{\"type\":\"payment\",\"data\":{\"id\":\"123456789\"}}", handler.Body);
         Assert.Equal("ts=123,v1=abc", handler.Headers["x-signature"]);
         Assert.Equal("provider-request-1", handler.Headers["x-request-id"]);

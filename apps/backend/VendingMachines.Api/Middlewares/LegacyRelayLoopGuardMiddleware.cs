@@ -10,7 +10,8 @@ public sealed class LegacyRelayLoopGuardMiddleware(RequestDelegate next)
 {
     public async Task InvokeAsync(HttpContext context)
     {
-        if (context.Request.Headers.ContainsKey(LegacyTelemetryRequestRelay.RelayHopHeaderName))
+        if (context.Request.Headers.ContainsKey(LegacyTelemetryRequestRelay.RelayHopHeaderName) ||
+            context.Request.Headers.ContainsKey(LegacyTelemetryRequestRelay.WebhookRelayHopHeaderName))
         {
             context.Response.StatusCode = StatusCodes.Status508LoopDetected;
             await context.Response.WriteAsJsonAsync(new { code = "legacy_relay_loop_blocked" });
