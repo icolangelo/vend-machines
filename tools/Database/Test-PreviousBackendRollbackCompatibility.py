@@ -1006,20 +1006,10 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 cancel_results = list(executor.map(lambda command: attempt(*command), cancel_request_commands))
 
             for cancel_index, (cancel_code, cancel_response) in enumerate(cancel_results, start=1):
-                if cancel_code != 0:
+                if cancel_code == 0 or "HTTP/1.1 503 Service Unavailable" not in cancel_response:
                     raise RehearsalError(
-                        f"Cancelamento concorrente {cancel_index} falhou; "
+                        f"Cancelamento concorrente {cancel_index} não foi pausado para o owner legado; "
                         f"exit={cancel_code}, body={cancel_response[-1800:]}"
-                    )
-                try:
-                    cancel_payload = json.loads(cancel_response)
-                except json.JSONDecodeError as exc:
-                    raise RehearsalError(
-                        f"Cancelamento concorrente {cancel_index} retornou JSON inválido: {cancel_response[-1800:]}"
-                    ) from exc
-                if cancel_payload.get("sessionId") != relayed_session_id:
-                    raise RehearsalError(
-                        f"Cancelamento concorrente {cancel_index} retornou outra sessão: {cancel_response[-1800:]}"
                     )
 
             close_command_count = query(
@@ -1032,29 +1022,23 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 "DROP TRIGGER local_delay_legacy_session_close ON \"MachineSessions\"; "
                 "DROP FUNCTION local_delay_legacy_session_close();",
             )
-            if close_command_count != "1":
-                raise RehearsalError(
-                    "Os cancelamentos concorrentes precisam produzir um único comando físico; "
-                    f"FECHAR_SESSAO={close_command_count}"
-                )
-            print("candidate_concurrent_legacy_cancel_single_close_command=yes")
-
-            closed_session_state = ""
-            closed_session_query = (
+            pending_session_state = query(
+                names["postgres"], "vendmachines",
                 f'''SELECT "State" || '|' || CASE WHEN "ClosedAt" IS NULL THEN 'open' ELSE 'closed' END '''
-                f'''FROM "MachineSessions" WHERE "Id"='{relayed_session_id}'::uuid;'''
+                f'''FROM "MachineSessions" WHERE "Id"='{relayed_session_id}'::uuid;''',
             )
-            for _ in range(12):
-                closed_session_state = query(names["postgres"], "vendmachines", closed_session_query)
-                if closed_session_state == "ClosedWithoutSelection|closed":
-                    break
-                time.sleep(0.5)
-            if closed_session_state != "ClosedWithoutSelection|closed":
+            if close_command_count != "0" or pending_session_state != "AwaitingSelection|open":
                 raise RehearsalError(
-                    "O cancelamento chegou ao owner, mas o encerramento físico não foi confirmado no banco; "
-                    f"session={closed_session_state}"
+                    "Um owner legado sem a proteção MDB precisa manter o fechamento pendente sem comando; "
+                    f"FECHAR_SESSAO={close_command_count}, session={pending_session_state}"
                 )
-            print("candidate_legacy_session_cancel=physically_closed")
+            print("candidate_concurrent_legacy_cancel_no_close_command=yes")
+            print("candidate_legacy_session_cancel=paused_for_incompatible_owner")
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c",
+                f'''UPDATE "MachineSessions" SET "State"='ClosedWithoutSelection', "ClosedAt"=CURRENT_TIMESTAMP, "CloseReason"='synthetic_overlap_cleanup' WHERE "Id"='{relayed_session_id}'::uuid;''',
+            )
             run("docker", "kill", names["candidate_api_secondary"])
 
             legacy_payment_id = str(int(uid[:8], 16))

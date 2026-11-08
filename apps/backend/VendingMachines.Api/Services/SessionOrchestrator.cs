@@ -1725,9 +1725,13 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         else
         {
             state.MdbMenuPhase = null;
-            state.MdbMenuConnectionId = null;
+            // Keep a fresh connection-scoped marker even when this status
+            // invalidates a menu sequence. The API uses it to distinguish an
+            // owner that understands MDB-confirmed closure from an older
+            // binary that would relay FECHAR_SESSAO without checking status.
+            state.MdbMenuConnectionId = message.ConnectionId;
             state.MdbMenuSessionId = null;
-            state.MdbMenuUpdatedAt = null;
+            state.MdbMenuUpdatedAt = message.ReceivedAt;
         }
         state.MdbStatus = normalizedStatus;
         state.MdbStatusRaw = message.DataJson;

@@ -339,8 +339,13 @@ public sealed class TelemetryController : BaseApiController
         {
             var ownerState = await _db.MachineConnectionStates.AsNoTracking()
                 .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, cancellationToken);
+            var closeGuardFreshnessSeconds = Math.Clamp(
+                _mdbOptions.StaleAfterSeconds, 10, 3600);
             if (ownerState?.IsOnline == true &&
-                ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+                (ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion ||
+                 ownerState.MdbMenuConnectionId != ownerState.ConnectionId ||
+                 ownerState.MdbMenuUpdatedAt == null ||
+                 ownerState.MdbMenuUpdatedAt < DateTime.UtcNow.AddSeconds(-closeGuardFreshnessSeconds)))
                 return StatusCode(StatusCodes.Status503ServiceUnavailable, new {
                     code = "machine_owner_unknown",
                     message = "O encerramento foi pausado porque a instância proprietária da máquina ainda não confirma o estado MDB antes de fechar a sessão. Aguarde a reconexão compatível." });
