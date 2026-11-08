@@ -34,7 +34,11 @@ public sealed record DeviceStatusResult(
 
 public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryConnectionOperations
 {
-    public const int CurrentCommandRoutingVersion = 1;
+    public const int MinimumSupportedCommandRoutingVersion = 1;
+    public const int CurrentCommandRoutingVersion = 2;
+
+    public static bool SupportsCommandRoutingVersion(int? version) =>
+        version is >= MinimumSupportedCommandRoutingVersion and <= CurrentCommandRoutingVersion;
     private const int WebSocketCloseTimeoutSeconds = 2;
     private static readonly TimeSpan CommandQueueWaitTimeout = TimeSpan.FromSeconds(5);
 
@@ -737,7 +741,7 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
             return new DeviceCommandResult(false, 0, 0, "machine_offline");
         if (string.IsNullOrWhiteSpace(route.OwnerNodeId))
             return new DeviceCommandResult(false, 0, 0, "machine_owner_unknown");
-        if (route.CommandRoutingVersion != CurrentCommandRoutingVersion)
+        if (!SupportsCommandRoutingVersion(route.CommandRoutingVersion))
             return new DeviceCommandResult(false, 0, 0, "machine_owner_unknown");
         if (route.OwnerNodeId == NodeId)
             return new DeviceCommandResult(false, 0, 0, "machine_offline");
@@ -858,7 +862,7 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
         if (!route.IsOnline)
             return new DeviceCommandResult(true, 0, 0);
         if (string.IsNullOrWhiteSpace(route.OwnerNodeId) || string.IsNullOrWhiteSpace(route.OwnerConnectionId) ||
-            route.CommandRoutingVersion != CurrentCommandRoutingVersion)
+            !SupportsCommandRoutingVersion(route.CommandRoutingVersion))
             return new DeviceCommandResult(false, 0, 0, "machine_owner_unknown");
         if (route.OwnerNodeId == NodeId)
             return new DeviceCommandResult(false, 0, 0, "owner_socket_unavailable");
@@ -965,7 +969,7 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
             return new DeviceStatusResult(false, 0, null, null, null, "machine_offline");
         if (string.IsNullOrWhiteSpace(route.OwnerNodeId))
             return new DeviceStatusResult(false, 0, null, null, null, "machine_owner_unknown");
-        if (route.CommandRoutingVersion != CurrentCommandRoutingVersion)
+        if (!SupportsCommandRoutingVersion(route.CommandRoutingVersion))
             return new DeviceStatusResult(false, 0, null, null, null, "machine_owner_unknown");
         if (route.OwnerNodeId == NodeId)
             return new DeviceStatusResult(false, 0, null, null, null, "machine_offline");
@@ -1114,7 +1118,8 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
                                    state.ConnectionId != null && state.ConnectionId != "" &&
                                    state.OwnerNodeId != null && state.OwnerNodeId != "" &&
                                    state.OwnerConnectionId == state.ConnectionId &&
-                                   state.CommandRoutingVersion == CurrentCommandRoutingVersion &&
+                                   state.CommandRoutingVersion >= MinimumSupportedCommandRoutingVersion &&
+                                   state.CommandRoutingVersion <= CurrentCommandRoutingVersion &&
                                    state.OwnerNodeId != NodeId,
                     cancellationToken);
         }

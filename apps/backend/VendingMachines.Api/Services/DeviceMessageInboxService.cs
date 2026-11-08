@@ -57,7 +57,7 @@ public sealed class DeviceMessageInboxService
                 if (owner is null || owner.CompanyId != message.CompanyId || !owner.IsOnline ||
                     owner.ConnectionId != message.ConnectionId || owner.OwnerConnectionId != message.ConnectionId ||
                     owner.OwnerNodeId != message.OwnerNodeId ||
-                    owner.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+                    !TelemetryConnectionManager.SupportsCommandRoutingVersion(owner.CommandRoutingVersion))
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     return false;

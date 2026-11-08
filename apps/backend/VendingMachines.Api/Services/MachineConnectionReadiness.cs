@@ -35,7 +35,8 @@ public static class MachineConnectionReadiness
                                   state.ConnectionId != null && state.ConnectionId != "" &&
                                   state.OwnerNodeId != null && state.OwnerNodeId != "" &&
                                   state.OwnerConnectionId == state.ConnectionId &&
-                                  state.CommandRoutingVersion == TelemetryConnectionManager.CurrentCommandRoutingVersion &&
+                                  state.CommandRoutingVersion >= TelemetryConnectionManager.MinimumSupportedCommandRoutingVersion &&
+                                  state.CommandRoutingVersion <= TelemetryConnectionManager.CurrentCommandRoutingVersion &&
                                   state.OwnerLeaseExpiresAt > utcNow &&
                                   db.Machines.Any(machine => machine.Id == state.MachineId &&
                                                              machine.CompanyId == state.CompanyId)));
@@ -52,7 +53,9 @@ public static class MachineConnectionReadiness
                             (state.ConnectionId == null || state.ConnectionId == "" ||
                              state.OwnerNodeId == null || state.OwnerNodeId == "" ||
                              state.OwnerConnectionId != state.ConnectionId ||
-                             state.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion ||
+                             state.CommandRoutingVersion == null ||
+                             state.CommandRoutingVersion < TelemetryConnectionManager.MinimumSupportedCommandRoutingVersion ||
+                             state.CommandRoutingVersion > TelemetryConnectionManager.CurrentCommandRoutingVersion ||
                              state.OwnerLeaseExpiresAt == null || state.OwnerLeaseExpiresAt <= utcNow ||
                              !db.Machines.Any(machine => machine.Id == state.MachineId &&
                                                          machine.CompanyId == state.CompanyId)));
