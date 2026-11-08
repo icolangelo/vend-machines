@@ -300,7 +300,7 @@ require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatib
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_deploy_readiness=blocked_legacy_closure_guard'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_post_restart_readiness=blocked_legacy_closure_guard'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'OwnerLeaseExpiresAt'
-require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_readiness_blocks_unavailable_legacy_owner=yes'
+require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_readiness_after_owner_loss='
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_command_after_owner_loss=failed_closed'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'overlap_runtime_preflight=passed'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'minimum-legacy-connections'

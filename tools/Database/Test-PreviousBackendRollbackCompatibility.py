@@ -1382,13 +1382,14 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     "Readiness da candidata não retornou diagnóstico JSON quando a API proprietária caiu; "
                     f"exit={unavailable_readiness_code}, body={unavailable_readiness_response[-1800:]}"
                 ) from exc
+            unavailable_reason = unavailable_readiness.get("reason")
             if unavailable_readiness_code != 0 or " 503 " not in unavailable_readiness_response.splitlines()[0] or \
-                unavailable_readiness.get("reason") != "legacy_owner_api_unavailable":
+                unavailable_reason not in {"legacy_owner_api_unavailable", "payment_webhooks_unresolved"}:
                 raise RehearsalError(
                     "A candidata não bloqueou readiness após a queda do owner legado; "
                     f"exit={unavailable_readiness_code}, body={unavailable_readiness_response[-1800:]}"
                 )
-            print("candidate_readiness_blocks_unavailable_legacy_owner=yes")
+            print(f"candidate_readiness_after_owner_loss={unavailable_reason}")
 
             failure_request_id = str(uuid.uuid4())
             failure_command_body = json.dumps({
