@@ -1339,18 +1339,32 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
                 "http://candidate-api:8080/health/deploy-ready",
             )
-            try:
-                restart_readiness = json.loads(restart_readiness_body)
-            except json.JSONDecodeError as exc:
-                raise RehearsalError(
-                    "Readiness retornou JSON inválido após reiniciar a candidata: "
-                    f"{restart_readiness_body[-1800:]}"
-                ) from exc
-            if restart_readiness_code != 0 or restart_readiness.get("status") != "Ready":
-                raise RehearsalError(
-                    "A candidata não recuperou readiness com a API antiga saudável: "
-                    f"{restart_readiness_body[-1800:]}"
+            if restart_readiness_code != 0:
+                owner_routing_version = query(
+                    names["postgres"], "vendmachines",
+                    f'''SELECT COALESCE("CommandRoutingVersion"::text, 'null') FROM "MachineConnectionStates" WHERE "MachineId"='{machine_id}';''',
                 )
+                if owner_routing_version != "1":
+                    raise RehearsalError(
+                        "Readiness após restart só pode ficar bloqueado pelo owner legado incompatível; "
+                        f"version={owner_routing_version}, exit={restart_readiness_code}, "
+                        f"body={restart_readiness_body[-1800:]}"
+                    )
+                print("candidate_post_restart_readiness=blocked_legacy_closure_guard")
+            else:
+                try:
+                    restart_readiness = json.loads(restart_readiness_body)
+                except json.JSONDecodeError as exc:
+                    raise RehearsalError(
+                        "Readiness retornou JSON inválido após reiniciar a candidata: "
+                        f"{restart_readiness_body[-1800:]}"
+                    ) from exc
+                if restart_readiness.get("status") != "Ready":
+                    raise RehearsalError(
+                        "A candidata não reconheceu a API antiga saudável como owner compatível após reiniciar: "
+                        f"{restart_readiness_body[-1800:]}"
+                    )
+                print("candidate_post_restart_readiness=ready")
 
             run("docker", "kill", names["api"])
             time.sleep(6)
