@@ -310,7 +310,7 @@ require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_re
 require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_blocks_when_no_legacy_machine_connection_is_observed'
 require_contains "$repo_root/tools/Deployment/test_validate_telemetry_overlap_readiness.py" 'test_does_not_follow_redirects'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'legacy_payment_webhook_routed_to_owner=yes'
-require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'legacy_payment_webhook_candidate_inbox=empty'
+require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'legacy_payment_webhook_owner_inbox=single_record'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/SessionOrchestrator.cs" 'deferred_legacy_overlap'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/SessionOrchestratorFlowTests.cs" 'LegacyApiOverlap_ProcessesCandidateOwnedDeferredOutboxWithoutCompetingWithLegacyWorker'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/SessionOrchestratorFlowTests.cs" 'LegacyApiOverlap_KeepsFailedCandidateOutboxInLegacyIgnoredStatusForRetry'

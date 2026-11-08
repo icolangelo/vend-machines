@@ -1107,32 +1107,29 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     "A candidata respondeu sem confirmar o encaminhamento ao owner legado; "
                     f"body={webhook_response[-1800:]}"
                 )
-            legacy_webhook_log_query = (
-                f"SELECT COUNT(*) FROM \"TransactionTelemetryLogs\" WHERE \"TransactionId\"='{legacy_transaction_id}'::uuid "
-                "AND \"Message\" LIKE 'Webhook recebido%';"
+            legacy_webhook_inbox_query = (
+                f"SELECT COUNT(*) FROM \"WebhookInboxMessages\" WHERE \"PaymentId\"='{legacy_payment_id}';"
             )
-            legacy_webhook_log_count = "0"
+            legacy_webhook_inbox_count = "0"
             for _ in range(10):
-                legacy_webhook_log_count = query(names["postgres"], "vendmachines", legacy_webhook_log_query)
-                if legacy_webhook_log_count != "0":
+                legacy_webhook_inbox_count = query(names["postgres"], "vendmachines", legacy_webhook_inbox_query)
+                if legacy_webhook_inbox_count != "0":
                     break
                 time.sleep(1)
-            if legacy_webhook_log_count == "0":
+            if legacy_webhook_inbox_count == "0":
                 _, previous_webhook_logs = attempt("docker", "logs", "--tail", "120", names["api"])
                 raise RehearsalError(
-                    "A API antiga aceitou o relay HTTP, mas não registrou o webhook recebido para a transação sintética. "
+                    "A API antiga respondeu ao relay, mas não persistiu o webhook na inbox do owner. "
                     f"Logs da API anterior: {previous_webhook_logs[-5000:]}"
                 )
-            candidate_inbox_count = query(
-                names["postgres"], "vendmachines",
-                f'''SELECT COUNT(*) FROM "WebhookInboxMessages" WHERE "PaymentId"='{legacy_payment_id}';''',
-            )
-            if candidate_inbox_count != "0":
+            candidate_inbox_count = query(names["postgres"], "vendmachines", legacy_webhook_inbox_query)
+            if candidate_inbox_count != "1":
                 raise RehearsalError(
-                    "A candidata persistiu também o webhook legado na inbox própria, permitindo processamento duplicado."
+                    "O webhook legado deve persistir exatamente uma vez na inbox compartilhada; "
+                    f"encontrados {candidate_inbox_count} registros."
                 )
             print("legacy_payment_webhook_routed_to_owner=yes")
-            print("legacy_payment_webhook_candidate_inbox=empty")
+            print("legacy_payment_webhook_owner_inbox=single_record")
 
             request_id = str(uuid.uuid4())
             command_body = json.dumps({
