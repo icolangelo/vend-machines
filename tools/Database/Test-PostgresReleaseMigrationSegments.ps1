@@ -131,7 +131,7 @@ VALUES
     }
 
     $latestMigration = Invoke-PostgresScalar 'SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 1;'
-    if ($latestMigration -ne "20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata") {
+    if ($latestMigration -ne "20261108113731_TrackMdbMenuSequence") {
         throw "A cadeia terminou em '$latestMigration', não na migration candidata esperada."
     }
     $leaseColumn = Invoke-PostgresScalar -Sql 'SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ''MachineConnectionStates'' AND column_name = ''OwnerLeaseExpiresAt'' AND is_nullable = ''YES'';'
