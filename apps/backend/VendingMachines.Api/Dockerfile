@@ -15,6 +15,9 @@ RUN dotnet publish "VendingMachines.Api.csproj" -c Release -o /app/publish /p:Us
 # Estágio final de execução (Runtime Stage)
 FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS final
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
 ARG APP_REVISION=unknown
 ENV APP_REVISION=${APP_REVISION}
 ENV VendingMachines__RejectDevelopmentEnvironment=true

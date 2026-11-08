@@ -37,19 +37,13 @@ public static class DbInitializer
         else if (seedDemoData)
         {
             // Em desenvolvimento, manter a inicialização conveniente.
-            context.Database.Migrate();
+            ApplyMigrations(context);
         }
         else
         {
-            // Em produção, não altere o schema durante o boot do servidor. Migrações
-            // devem ser revisadas e aplicadas antes do deploy, quando a versão antiga
-            // ainda está servindo as máquinas. A inicialização só verifica o estado.
-            var pendingMigrations = context.Database.GetPendingMigrations().ToList();
-            if (pendingMigrations.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"Há {pendingMigrations.Count} migração(ões) pendente(s). Revise e aplique o script de release antes de iniciar a API.");
-            }
+            // A API aplica o schema antes de iniciar o host. Em PostgreSQL, o lock
+            // consultivo serializa inicializações simultâneas em réplicas diferentes.
+            ApplyMigrations(context);
         }
 
         if (seedDemoData)
@@ -254,6 +248,48 @@ public static class DbInitializer
 
     public static bool CanSeedDemoData(Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade database, bool requested) =>
         requested && database.IsSqlite();
+
+    private static void ApplyMigrations(AppDbContext context)
+    {
+        if (!context.Database.IsNpgsql())
+        {
+            context.Database.Migrate();
+            return;
+        }
+
+        context.Database.OpenConnection();
+        var connection = context.Database.GetDbConnection();
+        var lockAcquired = false;
+        try
+        {
+            using (var acquireLock = connection.CreateCommand())
+            {
+                acquireLock.CommandText = "SELECT pg_advisory_lock(1447907665, 1)";
+                acquireLock.CommandTimeout = 0;
+                acquireLock.ExecuteScalar();
+                lockAcquired = true;
+            }
+
+            context.Database.Migrate();
+        }
+        finally
+        {
+            try
+            {
+                if (lockAcquired && connection.State == System.Data.ConnectionState.Open)
+                {
+                    using var releaseLock = connection.CreateCommand();
+                    releaseLock.CommandText = "SELECT pg_advisory_unlock(1447907665, 1)";
+                    releaseLock.CommandTimeout = 0;
+                    releaseLock.ExecuteScalar();
+                }
+            }
+            finally
+            {
+                context.Database.CloseConnection();
+            }
+        }
+    }
 
     private static void EnsureSqliteCompatibilitySchema(AppDbContext context)
     {

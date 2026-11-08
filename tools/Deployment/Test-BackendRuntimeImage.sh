@@ -4,6 +4,11 @@ set -euo pipefail
 image="${1:-vend-machines-backend:verify}"
 docker image inspect "$image" >/dev/null
 
+if ! docker run --rm --network none --entrypoint sh "$image" -c "ldconfig -p 2>/dev/null | grep -q 'libgssapi_krb5.so.2'"; then
+  echo "::error::A imagem backend não contém libgssapi_krb5.so.2 para o Npgsql."
+  exit 1
+fi
+
 environment_configs="$(docker run --rm --network none --entrypoint find "$image" /app -type f -name 'appsettings.*.json' -print)"
 if [[ -n "$environment_configs" ]]; then
   echo "::error::A imagem backend contém configuração específica de ambiente: $environment_configs"

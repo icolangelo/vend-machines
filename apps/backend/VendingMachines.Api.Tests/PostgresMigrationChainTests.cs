@@ -14,7 +14,7 @@ public sealed class PostgresMigrationChainTests
     private const string BootstrapMigration = "20260927163720_BootstrapPlatformAdmin";
 
     [Fact]
-    public async Task ProductionInitializerFailsClosedWithoutApplyingPendingMigrations()
+    public async Task ProductionInitializerAppliesPendingMigrations()
     {
         var configuredConnection = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(configuredConnection))
@@ -24,7 +24,7 @@ public sealed class PostgresMigrationChainTests
             return;
         }
 
-        var databaseName = $"vendmachines_no_startup_migration_{Guid.NewGuid():N}";
+        var databaseName = $"vendmachines_startup_migration_{Guid.NewGuid():N}";
         var adminConnection = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = "postgres" };
         var databaseConnection = new NpgsqlConnectionStringBuilder(configuredConnection) { Database = databaseName };
 
@@ -44,19 +44,28 @@ public sealed class PostgresMigrationChainTests
             await using var db = new AppDbContext(options);
             var migrations = db.Database.GetMigrations().ToArray();
             Assert.NotEmpty(migrations);
-            await db.GetService<IMigrator>().MigrateAsync(migrations[0]);
+            var bootstrapIndex = Array.IndexOf(migrations, BootstrapMigration);
+            Assert.True(bootstrapIndex > 0, "The reserved administrator bootstrap migration must follow the base schema.");
+            await db.GetService<IMigrator>().MigrateAsync(migrations[bootstrapIndex - 1]);
 
-            var pendingBeforeInitialization = (await db.Database.GetPendingMigrationsAsync()).ToArray();
-            Assert.NotEmpty(pendingBeforeInitialization);
+            await using (var seedConnection = new NpgsqlConnection(databaseConnection.ConnectionString))
+            {
+                await seedConnection.OpenAsync();
+                await using var seed = new NpgsqlCommand("""
+                    INSERT INTO "Users"
+                        ("Id", "Name", "Email", "NormalizedEmail", "PasswordHash", "Role", "CompanyId",
+                         "CreatedAt", "Cpf", "NormalizedCpf", "AcceptedPrivacyPolicy", "IsActive", "CredentialVersion")
+                    VALUES
+                        (@id, 'Synthetic startup migration owner', 'dev.ivan@gmail.com', 'dev.ivan@gmail.com',
+                         'synthetic-only', 'Admin', NULL, CURRENT_TIMESTAMP, '', '', FALSE, TRUE, 0)
+                    """, seedConnection);
+                seed.Parameters.AddWithValue("id", Guid.NewGuid());
+                await seed.ExecuteNonQueryAsync();
+            }
 
-            var exception = Assert.Throws<InvalidOperationException>(
-                () => DbInitializer.Initialize(db, seedDemoData: false));
+            DbInitializer.Initialize(db, seedDemoData: false);
 
-            Assert.Contains(
-                $"Há {pendingBeforeInitialization.Length} migração(ões) pendente(s)",
-                exception.Message,
-                StringComparison.Ordinal);
-            Assert.Equal(pendingBeforeInitialization, await db.Database.GetPendingMigrationsAsync());
+            Assert.Empty(await db.Database.GetPendingMigrationsAsync());
         }
         finally
         {

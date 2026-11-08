@@ -17,12 +17,6 @@ on:
         required: true
         default: "no"
         options: ["no", "yes"]
-      database_migrations_applied:
-        description: "As migrations pendentes foram aplicadas? Para BackfillLegacyDeliveredSales, confirme só após preflight em cópia e execução dentro dos limites aprovados de duração, I/O, WAL e espaço."
-        type: choice
-        required: true
-        default: "no"
-        options: ["no", "yes"]
       backup_verified:
         description: "Há backup recente e restauração conhecida para esta release?"
         type: choice
@@ -528,7 +522,6 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.confirm_production_deploy == 'yes' &&
-      inputs.database_migrations_applied == 'yes' &&
       inputs.backup_verified == 'yes' &&
       inputs.production_secrets_rotated == 'yes' &&
       inputs.telemetry_reconnect_tested == 'yes' &&

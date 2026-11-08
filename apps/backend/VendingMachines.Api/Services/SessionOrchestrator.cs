@@ -767,12 +767,34 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             }
             else if (session.LastEventAt <= now.AddSeconds(-30))
             {
-                session.ClosedAt = now;
-                session.CloseReason ??= "missing_end_session";
-                if (session.State is MachineSessionStates.ClosingWithoutSelection or
-                    MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.DeniedAwaitingClosure)
-                    session.State = MachineSessionStates.ClosureIncomplete;
-                await AddEventAsync(session, "session.closure_incomplete", session.CloseReason, null, null, cancellationToken);
+                await using var closureTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+                var closeReason = session.CloseReason ?? "missing_end_session";
+                var nextState = session.State is MachineSessionStates.ClosingWithoutSelection or
+                    MachineSessionStates.DeviceClosingBeforeSelection or MachineSessionStates.DeniedAwaitingClosure
+                    ? MachineSessionStates.ClosureIncomplete
+                    : session.State;
+                var closed = await _db.MachineSessions
+                    .Where(item => item.Id == session.Id && item.CompanyId == session.CompanyId &&
+                                   item.ClosedAt == null && item.State == session.State &&
+                                   item.LastEventAt <= now.AddSeconds(-30))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.ClosedAt, now)
+                        .SetProperty(item => item.CloseReason, closeReason)
+                        .SetProperty(item => item.State, nextState)
+                        .SetProperty(item => item.LastEventAt, now), cancellationToken);
+                if (closed == 1)
+                {
+                    await _db.Entry(session).ReloadAsync(cancellationToken);
+                    await AddEventAsync(session, "session.closure_incomplete", session.CloseReason, null, null, cancellationToken);
+                    await _db.SaveChangesAsync(cancellationToken);
+                    await closureTransaction.CommitAsync(cancellationToken);
+                    await BroadcastSessionAsync(session);
+                }
+                else
+                {
+                    await closureTransaction.RollbackAsync(cancellationToken);
+                    await _db.Entry(session).ReloadAsync(cancellationToken);
+                }
             }
         }
 

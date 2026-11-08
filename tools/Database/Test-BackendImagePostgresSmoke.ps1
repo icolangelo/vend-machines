@@ -435,22 +435,23 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
         Start-Sleep -Milliseconds 250
     }
     if ($pendingApiStatus -ne "exited") {
-        throw "A imagem backend não encerrou ao encontrar migrations pendentes no banco descartável."
+        throw "A imagem backend não encerrou quando a migration de bootstrap encontrou um banco sem a conta reservada sintética."
     }
     $pendingApiExitCode = (Invoke-DockerChecked @(
         "inspect", "--format", "{{.State.ExitCode}}", $pendingApiContainer
     ) | Out-String).Trim()
     $pendingApiLogs = (& docker logs $pendingApiContainer 2>&1 | Out-String)
     if ([int]$pendingApiExitCode -eq 0 -or
-        $pendingApiLogs -notmatch 'Há \d+ migração\(ões\) pendente\(s\)\. Revise e aplique o script de release antes de iniciar a API\.') {
-        throw "A imagem Production não recusou o banco sem migrations de forma fail-closed."
+        $pendingApiLogs -notmatch 'PlatformAdmin bootstrap requires exactly one active reserved account; found 0') {
+        throw "A imagem Production não aplicou as migrations antes de falhar no pré-requisito da conta reservada de bootstrap."
     }
     $pendingHistoryState = (Invoke-DockerChecked @(
         "exec", $postgresContainer, "psql", "-X", "-tA", "-U", "postgres", "-d", "vendmachines_pending",
-        "-c", 'SELECT to_regclass(''"__EFMigrationsHistory"'') IS NULL;'
+        "-c", 'SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 1;'
     ) | Out-String).Trim()
-    if ($pendingHistoryState -ne "t") {
-        throw "A imagem backend alterou o histórico de migrations do banco pendente durante o startup."
+    if ([string]::IsNullOrWhiteSpace($pendingHistoryState) -or
+        $pendingHistoryState -eq "20260927163720_BootstrapPlatformAdmin") {
+        throw "A imagem backend não aplicou migrations automaticamente antes de validar a conta reservada de bootstrap."
     }
 
     $simulatorOutputDirectory = Split-Path -Parent $simulatorAssembly
@@ -558,7 +559,7 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
         throw "Os logs locais do simulador não confirmaram dois handshakes MDB concluídos."
     }
 
-    Write-Output "Imagem Production saudável com PostgreSQL 17/TLS e $migrationCount migrations; readiness bloqueou presença legada sem owner, liberou após limpeza sintética, migrations pendentes foram recusadas sem escrita e um simulador MDB reconectou após a substituição do container. Nenhuma porta foi publicada e a rede Docker era interna."
+    Write-Output "Imagem Production saudável com PostgreSQL 17/TLS e $migrationCount migrations; readiness bloqueou presença legada sem owner, liberou após limpeza sintética, o startup aplicou migrations até validar o pré-requisito de bootstrap e um simulador MDB reconectou após a substituição do container. Nenhuma porta foi publicada e a rede Docker era interna."
 }
 finally {
     if ($simulatorCreated) {

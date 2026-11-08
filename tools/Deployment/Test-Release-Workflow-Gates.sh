@@ -364,11 +364,12 @@ if grep -Fq 'SET "NewSessionsPaused" = TRUE' "$repo_root/tools/Database/Test-Bac
 fi
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'CREATE DATABASE vendmachines_pending'
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'pendingApiStatus -ne "exited"'
-require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'pendingHistoryState -ne "t"'
+require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" '20260927163720_BootstrapPlatformAdmin'
 require_contains "$repo_root/tools/Database/Test-BackendImagePostgresSmoke.ps1" 'Nenhuma porta foi publicada e a rede Docker era interna.'
 require_contains "$verify_workflow" 'tools/Deployment/Test-BackendRuntimeImage.sh vend-machines-backend:verify'
 require_contains "$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh" '--network none'
 require_contains "$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh" 'appsettings.*.json'
+require_contains "$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh" 'libgssapi_krb5.so.2'
 require_contains "$repo_root/tools/Deployment/Test-BackendRuntimeImage.sh" 'A configuração Encryption:Key é obrigatória fora do ambiente de desenvolvimento.'
 require_contains "$temporary_dir/build-job" 'name: Audit frontend dependencies'
 require_contains "$temporary_dir/build-job" 'name: Check frontend types'
@@ -447,7 +448,6 @@ fi
 for gate in \
   "github.event_name == 'workflow_dispatch'" \
   "inputs.confirm_production_deploy == 'yes'" \
-  "inputs.database_migrations_applied == 'yes'" \
   "inputs.backup_verified == 'yes'" \
   "inputs.production_secrets_rotated == 'yes'" \
   "inputs.telemetry_reconnect_tested == 'yes'" \

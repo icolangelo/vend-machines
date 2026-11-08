@@ -452,7 +452,9 @@ export default function Telemetry() {
                                         <StatusItem
                                             icon={Activity}
                                             label="Status MDB"
-                                            value={getMdbStatusDetail(selected.mdbStatus, selected.mdbStatusFresh && selected.mdbMenuSelectionActive).label}
+                                            value={!selected.mdbStatusFresh && selected.mdbStatus
+                                                ? `${getMdbStatusDetail(selected.mdbStatus).label} (desatualizado)`
+                                                : getMdbStatusDetail(selected.mdbStatus, selected.mdbMenuSelectionActive).label}
                                             alert={!selected.mdbStatusFresh}
                                         />
                                         <StatusItem icon={Activity} label="Sessão MDB" value={selected.activeSession ? stateLabels[selected.activeSession.state] ?? selected.activeSession.state : "Sem sessão"} />
@@ -460,7 +462,9 @@ export default function Telemetry() {
                                     </CardContent>
                                     <CardContent className="pt-0">
                                         <p className="text-xs text-muted-foreground">
-                                            {getMdbStatusDetail(selected.mdbStatus, selected.mdbStatusFresh && selected.mdbMenuSelectionActive).description}
+                                            {!selected.mdbStatusFresh && selected.mdbStatus
+                                                ? `Último status conhecido (desatualizado): ${getMdbStatusDetail(selected.mdbStatus).description}`
+                                                : getMdbStatusDetail(selected.mdbStatus, selected.mdbMenuSelectionActive).description}
                                             {" "}Última atualização: {formatDate(selected.mdbStatusUpdatedAt)}.
                                         </p>
                                         {selected.online && !selected.commandRouteAvailable && (
