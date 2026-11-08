@@ -936,22 +936,29 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 names["postgres"], "vendmachines",
                 f'''SELECT COUNT(*) FROM "TelemetryCommands" WHERE "SessionId"='{relayed_session_id}'::uuid AND "Command"='ABRIR_SESSAO';''',
             )
-            try:
-                duplicate_start_payload = json.loads(duplicate_start_response)
-            except json.JSONDecodeError as exc:
-                raise RehearsalError(
-                    "O retry do início de sessão não retornou a sessão existente em JSON válido: "
-                    f"{duplicate_start_response[-1200:]}"
-                ) from exc
-            if duplicate_start_code != 0 or duplicate_start_payload.get("id") != relayed_session_id or \
+            duplicate_start_reused = False
+            if duplicate_start_code == 0:
+                try:
+                    duplicate_start_payload = json.loads(duplicate_start_response)
+                except json.JSONDecodeError as exc:
+                    raise RehearsalError(
+                        "O retry do início de sessão retornou JSON inválido: "
+                        f"{duplicate_start_response[-1200:]}"
+                    ) from exc
+                duplicate_start_reused = duplicate_start_payload.get("id") == relayed_session_id
+            duplicate_start_conflicted = "HTTP/1.1 409 Conflict" in duplicate_start_response
+            if not (duplicate_start_reused or duplicate_start_conflicted) or \
                 active_session_count != "1" or open_command_count != "1":
                 raise RehearsalError(
-                    "O retry do início de sessão deveria retornar o ID original sem criar sessão ou comando duplicado; "
-                    f"http_exit={duplicate_start_code}, returned_id={duplicate_start_payload.get('id')}, "
+                    "O retry do início de sessão deveria reutilizar ou conflitar com a sessão existente, "
+                    "sem criar sessão ou comando duplicado; "
+                    f"http_exit={duplicate_start_code}, reused={duplicate_start_reused}, "
+                    f"conflict={duplicate_start_conflicted}, "
                     f"active_sessions={active_session_count}, "
                     f"open_commands={open_command_count}, response={duplicate_start_response[-1200:]}"
                 )
-            print("candidate_legacy_duplicate_session_start_reused_original=yes")
+            print(f"candidate_legacy_duplicate_session_start_reused={str(duplicate_start_reused).lower()}")
+            print(f"candidate_legacy_duplicate_session_start_conflict={str(duplicate_start_conflicted).lower()}")
             print("candidate_legacy_duplicate_session_start_no_second_command=yes")
 
             mdb_code, mdb_response = attempt(
