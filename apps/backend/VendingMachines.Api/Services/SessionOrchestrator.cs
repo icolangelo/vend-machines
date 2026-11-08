@@ -1682,6 +1682,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         var completedMenu = sequenceFresh && (state.MdbMenuPhase == "inactive" || state.MdbMenuPhase == "ready") && normalizedStatus == MdbStatuses.Enabled;
         var completedSessionId = completedMenu ? state.MdbMenuSessionId : null;
         MachineSession? closedSession = null;
+        MachineSession? recoveredIdleSession = null;
         if (fresh && normalizedStatus == MdbStatuses.Enabled)
         {
             var pendingClosure = await _db.MachineSessions.Where(item => item.MachineId == message.MachineId &&
@@ -1752,6 +1753,17 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             state.MdbMenuSessionId = null;
             state.MdbMenuUpdatedAt = null;
         }
+        if (fresh && normalizedStatus == MdbStatuses.Idle)
+        {
+            recoveredIdleSession = await RecoverOpenSessionFromIdleAsync(message, state, cancellationToken);
+            if (recoveredIdleSession != null)
+            {
+                state.MdbMenuPhase = "idle";
+                state.MdbMenuConnectionId = message.ConnectionId;
+                state.MdbMenuSessionId = recoveredIdleSession.Id;
+                state.MdbMenuUpdatedAt = message.ReceivedAt;
+            }
+        }
         state.MdbStatus = normalizedStatus;
         state.MdbStatusRaw = message.DataJson;
         state.MdbStatusUpdatedAt = message.ReceivedAt;
@@ -1770,6 +1782,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         await transaction.CommitAsync(cancellationToken);
         await transaction.DisposeAsync();
         if (closedSession != null) await BroadcastSessionAsync(closedSession);
+        if (recoveredIdleSession != null) await BroadcastSessionAsync(recoveredIdleSession);
         await _panelHub.BroadcastCompanyAsync(message.CompanyId, new
         {
             type = "mdb.status.updated", machineId = message.MachineId, mdbStatus = normalizedStatus,
@@ -1778,6 +1791,94 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         });
         if (fresh && normalizedStatus == MdbStatuses.Enabled)
             await TryAutoOpenSessionAsync(message, state, completedMenu, completedSessionId, cancellationToken);
+    }
+
+    private async Task<MachineSession?> RecoverOpenSessionFromIdleAsync(
+        InboundDeviceMessage message,
+        MachineConnectionState connectionState,
+        CancellationToken cancellationToken)
+    {
+        if (!connectionState.MonitoringEnabled || !connectionState.IsOnline ||
+            connectionState.ConnectionId != message.ConnectionId)
+            return null;
+
+        var machine = await _db.Machines.FirstOrDefaultAsync(
+            item => item.Id == message.MachineId && item.CompanyId == message.CompanyId,
+            cancellationToken);
+        if (machine?.AutoOpenSessionEnabled != true)
+            return null;
+
+        var session = await ActiveSessions()
+            .Where(item => item.MachineId == message.MachineId && item.CompanyId == message.CompanyId)
+            .OrderByDescending(item => item.StartedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (session != null)
+        {
+            if (session.ItemNumber != null || session.TransactionId != null ||
+                session.State is not (MachineSessionStates.Opening or MachineSessionStates.ClosingWithoutSelection))
+                return null;
+
+            // Do not undo an explicit operator cancellation. A selection timeout means
+            // the physical menu may still be open and can be recovered from idle_state.
+            if (session.State == MachineSessionStates.ClosingWithoutSelection &&
+                session.CloseReason != "selection_timeout")
+                return null;
+        }
+        else
+        {
+            session = await _db.MachineSessions
+                .Where(item => item.MachineId == message.MachineId && item.CompanyId == message.CompanyId &&
+                    item.State == MachineSessionStates.ClosureIncomplete && item.ClosedAt != null &&
+                    item.ItemNumber == null && item.TransactionId == null)
+                .OrderByDescending(item => item.ClosedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+        }
+
+        var now = DateTime.UtcNow;
+        if (session == null)
+        {
+            var locationNameSnapshot = string.IsNullOrWhiteSpace(machine.ClientName)
+                ? machine.Location
+                : machine.ClientName;
+            if (machine.LocationId is Guid assignedLocationId)
+            {
+                locationNameSnapshot = await _db.Locations.AsNoTracking()
+                    .Where(location => location.Id == assignedLocationId && location.CompanyId == message.CompanyId)
+                    .Select(location => location.Name)
+                    .FirstOrDefaultAsync(cancellationToken) ?? locationNameSnapshot;
+            }
+
+            session = new MachineSession
+            {
+                MachineId = message.MachineId,
+                CompanyId = message.CompanyId,
+                LocationIdSnapshot = machine.LocationId,
+                LocationNameSnapshot = locationNameSnapshot,
+                Source = "mdb_recovery",
+                State = MachineSessionStates.AwaitingSelection,
+                SelectionDeadlineAt = now.AddMinutes(2),
+                LastEventAt = now
+            };
+            _db.MachineSessions.Add(session);
+            await AddEventAsync(session, "session.recovered_from_mdb_idle",
+                "Após a reconexão, idle_state confirmou uma sessão MDB aberta; aguardando seleção.",
+                null, message.DataJson, cancellationToken);
+            return session;
+        }
+
+        var priorState = session.State;
+        var priorCloseReason = session.CloseReason;
+        session.State = MachineSessionStates.AwaitingSelection;
+        session.CloseReason = null;
+        session.ClosedAt = null;
+        session.SelectionDeadlineAt = now.AddMinutes(2);
+        session.LastEventAt = now;
+        await AddEventAsync(session, "session.recovered_from_mdb_idle",
+            $"Após a reconexão, idle_state confirmou a sessão MDB aberta; sessão recuperada de {priorState}" +
+            (string.IsNullOrWhiteSpace(priorCloseReason) ? "." : $" ({priorCloseReason})."),
+            null, message.DataJson, cancellationToken);
+        return session;
     }
 
     private async Task TryAutoOpenSessionAsync(
