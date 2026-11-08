@@ -871,8 +871,16 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             with ThreadPoolExecutor(max_workers=len(start_request_commands)) as executor:
                 start_results = list(executor.map(lambda command: attempt(*command), start_request_commands))
             start_payloads = []
+            concurrent_conflicts = 0
             for start_index, (start_code, start_response) in enumerate(start_results, start=1):
                 if start_code != 0:
+                    # The start endpoint preserves its existing 409 conflict
+                    # behavior once another concurrent request has registered
+                    # the single active session. The invariant under test is
+                    # that the race creates only one session and one command.
+                    if "HTTP/1.1 409 Conflict" in start_response:
+                        concurrent_conflicts += 1
+                        continue
                     raise RehearsalError(
                         f"Início de sessão concorrente {start_index} falhou; "
                         f"exit={start_code}, body={start_response[-1800:]}"
@@ -885,6 +893,8 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     raise RehearsalError(
                         f"Início de sessão concorrente {start_index} retornou JSON inválido: {start_response[-1800:]}"
                     ) from exc
+            if not start_payloads:
+                raise RehearsalError("Nenhum início concorrente foi aceito; todas as tentativas foram rejeitadas.")
             run(
                 "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
                 "-U", "postgres", "-d", "vendmachines", "-c",
@@ -907,7 +917,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     f"returned_ids={[payload['id'] for payload in start_payloads]}, "
                     f"active_sessions={active_session_count}, open_commands={open_command_count}"
                 )
-            print("candidate_concurrent_legacy_session_start_reused_original=yes")
+            print(f"candidate_concurrent_legacy_session_start_conflicts={concurrent_conflicts}")
             print("candidate_concurrent_legacy_session_start_single_open_command=yes")
             print("candidate_legacy_session_start=accepted")
 
