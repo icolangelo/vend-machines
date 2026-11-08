@@ -121,6 +121,7 @@ export interface TelemetryConnection {
     mdbStatus?: string | null;
     mdbStatusUpdatedAt?: string | null;
     mdbStatusFresh: boolean;
+    mdbMenuSelectionActive?: boolean;
     autoOpenLastAttemptAt?: string | null;
     autoOpenLastError?: string | null;
     activeSession?: TelemetrySessionSummary | null;

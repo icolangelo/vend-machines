@@ -17,6 +17,311 @@ namespace VendingMachines.Api.Tests;
 
 public sealed class SessionOrchestratorFlowTests
 {
+    [Theory]
+    [InlineData("idle_state", true, true)]
+    [InlineData("enabled_state", true, false)]
+    [InlineData("idle_state", false, false)]
+    public async Task StartRecoversOnlyFromFreshCorrelatedIdleStatus(string status, bool success, bool recovered)
+    {
+        var connections = new StartConnections { Status = status, StatusSuccess = success };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.Completed, addMockIntegration: true, connections: connections);
+        var previous = await scenario.Db.MachineSessions.SingleAsync();
+        previous.ClosedAt = DateTime.UtcNow;
+        await scenario.Db.SaveChangesAsync();
+
+        var session = await scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None);
+
+        Assert.Equal(recovered ? MachineSessionStates.AwaitingSelection : MachineSessionStates.Opening, session.State);
+        Assert.Equal(recovered, session.SelectionDeadlineAt.HasValue);
+        Assert.Equal(recovered ? 1 : 0, await scenario.Db.TelemetryEvents.CountAsync(x => x.EventType == "session.open_already"));
+        var command = await scenario.Db.TelemetryCommands.SingleAsync(x => x.Command == "ABRIR_SESSAO");
+        Assert.Equal("acknowledged", command.Status);
+        Assert.Equal(1, connections.OpenCommands);
+        if (recovered)
+        {
+            await scenario.SendRawAsync(new { command = "vend", type = "request", itemPrice = 200, itemNumber = 2 });
+            var after = await scenario.Db.MachineSessions.AsNoTracking().SingleAsync(x => x.Id == session.Id);
+            Assert.Equal(MachineSessionStates.PaymentPending, after.State);
+            Assert.Single(await scenario.Db.PaymentTransactions.ToListAsync());
+            await scenario.SendRawAsync(new { command = "vend", type = "request", itemPrice = 200, itemNumber = 2 });
+            Assert.Single(await scenario.Db.PaymentTransactions.ToListAsync());
+            await scenario.SendAsync("pool", "begin_session", false);
+            after = await scenario.Db.MachineSessions.AsNoTracking().SingleAsync(x => x.Id == session.Id);
+            Assert.Equal(MachineSessionStates.PaymentPending, after.State);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StartDoesNotRecoverFromStaleOrUncorrelatedStatus(bool stale)
+    {
+        var connections = new StartConnections { Status = "idle_state", Stale = stale, Uncorrelated = !stale };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.Completed, connections: connections);
+        (await scenario.Db.MachineSessions.SingleAsync()).ClosedAt = DateTime.UtcNow;
+        await scenario.Db.SaveChangesAsync();
+        var session = await scenario.Orchestrator.StartSessionAsync(scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None);
+        Assert.Equal(MachineSessionStates.Opening, session.State);
+        Assert.Empty(await scenario.Db.TelemetryEvents.Where(x => x.EventType == "session.open_already").ToListAsync());
+    }
+
+    [Fact]
+    public async Task StartDoesNotRecoverOrSendCommandWhenSessionAlreadyExists()
+    {
+        var connections = new StartConnections();
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection, connections: connections);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None));
+        Assert.Equal("session_already_active", error.Message);
+        Assert.Equal(0, connections.OpenCommands);
+    }
+
+    [Fact]
+    public async Task BeginSessionBeforeStatusDoesNotDuplicateRecoveryOrResetDeadline()
+    {
+        var connections = new StartConnections { Status = "idle_state" };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.Completed, connections: connections);
+        (await scenario.Db.MachineSessions.SingleAsync()).ClosedAt = DateTime.UtcNow;
+        await scenario.Db.SaveChangesAsync();
+        connections.BeforeStatus = () => scenario.SendAsync("pool", "begin_session", false);
+        var session = await scenario.Orchestrator.StartSessionAsync(scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None);
+        Assert.Equal(MachineSessionStates.AwaitingSelection, session.State);
+        Assert.NotNull(session.SelectionDeadlineAt);
+        Assert.Empty(await scenario.Db.TelemetryEvents.Where(x => x.EventType == "session.open_already").ToListAsync());
+    }
+
+    [Fact]
+    public async Task SelectionDuringOpeningCanBeRetriedAfterBeginSession()
+    {
+        var connections = new StartConnections();
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(
+            MachineSessionStates.Opening, addMockIntegration: true, connections: connections);
+        var selection = new { command = "vend", type = "request", itemPrice = 200, itemNumber = 2 };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.SendRawAsync(selection));
+        Assert.Equal("session_opening_in_progress", error.Message);
+        scenario.Db.ChangeTracker.Clear(); // The inbox retries in a fresh scope.
+        await scenario.SendAsync("pool", "begin_session", false);
+        await scenario.SendRawAsync(selection);
+        Assert.Equal(MachineSessionStates.PaymentPending, (await scenario.ReloadSessionAsync()).State);
+        Assert.Single(await scenario.Db.PaymentTransactions.ToListAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MenuClosureEndsUnselectedSessionAndAllowsReopening(bool automatic)
+    {
+        var connections = new StartConnections { Status = "enabled_state" };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection, connections: connections);
+        var machine = await scenario.Db.Machines.SingleAsync();
+        machine.AutoOpenSessionEnabled = automatic;
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState {
+            MachineId = scenario.MachineId, CompanyId = scenario.CompanyId, ConnectionId = "connection-test",
+            MonitoringEnabled = true, IsOnline = true, AutoOpenLastAttemptAt = DateTime.UtcNow
+        });
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        var previous = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.ClosedByDeviceBeforeSelection, previous.State);
+        Assert.Equal("menu_closed_without_selection", previous.CloseReason);
+        Assert.Equal(1, await scenario.EventCountAsync("session.menu_closed"));
+        if (!automatic)
+            await scenario.Orchestrator.StartSessionAsync(scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None);
+        Assert.Equal(1, connections.OpenCommands);
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Equal(1, connections.OpenCommands);
+        Assert.Single(await scenario.Db.MachineSessions.Where(x => x.ClosedAt == null).ToListAsync());
+    }
+
+    [Theory]
+    [InlineData("inactive_state", "enabled_state")]
+    [InlineData("idle_state", "enabled_state")]
+    [InlineData("idle_state", "vend_state")]
+    public async Task IncompleteMenuSequenceDoesNotCloseSession(string first, string second)
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
+        await scenario.SendRawAsync(new { command = "status", status = first });
+        await scenario.SendRawAsync(new { command = "status", status = second });
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+        Assert.Equal(0, await scenario.EventCountAsync("session.menu_closed"));
+    }
+
+    [Theory]
+    [InlineData(MachineSessionStates.PaymentPending)]
+    [InlineData(MachineSessionStates.AwaitingDeliveryResult)]
+    public async Task MenuSequenceDoesNotCloseSessionWithPayment(string state)
+    {
+        await using var scenario = await TestScenario.CreatePaidAsync(state);
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        var session = await scenario.ReloadSessionAsync();
+        Assert.Null(session.ClosedAt);
+        Assert.Equal(state, session.State);
+    }
+
+    [Fact]
+    public async Task MenuSequenceDoesNotCloseSessionWithSelectedItem()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
+        (await scenario.Db.MachineSessions.SingleAsync()).ItemNumber = 3;
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+    }
+
+    [Fact]
+    public async Task MenuSequenceDoesNotSurviveAConnectionChange()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        var state = await scenario.Db.MachineConnectionStates.SingleAsync();
+        state.ConnectionId = "new-connection";
+        await scenario.Db.SaveChangesAsync();
+        await scenario.Orchestrator.HandleDeviceMessageAsync(new InboundDeviceMessage(
+            scenario.MachineId, scenario.CompanyId, "serial", "new-connection", 100,
+            "{\"command\":\"status\",\"status\":\"enabled_state\"}", DateTime.UtcNow.AddSeconds(1)), CancellationToken.None);
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+    }
+
+    [Fact]
+    public async Task ManualStartIsBlockedDuringRecognizedMenuEvenWithoutMdbEnforcement()
+    {
+        var connections = new StartConnections();
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.Completed, connections: connections);
+        (await scenario.Db.MachineSessions.SingleAsync()).ClosedAt = DateTime.UtcNow;
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState { MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId, ConnectionId = "connection-test", MonitoringEnabled = true });
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.StartSessionAsync(
+            scenario.MachineId, scenario.CompanyId, null, "panel", CancellationToken.None));
+        Assert.Equal("mdb_menu_open", error.Message);
+        Assert.Equal(0, connections.OpenCommands);
+    }
+
+    [Fact]
+    public async Task ExpiredMenuSequenceCannotCloseSession()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        var connection = await scenario.Db.MachineConnectionStates.SingleAsync();
+        connection.MdbMenuUpdatedAt = DateTime.UtcNow.AddMinutes(-5);
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+    }
+
+    [Fact]
+    public async Task OlderStatusCannotAdvanceOrRewindMenuSequence()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection);
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.Orchestrator.HandleDeviceMessageAsync(new InboundDeviceMessage(
+            scenario.MachineId, scenario.CompanyId, "serial", "connection-test", 99,
+            "{\"command\":\"status\",\"status\":\"enabled_state\"}", DateTime.UtcNow.AddMinutes(-1)), CancellationToken.None);
+        Assert.Null((await scenario.ReloadSessionAsync()).ClosedAt);
+        Assert.Equal("inactive", (await scenario.Db.MachineConnectionStates.SingleAsync()).MdbMenuPhase);
+    }
+
+    [Fact]
+    public async Task NormalDeviceEndBeforeEnabledStillReopensAutomatically()
+    {
+        var connections = new StartConnections { Status = "enabled_state" };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection, connections: connections);
+        (await scenario.Db.Machines.SingleAsync()).AutoOpenSessionEnabled = true;
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState { MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId, ConnectionId = "connection-test", MonitoringEnabled = true,
+            AutoOpenLastAttemptAt = DateTime.UtcNow });
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.SendAsync("pool", "end_session", false);
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Equal(1, connections.OpenCommands);
+        Assert.Equal(0, await scenario.EventCountAsync("session.menu_closed"));
+    }
+
+    [Fact]
+    public async Task CompletedMenuCanResumeAutomaticOpenAfterInterruptedAttempt()
+    {
+        var connections = new StartConnections { Status = "enabled_state" };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection, connections: connections);
+        (await scenario.Db.Machines.SingleAsync()).AutoOpenSessionEnabled = true;
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState { MachineId = scenario.MachineId,
+            CompanyId = scenario.CompanyId, ConnectionId = "connection-test", MonitoringEnabled = false,
+            AutoOpenLastAttemptAt = DateTime.UtcNow });
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "idle_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "inactive_state" });
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Equal(0, connections.OpenCommands);
+        scenario.Db.ChangeTracker.Clear();
+        var persisted = await scenario.Db.MachineConnectionStates.SingleAsync();
+        Assert.Equal("ready", persisted.MdbMenuPhase);
+        persisted.MonitoringEnabled = true;
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        Assert.Equal(1, connections.OpenCommands);
+    }
+
+    [Theory]
+    [InlineData("idle_state", "ClosingWithoutSelection", true)]
+    [InlineData("enabled_state", "ClosedByDeviceBeforeSelection", false)]
+    [InlineData("vend_state", "AwaitingSelection", false)]
+    [InlineData("unavailable", "AwaitingSelection", false)]
+    public async Task CancellationClosesOnlyAfterConfirmingMdbState(string status, string expectedState, bool sendsClose)
+    {
+        var connections = new StartConnections { Status = status, StatusSuccess = status != "unavailable" };
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.AwaitingSelection, connections: connections);
+        if (status == "unavailable")
+            connections.Uncorrelated = true;
+        if (status is "idle_state" or "enabled_state")
+        {
+            var closed = await scenario.Orchestrator.CancelSessionAsync(scenario.SessionId, scenario.CompanyId,
+                Guid.NewGuid(), "user_cancelled", CancellationToken.None);
+            Assert.Equal(expectedState, closed.State);
+            Assert.Equal(sendsClose ? 1 : 0, await scenario.Db.TelemetryCommands.CountAsync(command => command.Command == "FECHAR_SESSAO"));
+            if (!sendsClose)
+                Assert.Equal(1, await scenario.EventCountAsync("session.mdb_reset_suspected"));
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => scenario.Orchestrator.CancelSessionAsync(
+                scenario.SessionId, scenario.CompanyId, Guid.NewGuid(), "user_cancelled", CancellationToken.None));
+            Assert.Equal("mdb_status_unavailable", error.Message);
+            Assert.Equal(0, await scenario.Db.TelemetryCommands.CountAsync(command => command.Command == "FECHAR_SESSAO"));
+        }
+    }
+
+    [Fact]
+    public async Task EnabledStatusRecoversClosureIncompleteSessionWithoutSale()
+    {
+        await using var scenario = await TestScenario.CreateWithoutTransactionAsync(MachineSessionStates.ClosureIncomplete);
+        var session = await scenario.Db.MachineSessions.SingleAsync();
+        session.ClosedAt = DateTime.UtcNow.AddSeconds(-40);
+        session.CloseReason = "ack_timeout";
+        await scenario.Db.SaveChangesAsync();
+        await scenario.SendRawAsync(new { command = "status", status = "enabled_state" });
+        var recovered = await scenario.ReloadSessionAsync();
+        Assert.Equal(MachineSessionStates.ClosedByDeviceBeforeSelection, recovered.State);
+        Assert.Equal("possible_mdb_reset", recovered.CloseReason);
+        Assert.Equal(1, await scenario.EventCountAsync("session.mdb_reset_suspected"));
+    }
+
     [Fact]
     public async Task SessionStartAfterShutdownBeginsIsRejectedBeforeDatabaseChanges()
     {
@@ -1207,7 +1512,8 @@ public sealed class SessionOrchestratorFlowTests
             string? environmentName = null,
             bool addMockIntegration = false,
             IHostApplicationLifetime? lifetime = null,
-            bool legacyApiConfigured = false) =>
+            bool legacyApiConfigured = false,
+            ITelemetryConnectionOperations? connections = null) =>
             CreateAsync(
                 state,
                 includeTransaction: false,
@@ -1215,7 +1521,8 @@ public sealed class SessionOrchestratorFlowTests
                 environmentName: environmentName ?? Environments.Development,
                 addMockIntegration: addMockIntegration,
                 lifetime: lifetime,
-                legacyApiConfigured: legacyApiConfigured);
+                legacyApiConfigured: legacyApiConfigured,
+                connections: connections);
 
         private static async Task<TestScenario> CreateAsync(
             string state,
@@ -1224,7 +1531,8 @@ public sealed class SessionOrchestratorFlowTests
             string? environmentName = null,
             bool addMockIntegration = false,
             IHostApplicationLifetime? lifetime = null,
-            bool legacyApiConfigured = false)
+            bool legacyApiConfigured = false,
+            ITelemetryConnectionOperations? connections = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -1323,7 +1631,7 @@ public sealed class SessionOrchestratorFlowTests
             var httpClientFactory = new TestHttpClientFactory();
             var orchestrator = new SessionOrchestrator(
                 db,
-                connectionManager,
+                connections ?? connectionManager,
                 panelHub,
                 httpClientFactory,
                 new ConfigurationBuilder()
@@ -1439,6 +1747,35 @@ public sealed class SessionOrchestratorFlowTests
             await Db.DisposeAsync();
             await _connection.DisposeAsync();
         }
+    }
+
+    private sealed class StartConnections : ITelemetryConnectionOperations
+    {
+        public string NodeId => "test";
+        public string Status { get; set; } = "idle_state";
+        public bool StatusSuccess { get; set; } = true;
+        public bool Stale { get; set; }
+        public bool Uncorrelated { get; set; }
+        public int OpenCommands { get; private set; }
+        public Func<Task>? BeforeStatus { get; set; }
+        public IDisposable TryBeginSessionStart() => new NoopDisposable();
+        public bool IsLocalConnectionOnline(string serial, string? expectedConnectionId) => true;
+        public Task<bool> IsOnlineAsync(string serial, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<bool> HasCommandRouteAsync(string serial, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<HashSet<string>> GetOnlineSerialsAsync(IEnumerable<string> serials, CancellationToken cancellationToken = default) => Task.FromResult(serials.ToHashSet());
+        public Task<DeviceCommandResult> DisconnectMachineAsync(string serial, string reason, CancellationToken cancellationToken = default) => Task.FromResult(new DeviceCommandResult(true, 1, 1));
+        public Task<DeviceCommandResult> SendCommandAsync(string serial, object data, CancellationToken cancellationToken = default)
+        {
+            if (data is string text && text == "ABRIR_SESSAO") OpenCommands++;
+            return Task.FromResult(new DeviceCommandResult(true, 1, 1));
+        }
+        public async Task<DeviceStatusResult> SendStatusRequestAsync(string serial, TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            if (BeforeStatus != null) await BeforeStatus();
+            return new DeviceStatusResult(StatusSuccess, Uncorrelated ? 0 : 2, Status,
+                "{\"command\":\"status\",\"status\":\"idle_state\"}", Stale ? DateTime.UtcNow.AddMinutes(-1) : DateTime.UtcNow);
+        }
+        private sealed class NoopDisposable : IDisposable { public void Dispose() { } }
     }
 
     private sealed class TestHttpClientFactory : IHttpClientFactory

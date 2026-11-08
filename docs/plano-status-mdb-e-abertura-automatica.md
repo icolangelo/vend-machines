@@ -45,7 +45,7 @@ A abertura automática sempre exige `enabled_state`, mesmo durante o período em
 
 | Estado recebido | Texto exibido | Significado | Pode abrir sessão? |
 |---|---|---|---|
-| `inactive_state` | Sem comunicação MDB | A placa está sem comunicação ou acabou de ser ligada. | Não |
+| `inactive_state` | Sem comunicação MDB / menu de seleção aberto | Após `idle_state`, indica o menu de seleção aberto; nos demais casos, pode indicar ausência de comunicação ou inicialização. | Não |
 | `disable_state` | MDB bloqueado | Há comunicação, mas a máquina ainda não autorizou o funcionamento ou existe algum bloqueio. | Não |
 | `enabled_state` | Disponível para sessão | Sistema ativo e sem sessão aberta. | Sim |
 | `idle_state` | Aguardando seleção | Existe uma sessão aberta e o usuário ainda não selecionou um produto. | Não |

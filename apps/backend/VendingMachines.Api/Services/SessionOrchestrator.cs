@@ -95,12 +95,16 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         if (automatic && !machine.AutoOpenSessionEnabled)
             throw new InvalidOperationException("automatic_session_disabled");
 
+        var connection = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
+            x => x.MachineId == machineId && x.CompanyId == companyId, cancellationToken);
+        var menuFreshnessSeconds = Math.Clamp(_configuration.GetValue<int?>("MdbStatus:StaleAfterSeconds") ?? 90, 10, 3600);
+        if (connection?.MdbStatus == MdbStatuses.Inactive && connection.MdbMenuPhase == "inactive" &&
+            connection.MdbMenuConnectionId == connection.ConnectionId &&
+            connection.MdbMenuUpdatedAt >= DateTime.UtcNow.AddSeconds(-menuFreshnessSeconds))
+            throw new InvalidOperationException("mdb_menu_open");
         var enforceMdb = automatic || _configuration.GetValue<bool>("MdbStatus:EnforceOnManualStart");
         if (enforceMdb)
         {
-            var connection = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
-                x => x.MachineId == machineId && x.CompanyId == companyId,
-                cancellationToken);
             if (connection?.MonitoringEnabled != true)
                 throw new InvalidOperationException("monitoring_inactive");
             if (connection.MdbStatusUpdatedAt == null)
@@ -112,7 +116,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                 3600);
             if (connection.MdbStatusUpdatedAt < DateTime.UtcNow.AddSeconds(-staleAfter))
                 throw new InvalidOperationException("mdb_status_stale");
-            if (connection.MdbStatus != MdbStatuses.Enabled)
+            if (connection.MdbStatus != MdbStatuses.Enabled &&
+                (automatic || connection.MdbStatus != MdbStatuses.Idle))
                 throw new InvalidOperationException("mdb_not_ready");
         }
 
@@ -166,6 +171,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             throw new InvalidOperationException("session_already_active", ex);
         }
 
+        await admissionTransaction.DisposeAsync();
         var result = await SendTrackedCommandAsync(machine, session, "ABRIR_SESSAO", userId, cancellationToken);
         if (!result.Success)
         {
@@ -177,8 +183,51 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             throw new InvalidOperationException(result.Error ?? "command_failed");
         }
 
+        await TryRecoverOpenSessionAsync(machine, session, cancellationToken);
+        await _db.Entry(session).ReloadAsync(cancellationToken);
         await BroadcastSessionAsync(session);
         return session;
+    }
+
+    private async Task TryRecoverOpenSessionAsync(
+        Machine machine,
+        MachineSession session,
+        CancellationToken cancellationToken)
+    {
+        var requestedAt = DateTime.UtcNow;
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(
+            _configuration.GetValue<int?>("MdbStatus:ResponseTimeoutSeconds") ?? 5, 1, 30));
+        DeviceStatusResult status;
+        try
+        {
+            status = await _connections.SendStatusRequestAsync(machine.SerialNumber, timeout, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Não foi possível consultar o status MDB durante a abertura da sessão {SessionId}.", session.Id);
+            return;
+        }
+        if (!status.Success || status.MessageId == 0 || status.ResponseAt < requestedAt ||
+            status.ResponseAt == null || status.Status != MdbStatuses.Idle)
+            return;
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        var now = DateTime.UtcNow;
+        var updated = await _db.MachineSessions
+            .Where(item => item.Id == session.Id && item.CompanyId == session.CompanyId &&
+                           item.State == MachineSessionStates.Opening && item.ClosedAt == null)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.State, MachineSessionStates.AwaitingSelection)
+                .SetProperty(item => item.SelectionDeadlineAt, now.AddMinutes(2))
+                .SetProperty(item => item.LastEventAt, now), cancellationToken);
+        if (updated == 1)
+        {
+            await AddEventAsync(session, "session.open_already", "Sessão MDB já estava aberta; aguardando seleção.",
+                null, status.DataJson, cancellationToken);
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<MachineSession> ResolveIncompleteClosureAsync(
@@ -251,6 +300,47 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
         if (session.State is MachineSessionStates.Opening or MachineSessionStates.AwaitingSelection)
         {
+            var statusRequestAt = DateTime.UtcNow;
+            var timeoutSeconds = Math.Clamp(_configuration.GetValue<int?>("MdbStatus:ResponseTimeoutSeconds") ?? 5, 1, 30);
+            var mdb = await _connections.SendStatusRequestAsync(machine.SerialNumber, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken);
+            var staleAfterSeconds = Math.Clamp(_configuration.GetValue<int?>("MdbStatus:StaleAfterSeconds") ?? 90, 10, 3600);
+            if (!mdb.Success || mdb.MessageId == 0 || mdb.ResponseAt == null || mdb.ResponseAt < statusRequestAt ||
+                mdb.ResponseAt < DateTime.UtcNow.AddSeconds(-staleAfterSeconds) ||
+                mdb.Status is not (MdbStatuses.Idle or MdbStatuses.Enabled))
+                throw new InvalidOperationException("mdb_status_unavailable");
+            if (mdb.Status == MdbStatuses.Enabled)
+            {
+                var observedStatus = await _db.MachineConnectionStates.FirstOrDefaultAsync(
+                    item => item.MachineId == session.MachineId && item.CompanyId == companyId, cancellationToken);
+                if (observedStatus != null)
+                {
+                    observedStatus.MdbStatus = MdbStatuses.Enabled;
+                    observedStatus.MdbStatusRaw = mdb.DataJson;
+                    observedStatus.MdbStatusUpdatedAt = mdb.ResponseAt;
+                    await _db.SaveChangesAsync(cancellationToken);
+                }
+                if (session.ItemNumber != null || session.TransactionId != null)
+                    throw new InvalidOperationException("mdb_reset_session_has_sale");
+                session.State = MachineSessionStates.ClosingWithoutSelection;
+                session.CloseReason = reason;
+                session.SelectionDeadlineAt = null;
+                session.LastEventAt = DateTime.UtcNow;
+                await AddEventAsync(session, "session.closing_without_selection", reason, userId, mdb.DataJson, cancellationToken);
+                await _db.SaveChangesAsync(cancellationToken);
+                await CompleteResetClosureAsync(session.Id, companyId, userId, mdb, cancellationToken);
+                var recovered = await _db.MachineSessions.AsNoTracking().FirstAsync(item => item.Id == session.Id, cancellationToken);
+                await BroadcastSessionAsync(recovered);
+                var connectionState = await _db.MachineConnectionStates.FirstOrDefaultAsync(
+                    item => item.MachineId == session.MachineId && item.CompanyId == companyId, cancellationToken);
+                if (connectionState != null && mdb.ResponseAt.HasValue)
+                {
+                    var resetMessage = new InboundDeviceMessage(session.MachineId, companyId, machine.SerialNumber,
+                        connectionState.ConnectionId ?? string.Empty, mdb.MessageId, mdb.DataJson ?? "{}", mdb.ResponseAt.Value,
+                        connectionState.OwnerNodeId);
+                    await TryAutoOpenSessionAsync(resetMessage, connectionState, true, session.Id, cancellationToken);
+                }
+                return recovered;
+            }
             session.State = MachineSessionStates.ClosingWithoutSelection;
             session.CloseReason = reason;
             session.SelectionDeadlineAt = null;
@@ -272,6 +362,49 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
 
         await BroadcastSessionAsync(session);
         return session;
+    }
+
+    private async Task<bool> CompleteResetClosureAsync(
+        Guid sessionId, Guid companyId, Guid? userId, DeviceStatusResult status, CancellationToken cancellationToken)
+    {
+        await using var transaction = _db.Database.CurrentTransaction == null
+            ? await _db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var session = await _db.MachineSessions.Include(item => item.Transaction)
+            .FirstOrDefaultAsync(item => item.Id == sessionId && item.CompanyId == companyId, cancellationToken);
+        if (session == null || session.ItemNumber != null || session.TransactionId != null || session.Transaction != null ||
+            (session.State == MachineSessionStates.ClosingWithoutSelection && session.ClosedAt != null) ||
+            (session.State == MachineSessionStates.ClosureIncomplete && session.ClosedAt == null) ||
+            session.State is not (MachineSessionStates.ClosingWithoutSelection or MachineSessionStates.ClosureIncomplete))
+            return false;
+        if (!await MachineOperationLock.AcquireAsync(_db, session.MachineId, companyId, cancellationToken))
+            return false;
+        var unresolvedLocalCommand = await _db.TelemetryCommands.AsNoTracking().AnyAsync(command =>
+            command.SessionId == sessionId && (command.Status == "pending" || command.Status == "accepted" || command.Status == "processing"), cancellationToken);
+        var unresolvedRemoteDispatch = await _db.TelemetryCommandDispatches.AsNoTracking().AnyAsync(dispatch =>
+            dispatch.MachineId == session.MachineId && dispatch.CompanyId == companyId &&
+            dispatch.Operation == "Command" && (dispatch.Status == "Pending" || dispatch.Status == "Processing"), cancellationToken);
+        if (unresolvedLocalCommand || unresolvedRemoteDispatch) return false;
+
+        var now = DateTime.UtcNow;
+        var updated = await _db.MachineSessions.Where(item => item.Id == sessionId && item.CompanyId == companyId &&
+                item.ItemNumber == null && item.TransactionId == null &&
+                ((item.State == MachineSessionStates.ClosingWithoutSelection && item.ClosedAt == null) ||
+                 (item.State == MachineSessionStates.ClosureIncomplete && item.ClosedAt != null)))
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.State, MachineSessionStates.ClosedByDeviceBeforeSelection)
+                .SetProperty(item => item.CloseReason, "possible_mdb_reset")
+                .SetProperty(item => item.ClosedAt, now)
+                .SetProperty(item => item.SelectionDeadlineAt, (DateTime?)null)
+                .SetProperty(item => item.LastEventAt, now), cancellationToken);
+        if (updated == 0) return false;
+        await _db.Entry(session).ReloadAsync(cancellationToken);
+        await AddEventAsync(session, "session.mdb_reset_suspected",
+            "MDB respondeu enabled_state enquanto o sistema aguardava o fechamento; sessão concluída sem FECHAR_SESSAO.",
+            userId, status.DataJson, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        if (transaction != null) await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task HandleDeviceMessageAsync(InboundDeviceMessage message, CancellationToken cancellationToken)
@@ -353,12 +486,23 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         {
             if (session.State == MachineSessionStates.Opening)
             {
-                session.State = MachineSessionStates.AwaitingSelection;
-                session.SelectionDeadlineAt = DateTime.UtcNow.AddMinutes(2);
+                var deadline = DateTime.UtcNow.AddMinutes(2);
+                await _db.MachineSessions
+                    .Where(item => item.Id == session.Id && item.State == MachineSessionStates.Opening && item.ClosedAt == null)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(item => item.State, MachineSessionStates.AwaitingSelection)
+                        .SetProperty(item => item.SelectionDeadlineAt, deadline), cancellationToken);
+                await _db.Entry(session).ReloadAsync(cancellationToken);
             }
         }
         else if (command == "vend" && type == "request")
         {
+            // The status query can still be in flight when the device sends its selection.
+            // Let the durable inbox retry rather than discard that selection prematurely.
+            if (session.State == MachineSessionStates.Opening &&
+                session.StartedAt > DateTime.UtcNow.AddSeconds(-45))
+                throw new InvalidOperationException("session_opening_in_progress");
+
             if (session.State != MachineSessionStates.AwaitingSelection)
             {
                 await AddEventAsync(session, "protocol.invalid_vend_request", "Solicitação recebida fora de AwaitingSelection.", null, message.DataJson, cancellationToken);
@@ -387,13 +531,27 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                                 .FirstOrDefault()
                         })
                         .FirstOrDefaultAsync(cancellationToken);
-                    session.ItemNumber = item;
-                    session.AmountCents = price;
-                    session.SelectedProductIdSnapshot = selectedSlot?.ProductId;
-                    session.SelectedProductNameSnapshot = selectedSlot?.ProductName;
-                    session.SelectionDeadlineAt = null;
-                    await _db.SaveChangesAsync(cancellationToken);
-                    await CreateAndSendPixAsync(session, price, item, cancellationToken);
+                    // Serialize the selection snapshot with menu closure. A retry can
+                    // continue from a snapshot persisted before a payment was created.
+                    await using var selectionTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+                    if (!await MachineOperationLock.AcquireAsync(_db, session.MachineId, session.CompanyId, cancellationToken))
+                        throw new InvalidOperationException("machine_not_found");
+                    await _db.Entry(session).ReloadAsync(cancellationToken);
+                    var canSelect = session.State == MachineSessionStates.AwaitingSelection && session.ClosedAt == null &&
+                        (session.ItemNumber == null || (session.ItemNumber == item && session.AmountCents == price));
+                    if (canSelect)
+                    {
+                        session.ItemNumber = item;
+                        session.AmountCents = price;
+                        session.SelectedProductIdSnapshot = selectedSlot?.ProductId;
+                        session.SelectedProductNameSnapshot = selectedSlot?.ProductName;
+                        session.SelectionDeadlineAt = null;
+                        await _db.SaveChangesAsync(cancellationToken);
+                    }
+                    await selectionTransaction.CommitAsync(cancellationToken);
+                    await selectionTransaction.DisposeAsync();
+                    if (canSelect)
+                        await CreateAndSendPixAsync(session, price, item, cancellationToken);
                 }
             }
         }
@@ -583,7 +741,21 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         {
             if (session.SelectionDeadlineAt <= now && session.State == MachineSessionStates.AwaitingSelection)
             {
-                await CancelSessionAsync(session.Id, session.CompanyId, null, "selection_timeout", cancellationToken);
+                try
+                {
+                    await CancelSessionAsync(session.Id, session.CompanyId, null, "selection_timeout", cancellationToken);
+                }
+                catch (InvalidOperationException ex) when (ex.Message == "mdb_status_unavailable")
+                {
+                    if (!await _db.TelemetryEvents.AnyAsync(item => item.SessionId == session.Id &&
+                            item.EventType == "session.close_deferred", cancellationToken))
+                    {
+                        await AddEventAsync(session, "session.close_deferred",
+                            "Fechamento pendente: confirme o status MDB antes de enviar FECHAR_SESSAO.", null, null, cancellationToken);
+                        await _db.SaveChangesAsync(cancellationToken);
+                        await BroadcastSessionAsync(session);
+                    }
+                }
             }
             else if (session.PaymentDeadlineAt <= now && session.State == MachineSessionStates.PaymentPending)
             {
@@ -1456,61 +1628,140 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     {
         var rawStatus = GetString(data, "status");
         var normalizedStatus = MdbStatuses.Normalize(rawStatus);
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        if (!await MachineOperationLock.AcquireAsync(_db, message.MachineId, message.CompanyId, cancellationToken))
+            return;
+        // Lock the connection row as well: reconnects update this row independently
+        // of the machine lock and must not race an old status into a new connection.
+        await _db.MachineConnectionStates.Where(item => item.MachineId == message.MachineId && item.CompanyId == message.CompanyId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.ConnectionId, item => item.ConnectionId), cancellationToken);
         var state = await _db.MachineConnectionStates.FirstOrDefaultAsync(
-            x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId,
-            cancellationToken);
+            x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId, cancellationToken);
         if (state == null)
         {
-            state = new MachineConnectionState
-            {
-                MachineId = message.MachineId,
-                CompanyId = message.CompanyId
-            };
+            state = new MachineConnectionState { MachineId = message.MachineId, CompanyId = message.CompanyId };
             _db.MachineConnectionStates.Add(state);
         }
+        else
+            await _db.Entry(state).ReloadAsync(cancellationToken);
+        // An old connection or delayed status must never advance the sequence.
+        if ((state.ConnectionId != null && state.ConnectionId != message.ConnectionId) ||
+            (state.MdbStatusUpdatedAt != null && message.ReceivedAt <= state.MdbStatusUpdatedAt))
+            return;
 
         var previousStatus = state.MdbStatus;
         var previousRaw = state.MdbStatusRaw;
+        var staleSeconds = Math.Clamp(_configuration.GetValue<int?>("MdbStatus:StaleAfterSeconds") ?? 90, 10, 3600);
+        var fresh = message.ReceivedAt >= DateTime.UtcNow.AddSeconds(-staleSeconds);
+        var sequenceFresh = fresh && state.MdbMenuConnectionId == message.ConnectionId &&
+            state.MdbMenuUpdatedAt != null && message.ReceivedAt >= state.MdbMenuUpdatedAt &&
+            message.ReceivedAt - state.MdbMenuUpdatedAt <= TimeSpan.FromSeconds(staleSeconds);
+        var completedMenu = sequenceFresh && (state.MdbMenuPhase == "inactive" || state.MdbMenuPhase == "ready") && normalizedStatus == MdbStatuses.Enabled;
+        var completedSessionId = completedMenu ? state.MdbMenuSessionId : null;
+        MachineSession? closedSession = null;
+        if (fresh && normalizedStatus == MdbStatuses.Enabled)
+        {
+            var pendingClosure = await _db.MachineSessions.Where(item => item.MachineId == message.MachineId &&
+                item.CompanyId == message.CompanyId && item.ItemNumber == null && item.TransactionId == null &&
+                (item.State == MachineSessionStates.ClosingWithoutSelection || item.State == MachineSessionStates.ClosureIncomplete))
+                .OrderByDescending(item => item.StartedAt).FirstOrDefaultAsync(cancellationToken);
+            if (pendingClosure != null && await CompleteResetClosureAsync(pendingClosure.Id, message.CompanyId, null,
+                    new DeviceStatusResult(true, message.MessageId, normalizedStatus, message.DataJson, message.ReceivedAt), cancellationToken))
+            {
+                closedSession = await _db.MachineSessions.FirstAsync(item => item.Id == pendingClosure.Id, cancellationToken);
+                await _db.Entry(closedSession).ReloadAsync(cancellationToken);
+                completedMenu = true;
+                completedSessionId = pendingClosure.Id;
+                state.MdbMenuPhase = "ready";
+                state.MdbMenuConnectionId = message.ConnectionId;
+                state.MdbMenuSessionId = pendingClosure.Id;
+                state.MdbMenuUpdatedAt = message.ReceivedAt;
+            }
+        }
+        if (closedSession == null && completedMenu && completedSessionId.HasValue)
+        {
+            var closedAt = DateTime.UtcNow;
+            var updated = await _db.MachineSessions.Where(item => item.Id == completedSessionId &&
+                    item.MachineId == message.MachineId && item.CompanyId == message.CompanyId &&
+                    item.ClosedAt == null && item.TransactionId == null && item.ItemNumber == null &&
+                    (item.State == MachineSessionStates.Opening || item.State == MachineSessionStates.AwaitingSelection ||
+                     item.State == MachineSessionStates.DeviceClosingBeforeSelection))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(item => item.State, MachineSessionStates.ClosedByDeviceBeforeSelection)
+                    .SetProperty(item => item.CloseReason, "menu_closed_without_selection")
+                    .SetProperty(item => item.SelectionDeadlineAt, (DateTime?)null)
+                    .SetProperty(item => item.ClosedAt, closedAt)
+                    .SetProperty(item => item.LastEventAt, closedAt), cancellationToken);
+            if (updated == 1)
+            {
+                closedSession = await _db.MachineSessions.FirstAsync(item => item.Id == completedSessionId, cancellationToken);
+                await _db.Entry(closedSession).ReloadAsync(cancellationToken);
+                await AddEventAsync(closedSession, "session.menu_closed", "Menu fechado sem seleção; sessão encerrada.", null, message.DataJson, cancellationToken);
+            }
+        }
+
+        if (completedMenu)
+        {
+            // Keep the completed sequence durable until the next status change, so a crash
+            // before automatic opening can be retried by the next enabled response.
+            state.MdbMenuPhase = "ready";
+            state.MdbMenuUpdatedAt = message.ReceivedAt;
+        }
+        else if (fresh && normalizedStatus == MdbStatuses.Idle && (!sequenceFresh || state.MdbMenuPhase != "inactive"))
+        {
+            state.MdbMenuPhase = "idle";
+            state.MdbMenuConnectionId = message.ConnectionId;
+            state.MdbMenuSessionId = await ActiveSessions().AsNoTracking()
+                .Where(item => item.MachineId == message.MachineId && item.CompanyId == message.CompanyId)
+                .Select(item => (Guid?)item.Id).FirstOrDefaultAsync(cancellationToken);
+            state.MdbMenuUpdatedAt = message.ReceivedAt;
+        }
+        else if (sequenceFresh && normalizedStatus == MdbStatuses.Inactive &&
+                 (state.MdbMenuPhase == "idle" || state.MdbMenuPhase == "inactive"))
+        {
+            state.MdbMenuPhase = "inactive";
+            state.MdbMenuUpdatedAt = message.ReceivedAt;
+        }
+        else
+        {
+            state.MdbMenuPhase = null;
+            state.MdbMenuConnectionId = null;
+            state.MdbMenuSessionId = null;
+            state.MdbMenuUpdatedAt = null;
+        }
         state.MdbStatus = normalizedStatus;
         state.MdbStatusRaw = message.DataJson;
         state.MdbStatusUpdatedAt = message.ReceivedAt;
-
         if (!string.Equals(previousStatus, normalizedStatus, StringComparison.Ordinal) ||
             (normalizedStatus == null && !string.Equals(previousRaw, message.DataJson, StringComparison.Ordinal)))
         {
             _db.TelemetryEvents.Add(new TelemetryEvent
             {
-                CompanyId = message.CompanyId,
-                MachineId = message.MachineId,
+                CompanyId = message.CompanyId, MachineId = message.MachineId,
                 EventType = normalizedStatus == null ? "mdb.status.invalid" : "mdb.status.changed",
-                Detail = normalizedStatus == null
-                    ? $"Status MDB não reconhecido: {rawStatus ?? "(ausente)"}."
-                    : $"{previousStatus ?? "unknown"} -> {normalizedStatus}",
-                DataJson = message.DataJson,
-                CreatedAt = message.ReceivedAt
+                Detail = normalizedStatus == null ? $"Status MDB não reconhecido: {rawStatus ?? "(ausente)"}." : $"{previousStatus ?? "unknown"} -> {normalizedStatus}",
+                DataJson = message.DataJson, CreatedAt = message.ReceivedAt
             });
         }
-
         await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        await transaction.DisposeAsync();
+        if (closedSession != null) await BroadcastSessionAsync(closedSession);
         await _panelHub.BroadcastCompanyAsync(message.CompanyId, new
         {
-            type = "mdb.status.updated",
-            machineId = message.MachineId,
-            mdbStatus = normalizedStatus,
-            mdbStatusRaw = rawStatus,
-            mdbStatusUpdatedAt = message.ReceivedAt,
-            mdbStatusFresh = normalizedStatus != null
+            type = "mdb.status.updated", machineId = message.MachineId, mdbStatus = normalizedStatus,
+            mdbStatusRaw = rawStatus, mdbStatusUpdatedAt = message.ReceivedAt, mdbStatusFresh = fresh && normalizedStatus != null,
+            mdbMenuSelectionActive = state.MdbMenuPhase == "inactive"
         });
-
-        if (normalizedStatus == MdbStatuses.Enabled)
-        {
-            await TryAutoOpenSessionAsync(message, state, cancellationToken);
-        }
+        if (fresh && normalizedStatus == MdbStatuses.Enabled)
+            await TryAutoOpenSessionAsync(message, state, completedMenu, completedSessionId, cancellationToken);
     }
 
     private async Task TryAutoOpenSessionAsync(
         InboundDeviceMessage message,
         MachineConnectionState connectionState,
+        bool completedMenu,
+        Guid? completedSessionId,
         CancellationToken cancellationToken)
     {
         var machine = await _db.Machines.FirstOrDefaultAsync(
@@ -1533,12 +1784,13 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             return;
         }
 
-        var lastClosedAt = await _db.MachineSessions.AsNoTracking()
-            .Where(x => x.MachineId == message.MachineId && x.ClosedAt != null)
+        var lastClosed = await _db.MachineSessions.AsNoTracking()
+            .Where(x => x.MachineId == message.MachineId && x.CompanyId == message.CompanyId && x.ClosedAt != null)
             .OrderByDescending(x => x.ClosedAt)
-            .Select(x => x.ClosedAt)
+            .Select(x => new { x.Id, x.ClosedAt })
             .FirstOrDefaultAsync(cancellationToken);
-        if (lastClosedAt.HasValue && message.ReceivedAt <= lastClosedAt.Value)
+        var reopensMenuSession = completedMenu && completedSessionId.HasValue && lastClosed?.Id == completedSessionId;
+        if (!reopensMenuSession && lastClosed?.ClosedAt is DateTime lastClosedAt && message.ReceivedAt <= lastClosedAt)
         {
             return;
         }
@@ -1547,7 +1799,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             _configuration.GetValue<int?>("MdbStatus:AutoOpenCooldownSeconds") ?? 30,
             1,
             3600);
-        if (connectionState.AutoOpenLastAttemptAt >= DateTime.UtcNow.AddSeconds(-cooldownSeconds))
+        if (!reopensMenuSession && connectionState.AutoOpenLastAttemptAt >= DateTime.UtcNow.AddSeconds(-cooldownSeconds))
         {
             return;
         }

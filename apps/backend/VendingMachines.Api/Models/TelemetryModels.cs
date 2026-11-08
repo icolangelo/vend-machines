@@ -50,6 +50,10 @@ public class MachineConnectionState
     public string? MdbStatus { get; set; }
     public string? MdbStatusRaw { get; set; }
     public DateTime? MdbStatusUpdatedAt { get; set; }
+    public string? MdbMenuPhase { get; set; }
+    public string? MdbMenuConnectionId { get; set; }
+    public Guid? MdbMenuSessionId { get; set; }
+    public DateTime? MdbMenuUpdatedAt { get; set; }
     public DateTime? MdbStatusRequestAt { get; set; }
     public int? MdbStatusRequestMessageId { get; set; }
     public DateTime? AutoOpenLastAttemptAt { get; set; }

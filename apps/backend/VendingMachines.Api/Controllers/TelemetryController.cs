@@ -123,6 +123,10 @@ public sealed class TelemetryController : BaseApiController
                 mdbStatusFresh = connection?.MdbStatus != null &&
                                  connection.MdbStatusUpdatedAt >= now - staleAfter &&
                                  online,
+                mdbMenuSelectionActive = online && connection?.MdbStatus == MdbStatuses.Inactive &&
+                                         connection.MdbMenuPhase == "inactive" &&
+                                         connection.MdbMenuConnectionId == connection.ConnectionId &&
+                                         connection.MdbMenuUpdatedAt >= now - staleAfter,
                 autoOpenLastAttemptAt = connection?.AutoOpenLastAttemptAt,
                 autoOpenLastError = connection?.AutoOpenLastError,
                 signal = (int?)null,
@@ -333,6 +337,14 @@ public sealed class TelemetryController : BaseApiController
 
         if (sessionForCancellation is not null && _legacyTelemetryRelay?.IsConfigured == true)
         {
+            var ownerState = await _db.MachineConnectionStates.AsNoTracking()
+                .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, cancellationToken);
+            if (ownerState?.IsOnline == true &&
+                ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new {
+                    code = "machine_owner_unknown",
+                    message = "O encerramento foi pausado porque a instância proprietária da máquina ainda não confirma o estado MDB antes de fechar a sessão. Aguarde a reconexão compatível." });
+
             await using var operationTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
             if (!await MachineOperationLock.AcquireAsync(
                     _db,
@@ -760,6 +772,7 @@ public sealed class TelemetryController : BaseApiController
         "mdb_status_unavailable" => "O status MDB ainda não está disponível.",
         "mdb_status_stale" => "O status MDB está desatualizado. Consulte novamente.",
         "mdb_not_ready" => "O MDB não está disponível para abrir uma sessão.",
+        "mdb_menu_open" => "Aguarde o fechamento do menu de seleção para abrir uma sessão.",
         "response_timeout" => "A máquina não respondeu à consulta MDB.",
         "invalid_mdb_status" => "A máquina retornou um status MDB desconhecido.",
         "automatic_session_disabled" => "A abertura automática está desativada.",
