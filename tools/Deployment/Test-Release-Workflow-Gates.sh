@@ -658,6 +658,13 @@ if GITHUB_REPOSITORY=example/repository python3 "$repo_root/tools/Deployment/Val
 fi
 require_contains "$verify_workflow" 'Test-Release-Workflow-Gates.sh'
 require_contains "$verify_workflow" 'Test-Coolify-Deployment.sh'
+for workflow_file in "$workflow" "$verify_workflow" "$frontend_workflow" "$secret_scan_workflow"; do
+  require_contains "$workflow_file" 'runs-on: ubuntu-24.04'
+  if grep -Fq 'runs-on: ubuntu-latest' "$workflow_file"; then
+    echo "O workflow '$workflow_file' não pode herdar uma versão Ubuntu incompatível do runner." >&2
+    exit 1
+  fi
+done
 
 require_contains "$frontend_workflow" 'type=sha,format=long'
 require_contains "$frontend_workflow" 'Build immutable candidate image'
