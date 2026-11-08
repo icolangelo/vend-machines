@@ -638,5 +638,17 @@
     "recovery": "Aplicar somente após revisar a cadeia de migrations e ensaiar reconexão legada em PostgreSQL descartável. Down falha fechado para impedir que uma reconexão antiga deixe capacidade e lease obsoletos bloqueando readiness ou permitindo roteamento incorreto.",
     "source_sha256": "45e39d01a9861cd2d3f6a64e87cb0d720f88aa1b483a9e137db478961a2aeac5",
     "affected_tables": []
+  },
+  "20261108113731_TrackMdbMenuSequence": {
+    "operations": [
+      "AddColumn"
+    ],
+    "index_tables": [],
+    "impact": "Adiciona quatro colunas nullable a MachineConnectionStates para acompanhar a sequência de estados do menu MDB. Não aplica default, backfill, índice nem altera registros existentes; o lock de catálogo é breve e limitado pelo lock_timeout do segmento idempotente.",
+    "recovery": "Aplicar após conferir a cadeia de migrations e ensaiar o segmento em PostgreSQL descartável. Em rollback de binário, manter colunas e migration aplicadas; os campos podem permanecer nulos e o fluxo antigo os ignora. Não executar Down em produção.",
+    "source_sha256": "39990845b4b90e62a5be2fa114d208e576790d41e6f703c498dda86439d099bb",
+    "affected_tables": [
+      "MachineConnectionStates"
+    ]
   }
 }

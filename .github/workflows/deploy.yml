@@ -172,7 +172,7 @@ jobs:
           payment_index=20260926174359_AddPaymentReconciliationTracking
           before_inventory_mapping_index=20261026083333_AddSessionProductSnapshot
           inventory_mapping_index=20261026091223_IndexInventoryMappingMismatchAlerts
-          after_inventory_mapping_index=20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata
+          after_inventory_mapping_index=20261108113731_TrackMdbMenuSequence
 
           "$ef" migrations script 0 "$before_session_index" --idempotent \
             --configuration Release \
@@ -278,6 +278,17 @@ jobs:
           legacy_owner_reset_migration = "20261102215805_ClearLegacyTelemetryOwnerRoutingMetadata"
           if legacy_owner_reset_migration not in scripts["after_inventory_mapping"] or 'NEW."CommandRoutingVersion" := NULL;' not in scripts["after_inventory_mapping"] or 'NEW."OwnerLeaseExpiresAt" := NULL;' not in scripts["after_inventory_mapping"]:
               raise SystemExit("O último segmento precisa limpar versão e lease ao reconectar um owner MDB legado.")
+          menu_sequence_migration = "20261108113731_TrackMdbMenuSequence"
+          menu_sequence_columns = (
+              r'ALTER TABLE "MachineConnectionStates" ADD "MdbMenuConnectionId" text;',
+              r'ALTER TABLE "MachineConnectionStates" ADD "MdbMenuPhase" text;',
+              r'ALTER TABLE "MachineConnectionStates" ADD "MdbMenuSessionId" uuid;',
+              r'ALTER TABLE "MachineConnectionStates" ADD "MdbMenuUpdatedAt" timestamp with time zone;',
+          )
+          if menu_sequence_migration not in scripts["after_inventory_mapping"] or any(
+              not re.search(column, scripts["after_inventory_mapping"]) for column in menu_sequence_columns
+          ):
+              raise SystemExit("O último segmento precisa incluir as colunas opcionais da sequência do menu MDB.")
           print("Segmentos de migrations PostgreSQL prontos para revisão.")
           PY
 
