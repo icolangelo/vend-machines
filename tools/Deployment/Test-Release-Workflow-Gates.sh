@@ -297,6 +297,7 @@ require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatib
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_session_start=accepted'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_mdb_status=correlated'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_session_cancel=paused_for_incompatible_owner'
+require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_deploy_readiness=blocked_legacy_closure_guard'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_readiness_blocks_unavailable_legacy_owner=yes'
 require_contains "$repo_root/tools/Database/Test-PreviousBackendRollbackCompatibility.py" 'candidate_legacy_command_after_owner_loss=failed_closed'
 require_contains "$repo_root/tools/Deployment/Validate-TelemetryOverlapReadiness.py" 'overlap_runtime_preflight=passed'

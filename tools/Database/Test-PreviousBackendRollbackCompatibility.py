@@ -826,19 +826,27 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 "http://candidate-api:8080/health/deploy-ready",
             )
             if readiness_code != 0:
-                raise RehearsalError(
-                    "A candidata deveria aceitar o owner legado com relay configurado e API anterior pronta; "
-                    f"exit={readiness_code}, body={readiness_body[-1800:]}"
+                owner_routing_version = query(
+                    names["postgres"], "vendmachines",
+                    f'''SELECT COALESCE("CommandRoutingVersion"::text, 'null') FROM "MachineConnectionStates" WHERE "MachineId"='{machine_id}';''',
                 )
-            try:
-                readiness_payload = json.loads(readiness_body)
-            except json.JSONDecodeError as exc:
-                raise RehearsalError(f"Readiness retornou JSON inválido: {readiness_body[-1800:]}") from exc
-            if readiness_payload.get("status") != "Ready":
-                raise RehearsalError(
-                    "A candidata não reconheceu a API anterior saudável como owner compatível; "
-                    f"body={readiness_body[-1800:]}"
-                )
+                if owner_routing_version != "1":
+                    raise RehearsalError(
+                        "O deploy só deve ser bloqueado nesta etapa pelo contrato inseguro do owner legado; "
+                        f"version={owner_routing_version}, exit={readiness_code}, body={readiness_body[-1800:]}"
+                    )
+                print("candidate_deploy_readiness=blocked_legacy_closure_guard")
+            else:
+                try:
+                    readiness_payload = json.loads(readiness_body)
+                except json.JSONDecodeError as exc:
+                    raise RehearsalError(f"Readiness retornou JSON inválido: {readiness_body[-1800:]}") from exc
+                if readiness_payload.get("status") != "Ready":
+                    raise RehearsalError(
+                        "A candidata não reconheceu a API anterior saudável como owner compatível; "
+                        f"body={readiness_body[-1800:]}"
+                    )
+                print("candidate_deploy_readiness=ready")
 
             admin_user_id = query(
                 names["postgres"], "vendmachines",
