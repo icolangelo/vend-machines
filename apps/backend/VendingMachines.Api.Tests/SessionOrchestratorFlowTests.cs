@@ -884,7 +884,7 @@ public sealed class SessionOrchestratorFlowTests
     }
 
     [Fact]
-    public async Task LegacyApiOverlap_KeepsFailedCandidateOutboxInLegacyIgnoredStatusForRetry()
+    public async Task LegacyApiOverlap_KeepsFailedCandidateOutboxInCandidateOnlyStatusForRetry()
     {
         await using var scenario = await TestScenario.CreatePaidAsync(
             MachineSessionStates.AwaitingDeliveryResult,
@@ -894,7 +894,7 @@ public sealed class SessionOrchestratorFlowTests
         await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
 
         var outbox = await scenario.SingleOutboxAsync("refund_payment");
-        Assert.Equal("deferred_legacy_overlap", outbox.Status);
+        Assert.Equal("deferred_candidate_overlap", outbox.Status);
         Assert.Equal("provider_operation_failed", outbox.LastError);
         Assert.Equal(1, outbox.Attempts);
         Assert.True(outbox.NextAttemptAt > DateTime.UtcNow);
@@ -947,7 +947,7 @@ public sealed class SessionOrchestratorFlowTests
             TransactionId = scenario.TransactionId,
             MessageType = "refund_payment",
             PayloadJson = "{}",
-            Status = "deferred_legacy_overlap",
+            Status = "deferred_candidate_overlap",
             NextAttemptAt = DateTime.UtcNow
         });
         await scenario.Db.SaveChangesAsync();

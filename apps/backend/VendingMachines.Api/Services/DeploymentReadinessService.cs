@@ -90,7 +90,8 @@ public sealed class DeploymentReadinessService(
 
         if (legacyTelemetryRelay?.IsConfigured != true &&
             await db.OutboxMessages.AsNoTracking().AnyAsync(
-                message => message.Status == "deferred_legacy_overlap",
+                message => message.Status == "deferred_candidate_overlap" ||
+                           message.Status == "deferred_legacy_overlap",
                 cancellationToken))
             return "legacy_overlap_outbox_not_activated";
 

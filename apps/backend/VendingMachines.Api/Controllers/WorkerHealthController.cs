@@ -46,7 +46,8 @@ public sealed class WorkerHealthController(
                 .Where(row => row.Status == "pending")
                 .MinAsync(row => (DateTime?)row.CreatedAt, cancellationToken);
             var oldestDeferredLegacyFinancialOutboxAt = await db.OutboxMessages.AsNoTracking()
-                .Where(row => row.Status == "deferred_legacy_overlap")
+                .Where(row => row.Status == "deferred_candidate_overlap" ||
+                              row.Status == "deferred_legacy_overlap")
                 .MinAsync(row => (DateTime?)row.CreatedAt, cancellationToken);
             var earliestProcessingFinancialOutboxLeaseExpiryAt = await db.OutboxMessages.AsNoTracking()
                 .Where(row => row.Status == "processing")

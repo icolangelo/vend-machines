@@ -1219,7 +1219,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 '"PayloadJson","Status","Attempts","CreatedAt","NextAttemptAt") '
                 f"VALUES ('{overlap_outbox_id}'::uuid,'{company_id}'::uuid,'{machine_id}',"
                 f"'{overlap_session_id}'::uuid,'{overlap_transaction_id}'::uuid,'refund_payment','{{}}',"
-                "'deferred_legacy_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
+                "'deferred_candidate_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
             )
             run(
                 "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
@@ -1230,7 +1230,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 names["postgres"], "vendmachines",
                 f'''SELECT "Status" FROM "OutboxMessages" WHERE "Id"='{overlap_outbox_id}'::uuid;''',
             )
-            if legacy_outbox_status != "deferred_legacy_overlap":
+            if legacy_outbox_status != "deferred_candidate_overlap":
                 raise RehearsalError(
                     "A API antiga reivindicou uma outbox candidata enquanto a candidata estava parada; "
                     f"status={legacy_outbox_status}"

@@ -185,7 +185,7 @@ public sealed class BackgroundWorkerHealthRegistryTests
             MachineId = machine.Id,
             MessageType = "refund_payment",
             PayloadJson = "{}",
-            Status = "deferred_legacy_overlap",
+            Status = "deferred_candidate_overlap",
             CreatedAt = DateTime.UtcNow.AddHours(-2)
         });
         await db.SaveChangesAsync();

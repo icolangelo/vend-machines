@@ -820,7 +820,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     {
         var now = DateTime.UtcNow;
         var legacyOverlapActive = !string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"]);
-        var claimableStatus = legacyOverlapActive ? "deferred_legacy_overlap" : "pending";
+        var claimableStatus = legacyOverlapActive ? "deferred_candidate_overlap" : "pending";
         var sessionsToBroadcast = new List<MachineSession>();
         var refundedTransactionIds = new HashSet<Guid>();
 
@@ -830,7 +830,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         if (!legacyOverlapActive)
         {
             await _db.OutboxMessages
-                .Where(message => message.Status == "deferred_legacy_overlap")
+                .Where(message => message.Status == "deferred_candidate_overlap" ||
+                                  message.Status == "deferred_legacy_overlap")
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(message => message.Status, "pending")
                     .SetProperty(message => message.NextAttemptAt, now)
@@ -1024,7 +1025,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             var retryAt = DateTime.UtcNow;
             var retryStatus = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
                 ? "pending"
-                : "deferred_legacy_overlap";
+                : "deferred_candidate_overlap";
             var released = await _db.OutboxMessages
                 .Where(message => message.Id == outboxId &&
                     message.Status == "processing" && message.NextAttemptAt == leaseExpiresAt)
@@ -1963,7 +1964,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             NextAttemptAt = DateTime.UtcNow,
             Status = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
                 ? "pending"
-                : "deferred_legacy_overlap"
+                : "deferred_candidate_overlap"
         });
     }
 
