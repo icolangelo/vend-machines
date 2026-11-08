@@ -778,7 +778,7 @@ export default function MachineFormPage() {
                                                                     <div className="flex items-center gap-2 flex-wrap">
                                                                         <span className="text-sm font-semibold">
                                                                             {mdbConnection
-                                                                                ? getMdbStatusDetail(mdbConnection.mdbStatus).label
+                                                                                ? getMdbStatusDetail(mdbConnection.mdbStatus, mdbConnection.mdbStatusFresh && mdbConnection.mdbMenuSelectionActive).label
                                                                                 : mdbConnectionLoadError
                                                                                     ? "Falha ao consultar conexão MDB"
                                                                                     : mdbConnectionLoading
@@ -793,7 +793,7 @@ export default function MachineFormPage() {
                                                                     </div>
                                                                     <p className="text-xs text-muted-foreground mt-1">
                                                                         {mdbConnection
-                                                                            ? getMdbStatusDetail(mdbConnection.mdbStatus).description
+                                                                            ? getMdbStatusDetail(mdbConnection.mdbStatus, mdbConnection.mdbStatusFresh && mdbConnection.mdbMenuSelectionActive).description
                                                                             : mdbConnectionLoadError
                                                                                 ? "Não foi possível obter o estado de conexão e MDB da máquina."
                                                                                 : mdbConnectionLoading
@@ -827,6 +827,7 @@ export default function MachineFormPage() {
                                                                             mdbBusy ||
                                                                             !mdbConnection?.online ||
                                                                             !mdbConnection?.monitoringEnabled ||
+                                                                            (mdbConnection?.mdbStatusFresh && mdbConnection?.mdbMenuSelectionActive) ||
                                                                             (mdbConnection?.manualStartRequiresMdb &&
                                                                                 (!mdbConnection.mdbStatusFresh || mdbConnection.mdbStatus !== "enabled_state"))
                                                                         }

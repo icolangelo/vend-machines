@@ -21,7 +21,10 @@ export const MDB_STATUS_DETAILS: Record<string, { label: string; description: st
     },
 };
 
-export function getMdbStatusDetail(status?: string | null) {
+export function getMdbStatusDetail(status?: string | null, menuSelectionActive = false) {
+    if (status === "inactive_state" && menuSelectionActive) {
+        return { label: "Menu de seleção aberto", description: "A máquina está no menu de seleção; aguarde o fechamento para abrir uma nova sessão." };
+    }
     if (!status) {
         return {
             label: "Status MDB desconhecido",

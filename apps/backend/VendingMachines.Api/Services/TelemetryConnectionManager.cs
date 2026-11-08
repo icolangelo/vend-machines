@@ -1873,6 +1873,10 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
             state.AutoOpenLastAttemptAt = null;
             state.AutoOpenLastError = null;
         }
+        state.MdbMenuPhase = null;
+        state.MdbMenuConnectionId = null;
+        state.MdbMenuSessionId = null;
+        state.MdbMenuUpdatedAt = null;
         state.IsOnline = true;
         state.ConnectionId = connection.ConnectionId;
         state.OwnerNodeId = NodeId;

@@ -17,4 +17,8 @@ describe("status MDB", () => {
         expect(getMdbStatusDetail(null).label).toBe("Status MDB desconhecido");
         expect(getMdbStatusDetail("outro_estado").label).toBe("Status MDB desconhecido");
     });
+    it("descreve o menu apenas durante a sequência reconhecida", () => {
+        expect(getMdbStatusDetail("inactive_state", true).label).toBe("Menu de seleção aberto");
+        expect(getMdbStatusDetail("inactive_state", false).label).toBe("Sem comunicação MDB");
+    });
 });

@@ -23,6 +23,63 @@ namespace VendingMachines.Api.Tests;
 public sealed class SessionPaymentResultConcurrencyTests
 {
     [Fact]
+    public async Task ConcurrentMenuCompletionClosesSessionOnce()
+    {
+        var connectionString = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            if (string.Equals(Environment.GetEnvironmentVariable("VENDMACHINES_REQUIRE_TEST_POSTGRES"), "true", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("O teste concorrente do menu exige PostgreSQL no CI.");
+            return;
+        }
+        var databaseName = $"menu_sequence_{Guid.NewGuid():N}";
+        var adminConnection = new NpgsqlConnectionStringBuilder(connectionString) { Database = "postgres", Pooling = false }.ConnectionString;
+        var testConnection = new NpgsqlConnectionStringBuilder(connectionString) { Database = databaseName, Pooling = false }.ConnectionString;
+        await using (var admin = new NpgsqlConnection(adminConnection))
+        {
+            await admin.OpenAsync();
+            await using var create = new NpgsqlCommand($"CREATE DATABASE \"{databaseName}\"", admin);
+            await create.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            var company = Guid.NewGuid();
+            var sessionId = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+            const string machineId = "menu-concurrency-machine";
+            await using (var setup = CreateDbContext(testConnection))
+            {
+                await setup.Database.EnsureCreatedAsync();
+                setup.Companies.Add(new Company { Id = company, Name = "Empresa sintética", Cnpj = "00000000000000" });
+                setup.Machines.Add(new Machine { Id = machineId, Name = "Máquina", SerialNumber = "MENU-CONCURRENCY", CompanyId = company });
+                setup.MachineSessions.Add(new MachineSession { Id = sessionId, MachineId = machineId, CompanyId = company, State = MachineSessionStates.AwaitingSelection });
+                setup.MachineConnectionStates.Add(new MachineConnectionState { MachineId = machineId, CompanyId = company,
+                    ConnectionId = "connection", MdbStatus = MdbStatuses.Inactive, MdbStatusUpdatedAt = now.AddSeconds(-1),
+                    MdbMenuPhase = "inactive", MdbMenuConnectionId = "connection", MdbMenuSessionId = sessionId, MdbMenuUpdatedAt = now.AddSeconds(-1) });
+                await setup.SaveChangesAsync();
+            }
+            await using var first = CreateDbContext(testConnection);
+            await using var second = CreateDbContext(testConnection);
+            var message = new InboundDeviceMessage(machineId, company, "MENU-CONCURRENCY", "connection", 7,
+                "{\"command\":\"status\",\"status\":\"enabled_state\"}", now);
+            await Task.WhenAll(CreateOrchestrator(first).HandleDeviceMessageAsync(message, CancellationToken.None),
+                CreateOrchestrator(second).HandleDeviceMessageAsync(message, CancellationToken.None));
+            await using var verify = CreateDbContext(testConnection);
+            var session = await verify.MachineSessions.SingleAsync();
+            Assert.Equal(MachineSessionStates.ClosedByDeviceBeforeSelection, session.State);
+            Assert.Equal(1, await verify.TelemetryEvents.CountAsync(item => item.EventType == "session.menu_closed"));
+            Assert.Equal(0, await verify.PaymentTransactions.CountAsync());
+        }
+        finally
+        {
+            await using var admin = new NpgsqlConnection(adminConnection);
+            await admin.OpenAsync();
+            await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE)", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Fact]
     public async Task PostgresInboxCompletionFailureReplaysDeliveryWithoutDuplicateSaleOrStock()
     {
         var connectionString = Environment.GetEnvironmentVariable("VENDMACHINES_TEST_POSTGRES");

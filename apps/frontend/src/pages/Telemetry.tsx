@@ -183,6 +183,7 @@ export default function Telemetry() {
                                     mdbStatus: message.mdbStatus,
                                     mdbStatusUpdatedAt: message.mdbStatusUpdatedAt,
                                     mdbStatusFresh: message.mdbStatusFresh,
+                                    mdbMenuSelectionActive: message.mdbMenuSelectionActive,
                                 }
                                 : item));
                         }
@@ -236,6 +237,7 @@ export default function Telemetry() {
         selected.online &&
         selected.commandRouteAvailable &&
         selected.monitoringEnabled &&
+        !(selected.mdbStatusFresh && selected.mdbMenuSelectionActive) &&
         (!selected.manualStartRequiresMdb || mdbReady);
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
@@ -375,7 +377,7 @@ export default function Telemetry() {
                                             <div className="mt-2 flex gap-1.5 flex-wrap">
                                                 <Badge variant={machine.monitoringEnabled ? "default" : "outline"}>{machine.monitoringEnabled ? "Ativa" : "Inativa"}</Badge>
                                                 <Badge variant={machine.mdbStatusFresh ? "secondary" : "outline"}>
-                                                    {getMdbStatusDetail(machine.mdbStatus).label}
+                                                    {getMdbStatusDetail(machine.mdbStatus, machine.mdbStatusFresh && machine.mdbMenuSelectionActive).label}
                                                 </Badge>
                                                 {machine.online && !machine.commandRouteAvailable && (
                                                     <Badge variant="destructive">Aguardando reconexão</Badge>
@@ -450,7 +452,7 @@ export default function Telemetry() {
                                         <StatusItem
                                             icon={Activity}
                                             label="Status MDB"
-                                            value={getMdbStatusDetail(selected.mdbStatus).label}
+                                            value={getMdbStatusDetail(selected.mdbStatus, selected.mdbStatusFresh && selected.mdbMenuSelectionActive).label}
                                             alert={!selected.mdbStatusFresh}
                                         />
                                         <StatusItem icon={Activity} label="Sessão MDB" value={selected.activeSession ? stateLabels[selected.activeSession.state] ?? selected.activeSession.state : "Sem sessão"} />
@@ -458,7 +460,7 @@ export default function Telemetry() {
                                     </CardContent>
                                     <CardContent className="pt-0">
                                         <p className="text-xs text-muted-foreground">
-                                            {getMdbStatusDetail(selected.mdbStatus).description}
+                                            {getMdbStatusDetail(selected.mdbStatus, selected.mdbStatusFresh && selected.mdbMenuSelectionActive).description}
                                             {" "}Última atualização: {formatDate(selected.mdbStatusUpdatedAt)}.
                                         </p>
                                         {selected.online && !selected.commandRouteAvailable && (

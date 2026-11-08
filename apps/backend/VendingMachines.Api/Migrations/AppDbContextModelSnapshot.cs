@@ -497,6 +497,18 @@ namespace VendingMachines.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("MdbMenuConnectionId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MdbMenuPhase")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("MdbMenuSessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("MdbMenuUpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("MdbStatus")
                         .HasColumnType("text");
 
