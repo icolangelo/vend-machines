@@ -36,6 +36,13 @@ public sealed class WorkerHealthController(
                 .GroupBy(row => row.Status)
                 .Select(group => new { status = group.Key, count = group.Count() })
                 .ToDictionaryAsync(item => item.status, item => item.count, cancellationToken);
+            var deferredCandidateCount = financialOutboxCounts.GetValueOrDefault("deferred_candidate_overlap");
+            if (deferredCandidateCount > 0)
+            {
+                financialOutboxCounts["deferred_legacy_overlap"] =
+                    financialOutboxCounts.GetValueOrDefault("deferred_legacy_overlap") + deferredCandidateCount;
+                financialOutboxCounts.Remove("deferred_candidate_overlap");
+            }
             var oldestDeviceMessageAt = await db.DeviceMessageInbox.AsNoTracking()
                 .Where(row => row.Status == "Pending" || row.Status == "Retry" || row.Status == "Processing")
                 .MinAsync(row => (DateTime?)row.ReceivedAt, cancellationToken);

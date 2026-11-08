@@ -329,6 +329,7 @@ require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/SessionOrche
 require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Máquinas ainda conectadas à API anterior'
 require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'lists safe machine details and paginates legacy connections'
 require_contains "$repo_root/apps/backend/VendingMachines.Api.Tests/BackgroundWorkerHealthRegistryTests.cs" 'deferred_legacy_overlap'
+require_contains "$repo_root/apps/backend/VendingMachines.Api/Controllers/WorkerHealthController.cs" 'deferred_candidate_overlap'
 require_contains "$repo_root/apps/frontend/src/pages/Admin.tsx" 'Adiadas na sobreposição'
 require_contains "$repo_root/apps/frontend/src/test/Admin.test.tsx" 'surfaces deferred financial operations and their age during legacy overlap'
 require_contains "$repo_root/apps/backend/VendingMachines.Api/Services/LegacyTelemetryRequestRelay.cs" 'RelayHopHeaderName'
