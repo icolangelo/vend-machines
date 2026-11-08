@@ -466,7 +466,7 @@ VALUES (gen_random_uuid(), '$legacyMachineId', '$syntheticCompanyId', 'manual', 
     Invoke-DockerChecked @("cp", "$simulatorOutputDirectory/.", "${simulatorContainer}:/tmp/") | Out-Null
     Invoke-DockerChecked @("start", $simulatorContainer) | Out-Null
 
-    $ownerQuery = "SELECT COALESCE(`"OwnerNodeId`", '') || '|' || COALESCE(`"OwnerConnectionId`", '') FROM `"MachineConnectionStates`" WHERE `"MachineId`" = '$simulatorMachineId' AND `"IsOnline`" = TRUE AND `"CommandRoutingVersion`" = 1;"
+    $ownerQuery = "SELECT COALESCE(`"OwnerNodeId`", '') || '|' || COALESCE(`"OwnerConnectionId`", '') FROM `"MachineConnectionStates`" WHERE `"MachineId`" = '$simulatorMachineId' AND `"IsOnline`" = TRUE AND `"CommandRoutingVersion`" = 2;"
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     $initialTelemetryOwner = ""
     while ([DateTime]::UtcNow -lt $deadline) {
