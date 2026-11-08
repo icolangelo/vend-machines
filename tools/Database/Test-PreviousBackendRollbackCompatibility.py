@@ -512,8 +512,8 @@ def main() -> int:
 SELECT '{company_id}'::uuid,'Synthetic rollback company',"Id",CURRENT_TIMESTAMP,'00.000.000/0000-00','00000000000000','Active' FROM "Users" WHERE "IsActive"=TRUE LIMIT 1;
 INSERT INTO "Machines" ("Id","Name","ClientName","Location","Status","IsActive","StockLevel","Revenue30d","TotalSales30d","LastSync","SerialNumber","NormalizedSerialNumber","CompanyId","MercadoPagoEnabled","AutoOpenSessionEnabled")
 VALUES ('{machine_id}','Synthetic rollback machine','Fixture','Fixture','online',TRUE,0,0,0,'','{serial}','{serial}','{company_id}',FALSE,FALSE);
-INSERT INTO "MachineConnectionStates" ("Id","MachineId","CompanyId","MonitoringEnabled","IsOnline","ConnectionId","ConnectedAt","LastSeenAt","OwnerNodeId","OwnerConnectionId","CommandRoutingVersion")
-VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_id}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'candidate-node','{connection_id}',1);'''
+INSERT INTO "MachineConnectionStates" ("Id","MachineId","CompanyId","MonitoringEnabled","IsOnline","ConnectionId","ConnectedAt","LastSeenAt","OwnerNodeId","OwnerConnectionId","OwnerLeaseExpiresAt","CommandRoutingVersion")
+VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_id}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'candidate-node','{connection_id}',CURRENT_TIMESTAMP + INTERVAL '5 minutes',1);'''
             run("docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "vendmachines", "-c", fixture)
             before = query(names["postgres"], "vendmachines", presence_query)
             if before != f"online:{connection_id}:candidate-node":
