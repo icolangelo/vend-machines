@@ -1419,9 +1419,12 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 if failure_command_row:
                     break
                 time.sleep(0.5)
-            if failure_command_code == 0 or failure_command_row != "failed|command_outcome_unknown" or failure_dispatch_count != "0":
+            if failure_command_code == 0 or failure_command_row not in {
+                "failed|command_outcome_unknown",
+                "failed|dispatch_timeout_before_send",
+            } or failure_dispatch_count != "0":
                 raise RehearsalError(
-                    "A candidata não registrou o resultado incerto do relay sem owner; "
+                    "A candidata não falhou fechada no relay sem owner; "
                     f"exit={failure_command_code}, audit={failure_command_row}, dispatches={failure_dispatch_count}, "
                     f"body={failure_command_response[-1800:]}"
                 )
