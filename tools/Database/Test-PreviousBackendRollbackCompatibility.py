@@ -550,6 +550,11 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             "--network-alias", "previous-api", "--name", names["api"],
             ]
         for value in runtime:
+            # Only the candidate relays payments to the previous API. Giving
+            # the previous binary the same base URL makes it relay back to
+            # itself, where the loop guard correctly returns 508.
+            if value.startswith("Telemetry__LegacyApiBaseUrl="):
+                continue
             command.extend(("--env", value))
         command.append(names["image"])
         run(*command)
