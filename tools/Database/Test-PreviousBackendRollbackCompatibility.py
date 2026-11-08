@@ -1414,18 +1414,23 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 f'''SELECT COUNT(*) FROM "TelemetryCommandDispatches" WHERE "MachineId"='{machine_id}' '''
                 "AND \"PayloadJson\" LIKE '%VENDMACHINES_FAILOVER_PROBE%';",
             )
+            failure_dispatch_state = query(
+                names["postgres"], "vendmachines",
+                f'''SELECT "Status" || '|' || COALESCE("Error",'') FROM "TelemetryCommandDispatches" '''
+                f'''WHERE "MachineId"='{machine_id}' AND "PayloadJson" LIKE '%VENDMACHINES_FAILOVER_PROBE%' '''
+                'ORDER BY "CreatedAt" DESC LIMIT 1;',
+            )
             for _ in range(10):
                 failure_command_row = query(names["postgres"], "vendmachines", failure_command_query)
                 if failure_command_row:
                     break
                 time.sleep(0.5)
-            if failure_command_code == 0 or failure_command_row not in {
-                "failed|command_outcome_unknown",
-                "failed|dispatch_timeout_before_send",
-            } or failure_dispatch_count != "0":
+            if failure_command_code == 0 or failure_command_row != "failed|dispatch_timeout_before_send" or \
+                failure_dispatch_count != "1" or failure_dispatch_state != "Cancelled|dispatch_timeout_before_send":
                 raise RehearsalError(
-                    "A candidata não falhou fechada no relay sem owner; "
-                    f"exit={failure_command_code}, audit={failure_command_row}, dispatches={failure_dispatch_count}, "
+                    "A candidata não cancelou a intenção ainda não enviada após perder o owner; "
+                    f"exit={failure_command_code}, audit={failure_command_row}, "
+                    f"dispatches={failure_dispatch_count}, dispatch={failure_dispatch_state}, "
                     f"body={failure_command_response[-1800:]}"
                 )
             print("candidate_legacy_command_after_owner_loss=failed_closed")
