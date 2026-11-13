@@ -13,7 +13,7 @@ RUN dotnet publish "VendingMachines.Api.csproj" -c Release -o /app/publish /p:Us
     && rm -f /app/publish/appsettings.*.json
 
 # Estágio final de execução (Runtime Stage)
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:de0ee358cdd672f7017a003bed21e9ac9ed48a27c922a59b18175b6e82fa7fee AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:1a48394b6f29d3a32c79d9edecd4abda0ecbe8776d567dbfc4590ed6979c740c AS final
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
