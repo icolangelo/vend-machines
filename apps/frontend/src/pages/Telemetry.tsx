@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, CircleDollarSign, DoorOpen, RefreshCw, Search, Send, Server, Wifi, WifiOff, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, CircleDollarSign, DoorOpen, FileDown, RefreshCw, Search, Send, Server, Wifi, WifiOff, XCircle } from "lucide-react";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,8 @@ import {
     API_BASE_URL,
     cancelTelemetrySession,
     createTelemetrySocketTicket,
+    downloadTelemetryAuditReport,
+    getTelemetryAuditReports,
     getTelemetryConnections,
     getTelemetryEvents,
     requestMdbStatus,
@@ -20,6 +22,7 @@ import {
     setTelemetryMonitoring,
     startTelemetrySession,
     type TelemetryConnection,
+    type TelemetryAuditReport,
     type TelemetryEventItem,
 } from "@/lib/api";
 import { getMdbStatusDetail } from "@/lib/mdbStatus";
@@ -68,6 +71,10 @@ export default function Telemetry() {
     const [connectionsLoadError, setConnectionsLoadError] = useState(false);
     const [eventsLoading, setEventsLoading] = useState(false);
     const [eventsLoadError, setEventsLoadError] = useState(false);
+    const [auditReports, setAuditReports] = useState<TelemetryAuditReport[]>([]);
+    const [reportsLoading, setReportsLoading] = useState(false);
+    const [reportsLoadError, setReportsLoadError] = useState(false);
+    const [downloadingReport, setDownloadingReport] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [realtimeConnected, setRealtimeConnected] = useState(false);
     const socketRef = useRef<WebSocket | null>(null);
@@ -76,6 +83,7 @@ export default function Telemetry() {
     const connectionsRequestIdRef = useRef(0);
     const eventsMachineIdRef = useRef("");
     const eventsRequestIdRef = useRef(0);
+    const reportsRequestIdRef = useRef(0);
     const manualCommandRequestIdsRef = useRef(new Map<string, string>());
 
     const loadConnections = useCallback(async () => {
@@ -118,6 +126,23 @@ export default function Telemetry() {
         }
     }, []);
 
+    const loadAuditReports = useCallback(async (machineId: string) => {
+        if (!machineId || machineId !== selectedIdRef.current || !canOperateTelemetry) return;
+        const requestId = ++reportsRequestIdRef.current;
+        setReportsLoading(true);
+        setReportsLoadError(false);
+        try {
+            const data = await getTelemetryAuditReports(machineId);
+            if (requestId === reportsRequestIdRef.current && selectedIdRef.current === machineId)
+                setAuditReports(data);
+        } catch {
+            if (requestId === reportsRequestIdRef.current && selectedIdRef.current === machineId)
+                setReportsLoadError(true);
+        } finally {
+            if (requestId === reportsRequestIdRef.current) setReportsLoading(false);
+        }
+    }, [canOperateTelemetry]);
+
     useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
     useEffect(() => {
@@ -131,13 +156,23 @@ export default function Telemetry() {
         return () => window.clearInterval(timer);
     }, [loadConnections]);
 
-    useEffect(() => { loadEvents(selectedId); }, [selectedId, loadEvents]);
+    useEffect(() => {
+        setAuditReports([]);
+        loadEvents(selectedId);
+        loadAuditReports(selectedId);
+    }, [selectedId, loadEvents, loadAuditReports]);
 
     useEffect(() => {
         if (!selectedId) return;
         const timer = window.setInterval(() => loadEvents(selectedId), 15000);
         return () => window.clearInterval(timer);
     }, [selectedId, loadEvents]);
+
+    useEffect(() => {
+        if (!selectedId || !canOperateTelemetry) return;
+        const timer = window.setInterval(() => loadAuditReports(selectedId), 15000);
+        return () => window.clearInterval(timer);
+    }, [selectedId, canOperateTelemetry, loadAuditReports]);
 
     useEffect(() => {
         let disposed = false;
@@ -244,6 +279,24 @@ export default function Telemetry() {
         return connections.filter(item => !term || item.machineName.toLowerCase().includes(term) || item.serialNumber.toLowerCase().includes(term));
     }, [connections, search]);
 
+    const handleDownloadReport = async (report: TelemetryAuditReport) => {
+        if (!selectedId) return;
+        setDownloadingReport(report.fileName);
+        try {
+            const blob = await downloadTelemetryAuditReport(selectedId, report.fileName);
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = report.fileName;
+            anchor.click();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            toast({ title: "Download não concluído", description: (error as Error).message, variant: "destructive" });
+        } finally {
+            setDownloadingReport(null);
+        }
+    };
+
     const run = async (operation: () => Promise<unknown>, success: string) => {
         if (!canOperateTelemetry) {
             toast({ title: "Acesso somente para administradores", description: "Seu perfil pode consultar a telemetria, mas não pode enviar comandos ou alterar sessões.", variant: "destructive" });
@@ -255,6 +308,7 @@ export default function Telemetry() {
             toast({ title: success });
             await loadConnections();
             if (selectedId) await loadEvents(selectedId);
+            if (selectedId) await loadAuditReports(selectedId);
         } catch (error) {
             toast({ title: "Operação não concluída", description: (error as Error).message, variant: "destructive" });
         } finally { setBusy(false); }
@@ -357,8 +411,10 @@ export default function Telemetry() {
                                             if (machine.machineId !== selectedId) {
                                                 selectedIdRef.current = machine.machineId;
                                                 eventsRequestIdRef.current += 1;
+                                                reportsRequestIdRef.current += 1;
                                                 eventsMachineIdRef.current = machine.machineId;
                                                 setEvents([]);
+                                                setAuditReports([]);
                                                 setEventsLoadError(false);
                                                 setEventsLoading(false);
                                             }
@@ -528,6 +584,58 @@ export default function Telemetry() {
                                         </div>
                                     </CardContent>
                                 </Card>
+
+                                {canOperateTelemetry && (
+                                    <Card>
+                                        <CardHeader className="flex flex-row items-center justify-between">
+                                            <div>
+                                                <CardTitle className="text-base">Relatórios de auditoria</CardTitle>
+                                                <p className="mt-1 text-xs text-muted-foreground">Arquivos completos recebidos desta máquina.</p>
+                                            </div>
+                                            <Button size="sm" variant="ghost" aria-label="Atualizar relatórios" onClick={() => void loadAuditReports(selected.machineId)} disabled={reportsLoading}>
+                                                <RefreshCw className={`h-4 w-4 ${reportsLoading ? "animate-spin" : ""}`} />
+                                            </Button>
+                                        </CardHeader>
+                                        <CardContent className="space-y-2">
+                                            {reportsLoadError && (
+                                                <div role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                                                    <p>Não foi possível carregar os relatórios desta máquina.</p>
+                                                    <Button size="sm" variant="outline" className="mt-2" onClick={() => void loadAuditReports(selected.machineId)} disabled={reportsLoading}>Tentar novamente</Button>
+                                                </div>
+                                            )}
+                                            {reportsLoading && auditReports.length === 0 && <p role="status" className="text-sm text-muted-foreground">Carregando relatórios...</p>}
+                                            {!reportsLoading && !reportsLoadError && auditReports.length === 0 && (
+                                                <p className="text-sm text-muted-foreground">Nenhum arquivo completo recebido. A lista é atualizada automaticamente.</p>
+                                            )}
+                                            {auditReports.map(report => (
+                                                <div key={report.fileName} className="flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+                                                    <div className="min-w-0">
+                                                        <p className="truncate font-mono text-sm font-medium">{report.fileName}</p>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            Recebido em {formatDate(report.receivedAt)} · {report.partCount} partes · {report.sizeBytes.toLocaleString("pt-BR")} bytes
+                                                        </p>
+                                                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                                                            {report.transferStatus === "failed" ? (
+                                                                <Badge variant="destructive">Falha no recebimento</Badge>
+                                                            ) : (
+                                                                <Badge variant={report.crcValid ? "default" : "destructive"}>{report.crcValid ? "CRC válido" : "CRC inválido"}</Badge>
+                                                            )}
+                                                            {report.transferStatus === "completed" && report.calculatedCrc && <span>Calculado: <span className="font-mono">{report.calculatedCrc}</span></span>}
+                                                            {report.transferStatus === "completed" && report.reportedCrc && <span>Informado: <span className="font-mono">{report.reportedCrc}</span></span>}
+                                                            {report.validationError && <span className="text-destructive">{report.validationError}</span>}
+                                                        </div>
+                                                    </div>
+                                                    {report.transferStatus === "completed" && (
+                                                        <Button size="sm" variant="outline" onClick={() => void handleDownloadReport(report)} disabled={downloadingReport !== null}>
+                                                            <FileDown className="mr-2 h-4 w-4" />
+                                                            {downloadingReport === report.fileName ? "Baixando..." : "Baixar TXT"}
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </CardContent>
+                                    </Card>
+                                )}
                             </div>
                         ) : (
                             <Card className="flex items-center justify-center min-h-80"><p className="text-muted-foreground">Selecione uma máquina.</p></Card>

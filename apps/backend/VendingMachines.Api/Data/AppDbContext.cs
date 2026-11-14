@@ -31,6 +31,8 @@ public class AppDbContext : DbContext
     public DbSet<TelemetryCommandResolution> TelemetryCommandResolutions { get; set; } = null!;
     public DbSet<TelemetryCommandDispatch> TelemetryCommandDispatches { get; set; } = null!;
     public DbSet<TelemetryEvent> TelemetryEvents { get; set; } = null!;
+    public DbSet<TelemetryReportFileChunk> TelemetryReportFileChunks { get; set; } = null!;
+    public DbSet<TelemetryReportFileValidation> TelemetryReportFileValidations { get; set; } = null!;
     public DbSet<DeviceMessageInbox> DeviceMessageInbox { get; set; } = null!;
     public DbSet<DeliveryFailure> DeliveryFailures { get; set; } = null!;
     public DbSet<OutboxMessage> OutboxMessages { get; set; } = null!;
@@ -138,6 +140,18 @@ public class AppDbContext : DbContext
                 "CK_TelemetryCommandResolutions_OneCommand",
                 "(\"TelemetryCommandId\" IS NOT NULL AND \"TelemetryCommandDispatchId\" IS NULL) OR (\"TelemetryCommandId\" IS NULL AND \"TelemetryCommandDispatchId\" IS NOT NULL)"));
         modelBuilder.Entity<TelemetryEvent>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryReportFileChunk>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryReportFileChunk>().Property(x => x.FileName).HasMaxLength(128);
+        modelBuilder.Entity<TelemetryReportFileChunk>().HasIndex(x => new { x.CompanyId, x.MachineId, x.FileName, x.Part }).IsUnique();
+        modelBuilder.Entity<TelemetryReportFileChunk>().HasIndex(x => new { x.CompanyId, x.MachineId, x.ReceivedAt });
+        modelBuilder.Entity<TelemetryReportFileValidation>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.FileName).HasMaxLength(128);
+        modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.TransferStatus).HasMaxLength(16);
+        modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.CalculatedCrc).HasMaxLength(4);
+        modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.ReportedCrc).HasMaxLength(4);
+        modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.ValidationError).HasMaxLength(256);
+        modelBuilder.Entity<TelemetryReportFileValidation>().HasIndex(x => new { x.CompanyId, x.MachineId, x.FileName }).IsUnique();
+        modelBuilder.Entity<TelemetryReportFileValidation>().HasIndex(x => new { x.CompanyId, x.MachineId, x.ValidatedAt });
         modelBuilder.Entity<DeviceMessageInbox>().HasKey(x => x.Id);
         modelBuilder.Entity<DeviceMessageInbox>().HasIndex(x => x.IdempotencyKey).IsUnique();
         modelBuilder.Entity<DeviceMessageInbox>().HasIndex(x => new { x.Status, x.NextAttemptAt, x.ReceivedAt });

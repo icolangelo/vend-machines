@@ -265,6 +265,7 @@ builder.Services.AddScoped<SessionOrchestrator>();
 builder.Services.AddScoped<IDeviceTelemetryMessageHandler>(sp => sp.GetRequiredService<SessionOrchestrator>());
 builder.Services.AddSingleton<DeviceMessageInboxAdmissionGate>();
 builder.Services.AddScoped<DeviceMessageInboxService>();
+builder.Services.AddScoped<TelemetryReportFileService>();
 builder.Services.AddSingleton<WebhookInboxAdmissionGate>(_ => WebhookInboxAdmissionGate.Shared);
 builder.Services.AddScoped<WebhookInboxAdmissionService>();
 builder.Services.AddScoped<DeviceMessageInboxProcessor>();

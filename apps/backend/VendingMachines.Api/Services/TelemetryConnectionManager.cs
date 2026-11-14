@@ -1667,11 +1667,21 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
             return;
         }
 
-        if (type != "msg") return;
+        var isReportFileMessage = string.Equals(type, "report_file", StringComparison.OrdinalIgnoreCase);
+        if (type != "msg" && !isReportFileMessage) return;
         if (!hasMessageId)
             throw new WebSocketException("Mensagem MDB sem identificador inteiro; o frame não será confirmado.");
-        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+        JsonElement data;
+        if (isReportFileMessage)
+        {
+            // File-transfer frames use report_file as the top-level type and carry the
+            // filename/part/data/eof fields beside the envelope id.
+            data = root;
+        }
+        else if (!root.TryGetProperty("data", out data) || data.ValueKind != JsonValueKind.Object)
+        {
             throw new WebSocketException("Mensagem MDB sem objeto data; o frame não será confirmado.");
+        }
 
         if (!await IsCurrentLocalOwnerAsync(connection, cancellationToken))
         {
@@ -1745,15 +1755,18 @@ public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryCo
         if (pendingStatusRequest is not null && pendingStatusResponse is not null)
             pendingStatusRequest.Completion.TrySetResult(pendingStatusResponse);
 
-        await _panelHub.BroadcastMachineAsync(connection.CompanyId, connection.MachineId, new
+        if (!isReportFileMessage)
         {
-            type = "telemetry.received",
-            machineId = connection.MachineId,
-            serial = connection.Serial,
-            messageId = id,
-            data = JsonSerializer.Deserialize<JsonElement>(inbound.DataJson),
-            receivedAt = inbound.ReceivedAt
-        });
+            await _panelHub.BroadcastMachineAsync(connection.CompanyId, connection.MachineId, new
+            {
+                type = "telemetry.received",
+                machineId = connection.MachineId,
+                serial = connection.Serial,
+                messageId = id,
+                data = JsonSerializer.Deserialize<JsonElement>(inbound.DataJson),
+                receivedAt = inbound.ReceivedAt
+            });
+        }
     }
 
     private static async Task QueuePriorityAsync(DeviceConnection connection, object payload, CancellationToken cancellationToken) =>

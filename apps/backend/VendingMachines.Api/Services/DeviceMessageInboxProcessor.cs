@@ -20,17 +20,20 @@ public sealed class DeviceMessageInboxProcessor
     private readonly IDeviceTelemetryMessageHandler _handler;
     private readonly ILogger<DeviceMessageInboxProcessor> _logger;
     private readonly IServiceScopeFactory? _scopeFactory;
+    private readonly TelemetryReportFileService? _reportFileService;
 
     public DeviceMessageInboxProcessor(
         AppDbContext db,
         IDeviceTelemetryMessageHandler handler,
         ILogger<DeviceMessageInboxProcessor> logger,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        TelemetryReportFileService? reportFileService = null)
     {
         _db = db;
         _handler = handler;
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _reportFileService = reportFileService;
     }
 
     public async Task<bool> ProcessNextAsync(CancellationToken cancellationToken)
@@ -95,7 +98,10 @@ public sealed class DeviceMessageInboxProcessor
                 row.DataJson,
                 row.ReceivedAt);
 
-            await _handler.HandleDeviceMessageAsync(message, handlerCancellation.Token);
+            var handledReportChunk = _reportFileService is not null &&
+                                     await _reportFileService.TryStoreChunkAsync(message, handlerCancellation.Token);
+            if (!handledReportChunk)
+                await _handler.HandleDeviceMessageAsync(message, handlerCancellation.Token);
             var leaseIsOurs = await StopLeaseRenewalAsync(leaseRenewalStop, leaseRenewal);
             if (!leaseIsOurs) return true;
             var currentLeaseAt = new DateTime(Interlocked.Read(ref leaseTicks), DateTimeKind.Utc);

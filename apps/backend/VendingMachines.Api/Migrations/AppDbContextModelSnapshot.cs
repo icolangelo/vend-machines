@@ -1488,6 +1488,110 @@ namespace VendingMachines.Api.Migrations
                     b.ToTable("TelemetryEvents");
                 });
 
+            modelBuilder.Entity("VendingMachines.Api.Models.TelemetryReportFileChunk", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("ByteLength")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Data")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("IsEndOfFile")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("MachineId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("MessageId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Part")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MachineId", "ReceivedAt");
+
+                    b.HasIndex("CompanyId", "MachineId", "FileName", "Part")
+                        .IsUnique();
+
+                    b.ToTable("TelemetryReportFileChunks");
+                });
+
+            modelBuilder.Entity("VendingMachines.Api.Models.TelemetryReportFileValidation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CalculatedCrc")
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("IsCrcValid")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("MachineId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("PartCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ReportedCrc")
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("TransferStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<DateTime>("ValidatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ValidationError")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MachineId", "FileName")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "MachineId", "ValidatedAt");
+
+                    b.ToTable("TelemetryReportFileValidations");
+                });
+
             modelBuilder.Entity("VendingMachines.Api.Models.TransactionTelemetryLog", b =>
                 {
                     b.Property<Guid>("Id")

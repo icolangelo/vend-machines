@@ -178,6 +178,36 @@ public class TelemetryEvent
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
+public sealed class TelemetryReportFileChunk
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CompanyId { get; set; }
+    public string MachineId { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public int Part { get; set; }
+    public string Data { get; set; } = string.Empty;
+    public int ByteLength { get; set; }
+    public bool IsEndOfFile { get; set; }
+    public int MessageId { get; set; }
+    public DateTime ReceivedAt { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class TelemetryReportFileValidation
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CompanyId { get; set; }
+    public string MachineId { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public DateTime ValidatedAt { get; set; } = DateTime.UtcNow;
+    public int PartCount { get; set; }
+    public long SizeBytes { get; set; }
+    public string TransferStatus { get; set; } = "completed";
+    public bool IsCrcValid { get; set; }
+    public string? CalculatedCrc { get; set; }
+    public string? ReportedCrc { get; set; }
+    public string? ValidationError { get; set; }
+}
+
 public class DeliveryFailure
 {
     public Guid Id { get; set; } = Guid.NewGuid();

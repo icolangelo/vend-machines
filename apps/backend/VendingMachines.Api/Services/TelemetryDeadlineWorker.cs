@@ -23,6 +23,7 @@ public sealed class TelemetryDeadlineWorker : BackgroundService
         {
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
             var lastCleanup = DateTime.MinValue;
+            var lastReportTransferSweep = DateTime.MinValue;
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
                 try
@@ -31,6 +32,15 @@ public sealed class TelemetryDeadlineWorker : BackgroundService
                     var orchestrator = scope.ServiceProvider.GetRequiredService<SessionOrchestrator>();
                     await orchestrator.ProcessDeadlinesAsync(stoppingToken);
                     await orchestrator.ProcessOutboxAsync(stoppingToken);
+
+                    if (DateTime.UtcNow - lastReportTransferSweep >= TimeSpan.FromSeconds(30))
+                    {
+                        var reportFileService = scope.ServiceProvider.GetRequiredService<TelemetryReportFileService>();
+                        var failedTransfers = await reportFileService.FailStaleTransfersAsync(stoppingToken);
+                        if (failedTransfers > 0)
+                            _logger.LogWarning("{FailedTransfers} transferências de relatório de telemetria expiraram antes de eof: 1.", failedTransfers);
+                        lastReportTransferSweep = DateTime.UtcNow;
+                    }
 
                     if (DateTime.UtcNow - lastCleanup >= TimeSpan.FromHours(1))
                     {

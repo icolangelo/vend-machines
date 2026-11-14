@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -25,6 +26,8 @@ public sealed class TelemetryController : BaseApiController
     private readonly MdbStatusOptions _mdbOptions;
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly LegacyTelemetryRequestRelay? _legacyTelemetryRelay;
+
+    private const int MaximumReportBytes = 10 * 1024 * 1024;
 
     public TelemetryController(
         AppDbContext db,
@@ -534,6 +537,67 @@ public sealed class TelemetryController : BaseApiController
                     : "A máquina não confirmou o comando."
             });
         return Accepted(new { commandId = command.Id, messageId = result.MessageId, status = command.Status });
+    }
+
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpGet("machines/{machineId}/reports")]
+    public async Task<IActionResult> GetMachineReports(string machineId, CancellationToken cancellationToken)
+    {
+        if (!TryGetIdentity(out _, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!await _db.Machines.AsNoTracking().AnyAsync(machine => machine.Id == machineId && machine.CompanyId == companyId, cancellationToken))
+            return NotFound();
+
+        var reports = await _db.TelemetryReportFileValidations.AsNoTracking()
+            .Where(report => report.CompanyId == companyId && report.MachineId == machineId)
+            .OrderByDescending(report => report.ValidatedAt)
+            .Take(100)
+            .Select(report => new
+            {
+                fileName = report.FileName,
+                receivedAt = report.ValidatedAt,
+                partCount = report.PartCount,
+                sizeBytes = report.SizeBytes,
+                transferStatus = report.TransferStatus,
+                crcValid = report.IsCrcValid,
+                calculatedCrc = report.CalculatedCrc,
+                reportedCrc = report.ReportedCrc,
+                validationError = report.ValidationError
+            })
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { items = reports });
+    }
+
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpGet("machines/{machineId}/reports/{fileName}/download")]
+    public async Task<IActionResult> DownloadMachineReport(string machineId, string fileName, CancellationToken cancellationToken)
+    {
+        if (!TryGetIdentity(out _, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (!await _db.Machines.AsNoTracking().AnyAsync(machine => machine.Id == machineId && machine.CompanyId == companyId, cancellationToken))
+            return NotFound();
+
+        var validation = await _db.TelemetryReportFileValidations.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.CompanyId == companyId && item.MachineId == machineId && item.FileName == fileName,
+                cancellationToken);
+        if (validation is null) return NotFound();
+        if (validation.TransferStatus != "completed")
+            return Conflict(new { code = "report_incomplete", message = validation.ValidationError ?? "A transferência do arquivo não foi concluída." });
+
+        var chunks = await _db.TelemetryReportFileChunks.AsNoTracking()
+            .Where(chunk => chunk.CompanyId == companyId && chunk.MachineId == machineId && chunk.FileName == fileName)
+            .OrderBy(chunk => chunk.Part)
+            .ToListAsync(cancellationToken);
+        if (chunks.Count == 0) return NotFound();
+
+        var lastPart = chunks[^1].Part;
+        if (lastPart < 0 || chunks.Count != lastPart + 1 || chunks[0].Part != 0 ||
+            chunks.Count(chunk => chunk.IsEndOfFile) != 1 || !chunks[^1].IsEndOfFile)
+            return Conflict(new { code = "report_incomplete", message = "O arquivo ainda está sendo recebido pela máquina." });
+
+        var report = string.Concat(chunks.Select(chunk => chunk.Data));
+        if (chunks.Sum(chunk => (long)chunk.ByteLength) > MaximumReportBytes || report.Length > MaximumReportBytes)
+            return Conflict(new { code = "report_too_large", message = "O arquivo excede o tamanho permitido." });
+        return File(Encoding.UTF8.GetBytes(report), "text/plain; charset=utf-8", fileName);
     }
 
     private async Task<IActionResult> ReplayManualCommandAsync(TelemetryCommand command, CancellationToken cancellationToken)

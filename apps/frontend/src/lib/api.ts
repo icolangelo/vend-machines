@@ -136,6 +136,18 @@ export interface TelemetryEventItem {
     createdAt: string;
 }
 
+export interface TelemetryAuditReport {
+    fileName: string;
+    receivedAt: string;
+    partCount: number;
+    sizeBytes: number;
+    transferStatus: "completed" | "failed";
+    crcValid: boolean;
+    calculatedCrc?: string | null;
+    reportedCrc?: string | null;
+    validationError?: string | null;
+}
+
 export async function getTelemetryConnections(): Promise<TelemetryConnection[]> {
     const response = await authFetch(`${API_BASE_URL}/telemetry/connections?pageSize=200`);
     if (!response.ok) throw new Error("Erro ao carregar conexões de telemetria.");
@@ -225,6 +237,24 @@ export async function getTelemetryEvents(machineId?: string): Promise<TelemetryE
     if (!response.ok) throw new Error("Erro ao carregar eventos de telemetria.");
     const result = await response.json();
     return result.items;
+}
+
+export async function getTelemetryAuditReports(machineId: string): Promise<TelemetryAuditReport[]> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/reports`);
+    if (!response.ok) throw new Error("Erro ao carregar relatórios recebidos da máquina.");
+    const result = await response.json();
+    return result.items;
+}
+
+export async function downloadTelemetryAuditReport(machineId: string, fileName: string): Promise<Blob> {
+    const response = await authFetch(
+        `${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/reports/${encodeURIComponent(fileName)}/download`
+    );
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({} as { message?: string }));
+        throw new Error(error.message || "Não foi possível baixar o relatório.");
+    }
+    return response.blob();
 }
 
 export async function createTelemetrySocketTicket(): Promise<{ ticket: string; expiresAt: string }> {
