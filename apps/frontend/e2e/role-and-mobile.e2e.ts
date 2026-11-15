@@ -189,7 +189,7 @@ test("Operator é redirecionado ao tentar abrir rotas administrativas diretament
 test("Admin da empresa recebe controles de gestão sem acesso à administração da plataforma", async ({ page }) => {
   await signIn(page, "admin@acme.example", "admin123");
   await expect(page.getByRole("link", { name: "Usuários", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Plataform Admin", exact: true })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Produtos", exact: true }).click();
   await expect(page.getByRole("button", { name: "Novo Produto", exact: true })).toBeVisible();
@@ -237,7 +237,7 @@ test("Operator da Sabor & Cia vê somente os dados da própria empresa no celula
 test("Admin da Sabor & Cia gerencia usuários somente da própria empresa", async ({ page }) => {
   await signIn(page, "admin@sabor.example", "admin123");
   await expect(page.getByRole("link", { name: "Usuários", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Plataform Admin", exact: true })).toHaveCount(0);
   await page.getByRole("link", { name: "Usuários", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Usuários", exact: true })).toBeVisible();
   await expect(page.getByText("João da Silva", { exact: true })).toBeVisible();
