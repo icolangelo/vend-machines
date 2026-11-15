@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
     startTelemetrySession: vi.fn(),
     cancelTelemetrySession: vi.fn(),
     requestMdbStatus: vi.fn(),
+    requestTelemetryAuditReport: vi.fn(),
     sendTelemetryCommand: vi.fn(),
 }));
 
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
     startTelemetrySession: state.startTelemetrySession,
     cancelTelemetrySession: state.cancelTelemetrySession,
     requestMdbStatus: state.requestMdbStatus,
+    requestTelemetryAuditReport: state.requestTelemetryAuditReport,
     sendTelemetryCommand: state.sendTelemetryCommand,
 }));
 
@@ -76,7 +78,7 @@ describe("Telemetry permissions", () => {
         expect(screen.getByRole("button", { name: "Desativar acompanhamento" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "Consultar MDB" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "Cancelar venda" })).toBeDisabled();
-        expect(screen.getByRole("button", { name: "RELATORIO AUDITORIA" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Solicitar relatório de auditoria" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "REQUISICAO CONFIGURACAO" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "ATUALIZAR CONFIGURACAO" })).toBeDisabled();
     });
@@ -88,7 +90,7 @@ describe("Telemetry permissions", () => {
         expect(await screen.findByRole("button", { name: "Desativar acompanhamento" })).toBeEnabled();
         expect(screen.getByRole("button", { name: "Consultar MDB" })).toBeEnabled();
         expect(screen.getByRole("button", { name: "Cancelar venda" })).toBeEnabled();
-        expect(screen.getByRole("button", { name: "RELATORIO AUDITORIA" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Solicitar relatório de auditoria" })).toBeEnabled();
     });
 
     it("shows a connection loading error instead of an empty machine list and retries", async () => {
@@ -167,7 +169,7 @@ describe("Telemetry permissions", () => {
         expect(screen.getAllByText("Aguardando reconexão").length).toBeGreaterThan(0);
         expect(screen.getByRole("button", { name: "Consultar MDB" })).toBeDisabled();
         expect(screen.getByRole("button", { name: "Cancelar venda" })).toBeDisabled();
-        expect(screen.getByRole("button", { name: "RELATORIO AUDITORIA" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Solicitar relatório de auditoria" })).toBeDisabled();
     });
 
     it("permite solicitar o cancelamento financeiro de Pix pendente quando a máquina está offline", async () => {
