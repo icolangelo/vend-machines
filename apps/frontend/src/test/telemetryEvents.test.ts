@@ -7,7 +7,7 @@ describe("getTelemetryEventLabel", () => {
         expect(getTelemetryEventLabel("device.disconnected")).toBe("Máquina desconectada");
     });
 
-    it("does not expose unknown internal event codes", () => {
-        expect(getTelemetryEventLabel("unknown.secret_event")).toBe("Outro evento de telemetria");
+    it("shows the original code for events without a Portuguese label", () => {
+        expect(getTelemetryEventLabel("unknown.secret_event")).toBe("Evento não catalogado: unknown.secret_event");
     });
 });

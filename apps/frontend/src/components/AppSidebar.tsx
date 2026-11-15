@@ -78,7 +78,7 @@ export function AppSidebar() {
             (user?.role === "Admin" || user?.role === "PlatformAdmin")
             ? [{ title: "Simulador Pix", url: "/payment-simulator", icon: QrCode }]
             : []),
-        ...(isSuperAdmin ? [{ title: "Admin", url: "/admin", icon: Shield }] : []),
+        ...(user?.role === "Admin" || isSuperAdmin ? [{ title: "Admin", url: "/company-admin", icon: Shield }] : []),
         ...((user?.role === "Admin" || user?.role === "PlatformAdmin")
             ? [{ title: "Integrações", url: "/integrations", icon: Blocks }]
             : []),
@@ -185,6 +185,15 @@ export function AppSidebar() {
                         </SidebarMenu>
                     </SidebarGroupContent>
                 </SidebarGroup>
+
+                {isSuperAdmin && <SidebarGroup>
+                    <SidebarGroupLabel className="text-sidebar-foreground/40 text-[0.65rem] tracking-widest uppercase">Plataforma</SidebarGroupLabel>
+                    <SidebarGroupContent><SidebarMenu><SidebarMenuItem><SidebarMenuButton asChild>
+                        <NavLink to="/admin" onClick={() => { if (isMobile) setOpenMobile(false); }} className="text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors duration-150" activeClassName="text-sidebar-primary-foreground bg-sidebar-accent border-l-2 border-sidebar-primary">
+                            <Shield className="h-4 w-4 shrink-0" />{!collapsed && <span className="text-sm">Plataform Admin</span>}
+                        </NavLink>
+                    </SidebarMenuButton></SidebarMenuItem></SidebarMenu></SidebarGroupContent>
+                </SidebarGroup>}
             </SidebarContent>
 
             <SidebarFooter className="px-4 py-3 flex flex-col gap-2">

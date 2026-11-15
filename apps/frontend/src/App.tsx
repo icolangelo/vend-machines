@@ -23,6 +23,7 @@ const Reports = lazy(() => import("./pages/Reports.tsx"));
 const Payments = lazy(() => import("./pages/Payments.tsx"));
 const Alerts = lazy(() => import("./pages/Alerts.tsx"));
 const Admin = lazy(() => import("./pages/Admin.tsx"));
+const CompanyAdmin = lazy(() => import("./pages/CompanyAdmin.tsx"));
 const Users = lazy(() => import("./pages/Users.tsx"));
 const InviteAcceptance = lazy(() => import("./pages/InviteAcceptance.tsx"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword.tsx"));
@@ -140,6 +141,7 @@ const App = () => {
                                     <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
                                     <Route path="/alerts" element={<ProtectedRoute><Alerts /></ProtectedRoute>} />
                                     <Route path="/admin" element={<ProtectedRoute allowedRoles={["PlatformAdmin"]}><Admin /></ProtectedRoute>} />
+                                    <Route path="/company-admin" element={<ProtectedRoute allowedRoles={["Admin", "PlatformAdmin"]}><CompanyAdmin /></ProtectedRoute>} />
                                     <Route path="/users" element={<ProtectedRoute allowedRoles={["Admin"]}><Users /></ProtectedRoute>} />
                                     <Route path="/invite" element={<InviteAcceptance />} />
                                     <Route path="/reset-password" element={<ResetPassword />} />

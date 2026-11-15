@@ -46,7 +46,10 @@ public sealed record BackgroundWorkerHealthSnapshot(
     DateTime? LastHeartbeatAt,
     DateTime? LastSuccessAt,
     int ConsecutiveFailures,
-    string? LastErrorType);
+    string? LastErrorType,
+    string? LastFailureCategory = null,
+    string? LastFailureMachineId = null,
+    int? LastRequestMessageId = null);
 
 /// <summary>Process-local diagnostics. This must not be used as an API readiness gate.</summary>
 public sealed class BackgroundWorkerHealthRegistry
@@ -83,6 +86,24 @@ public sealed class BackgroundWorkerHealthRegistry
         lock (state) state.LastHeartbeatAt = DateTime.UtcNow;
     }
 
+    /// <summary>
+    /// Records that the worker completed a cycle with no eligible work. This clears
+    /// stale cycle failures without claiming that a device operation succeeded.
+    /// </summary>
+    public void ReportIdle(string name)
+    {
+        var state = GetState(name);
+        lock (state)
+        {
+            state.LastHeartbeatAt = DateTime.UtcNow;
+            state.ConsecutiveFailures = 0;
+            state.LastErrorType = null;
+            state.LastFailureCategory = null;
+            state.LastFailureMachineId = null;
+            state.LastRequestMessageId = null;
+        }
+    }
+
     public void ReportSuccess(string name)
     {
         var state = GetState(name);
@@ -93,6 +114,9 @@ public sealed class BackgroundWorkerHealthRegistry
             state.LastSuccessAt = now;
             state.ConsecutiveFailures = 0;
             state.LastErrorType = null;
+            state.LastFailureCategory = null;
+            state.LastFailureMachineId = null;
+            state.LastRequestMessageId = null;
         }
     }
 
@@ -104,6 +128,24 @@ public sealed class BackgroundWorkerHealthRegistry
             state.LastHeartbeatAt = DateTime.UtcNow;
             state.ConsecutiveFailures++;
             state.LastErrorType = exception.GetType().Name;
+        }
+    }
+
+    public void ReportDeviceFailure(string name, string machineId, string? category, int? messageId)
+    {
+        var safeCategory = category is "response_timeout" or "invalid_mdb_status" or "status_routing_unavailable" or
+            "machine_offline" or "machine_owner_unknown" or "command_queue_timeout" or "server_restarting"
+            ? category
+            : "device_request_failed";
+        var state = GetState(name);
+        lock (state)
+        {
+            state.LastHeartbeatAt = DateTime.UtcNow;
+            state.ConsecutiveFailures++;
+            state.LastErrorType = nameof(InvalidOperationException);
+            state.LastFailureCategory = safeCategory;
+            state.LastFailureMachineId = machineId;
+            state.LastRequestMessageId = messageId;
         }
     }
 
@@ -138,7 +180,10 @@ public sealed class BackgroundWorkerHealthRegistry
                         state.LastHeartbeatAt,
                         state.LastSuccessAt,
                         state.ConsecutiveFailures,
-                        state.LastErrorType);
+                        state.LastErrorType,
+                        state.LastFailureCategory,
+                        state.LastFailureMachineId,
+                        state.LastRequestMessageId);
                 }
             })
             .ToArray();
@@ -153,6 +198,9 @@ public sealed class BackgroundWorkerHealthRegistry
         public DateTime? LastSuccessAt;
         public int ConsecutiveFailures;
         public string? LastErrorType;
+        public string? LastFailureCategory;
+        public string? LastFailureMachineId;
+        public int? LastRequestMessageId;
         public bool Stopped;
     }
 }

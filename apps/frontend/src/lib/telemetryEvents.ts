@@ -4,6 +4,7 @@ const telemetryEventLabels: Record<string, string> = {
     "monitoring.activated": "Acompanhamento ativado",
     "monitoring.deactivated": "Acompanhamento desativado",
     "session.opening": "Abertura de sessão solicitada",
+    "session.open_already": "Sessão MDB já estava aberta",
     "session.recovered_from_mdb_idle": "Sessão MDB recuperada após reconexão",
     "session.closing_without_selection": "Sessão encerrada sem seleção",
     "session.closure_incomplete": "Encerramento da sessão incompleto",
@@ -11,6 +12,7 @@ const telemetryEventLabels: Record<string, string> = {
     "session.menu_closed": "Menu fechado sem seleção",
     "session.closure_verified": "Encerramento físico confirmado por responsável",
     "session.auto_open_failed": "Abertura automática da sessão falhou",
+    "session.close_deferred": "Encerramento da sessão adiado",
     "command.failed": "Comando não confirmado pela máquina",
     "pool.begin_session": "Máquina iniciou a sessão",
     "pool.end_session": "Máquina encerrou a sessão",
@@ -26,12 +28,16 @@ const telemetryEventLabels: Record<string, string> = {
     "payment.denied": "Pagamento recusado",
     "payment.pix_created": "Cobrança Pix criada",
     "payment.cancelled": "Pagamento cancelado",
+    "payment.cancellation_failed": "Falha ao cancelar pagamento",
     "refund.requested": "Estorno solicitado",
     "refund.completed": "Estorno concluído",
     "refund.failed": "Estorno não concluído",
     "delivery.success": "Entrega confirmada",
     "delivery.failure": "Falha na entrega",
     "delivery.conflicting_result": "Resultado de entrega conflitante",
+    "delivery.duplicate_result": "Resultado de entrega repetido",
+    "delivery.result_missing": "Máquina encerrou sem informar o resultado da entrega",
+    "delivery.ambiguous_session_correlation": "Não foi possível identificar a sessão da entrega",
     "sale.denied": "Venda recusada",
     "alert.repeated_early_close": "Encerramentos antecipados repetidos",
     "protocol.invalid_vend_request": "Solicitação de venda inválida",
@@ -42,5 +48,5 @@ const telemetryEventLabels: Record<string, string> = {
 };
 
 export function getTelemetryEventLabel(eventType: string): string {
-    return telemetryEventLabels[eventType] ?? "Outro evento de telemetria";
+    return telemetryEventLabels[eventType] ?? `Evento não catalogado: ${eventType}`;
 }

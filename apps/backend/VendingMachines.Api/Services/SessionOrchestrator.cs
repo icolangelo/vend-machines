@@ -81,6 +81,12 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             x => x.Id == machineId && x.CompanyId == companyId, cancellationToken)
             ?? throw new KeyNotFoundException("Máquina não encontrada.");
 
+        if (await _db.TelemetryReportTransferRequests.AsNoTracking().AnyAsync(request =>
+                request.CompanyId == companyId && request.MachineId == machineId &&
+                (request.Status == "waiting_session" || request.Status == "requesting" || request.Status == "receiving"),
+                cancellationToken))
+            throw new InvalidOperationException("report_in_progress");
+
         await using var admissionTransaction = await _db.Database.BeginTransactionAsync(cancellationToken);
         if (!await MachineOperationLock.AcquireAsync(_db, machineId, companyId, cancellationToken))
             throw new KeyNotFoundException("Máquina não encontrada.");
@@ -757,13 +763,15 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                 {
                     await CancelSessionAsync(session.Id, session.CompanyId, null, "selection_timeout", cancellationToken);
                 }
-                catch (InvalidOperationException ex) when (ex.Message == "mdb_status_unavailable")
+                catch (InvalidOperationException ex) when (ex.Message is "mdb_status_unavailable" or "machine_offline" or "machine_owner_unknown")
                 {
+                    // A disconnected machine cannot confirm its physical MDB state. Keep the
+                    // session pending for the next deadline pass and record this condition once.
                     if (!await _db.TelemetryEvents.AnyAsync(item => item.SessionId == session.Id &&
                             item.EventType == "session.close_deferred", cancellationToken))
                     {
                         await AddEventAsync(session, "session.close_deferred",
-                            "Fechamento pendente: confirme o status MDB antes de enviar FECHAR_SESSAO.", null, null, cancellationToken);
+                            "Fechamento pendente: a máquina está offline ou sem rota segura. Confirme o status MDB após a reconexão antes de enviar FECHAR_SESSAO.", null, null, cancellationToken);
                         await _db.SaveChangesAsync(cancellationToken);
                         await BroadcastSessionAsync(session);
                     }
@@ -960,10 +968,11 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                     continue;
                 }
 
+                ProviderCancellationResult? cancellationResult = null;
                 var success = message.MessageType switch
                 {
                     "refund_payment" => await RefundProviderPaymentAsync(transaction, cancellationToken),
-                    "cancel_payment" => await CancelProviderPaymentAsync(transaction, cancellationToken),
+                    "cancel_payment" => (cancellationResult = await CancelProviderPaymentAsync(transaction, cancellationToken)).Success,
                     _ => false
                 };
 
@@ -995,6 +1004,12 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
                     {
                         transaction.Status = "Cancelled";
                         transaction.CompletedAt = processedAt;
+                        if (!string.IsNullOrWhiteSpace(cancellationResult?.Status))
+                        {
+                            transaction.MercadoPagoStatus = cancellationResult.Status;
+                            transaction.MercadoPagoStatusDetail = cancellationResult.StatusDetail;
+                        }
+                        transaction.LastReconciliationAt = processedAt;
                     }
                 }
                 else if (message.Attempts >= 5)
@@ -1908,6 +1923,12 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         if (machine?.AutoOpenSessionEnabled != true || !connectionState.MonitoringEnabled)
             return;
 
+        if (await _db.TelemetryReportTransferRequests.AsNoTracking().AnyAsync(request =>
+                request.CompanyId == message.CompanyId && request.MachineId == message.MachineId &&
+                (request.Status == "waiting_session" || request.Status == "requesting" || request.Status == "receiving"),
+                cancellationToken))
+            return;
+
         var admissionGate = await new SessionAdmissionGateService(_db).GetAsync(cancellationToken);
         if (admissionGate?.NewSessionsPaused != false ||
             !await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
@@ -2045,25 +2066,60 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         }
     }
 
-    private async Task<bool> CancelProviderPaymentAsync(PaymentTransaction transaction, CancellationToken cancellationToken)
+    private async Task<ProviderCancellationResult> CancelProviderPaymentAsync(
+        PaymentTransaction transaction,
+        CancellationToken cancellationToken)
     {
-        if (transaction.MercadoPagoPaymentId?.StartsWith("mock_", StringComparison.OrdinalIgnoreCase) == true) return true;
+        if (transaction.MercadoPagoPaymentId?.StartsWith("mock_", StringComparison.OrdinalIgnoreCase) == true)
+            return new ProviderCancellationResult(true, "cancelled", null);
         if (string.IsNullOrWhiteSpace(transaction.MercadoPagoPaymentId))
         {
             _logger.LogWarning(
                 "Cancelamento da transação {TransactionId} requer reconciliação porque não há ID do pagamento no Mercado Pago.",
                 transaction.Id);
-            return false;
+            return new ProviderCancellationResult(false, null, null);
         }
 
         try
         {
             var integration = await _db.MercadoPagoIntegrations.FirstOrDefaultAsync(x => x.CompanyId == transaction.CompanyId && x.IsActive, cancellationToken);
-            if (integration == null) return false;
+            if (integration == null) return new ProviderCancellationResult(false, null, null);
             var client = _httpClientFactory.CreateClient("MercadoPago");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", EncryptionService.Decrypt(integration.AccessToken));
-            var response = await client.PutAsJsonAsync($"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}", new { status = "cancelled" }, cancellationToken);
-            return response.IsSuccessStatusCode;
+            using var response = await client.PutAsJsonAsync(
+                $"https://api.mercadopago.com/v1/payments/{transaction.MercadoPagoPaymentId}",
+                new { status = "cancelled" },
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                return new ProviderCancellationResult(false, null, null);
+
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(responseBody))
+                return new ProviderCancellationResult(true, null, null);
+
+            try
+            {
+                using var document = JsonDocument.Parse(responseBody);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    _logger.LogWarning(
+                        "Cancelamento da transação {TransactionId} foi aceito, mas a resposta do Mercado Pago não era um objeto JSON.",
+                        transaction.Id);
+                    return new ProviderCancellationResult(true, null, null);
+                }
+
+                var status = GetString(root, "status")?.Trim().ToLowerInvariant();
+                var statusDetail = GetString(root, "status_detail")?.Trim().ToLowerInvariant();
+                return new ProviderCancellationResult(true, status, statusDetail);
+            }
+            catch (JsonException)
+            {
+                _logger.LogWarning(
+                    "Cancelamento da transação {TransactionId} foi aceito, mas a resposta do Mercado Pago não continha JSON válido para atualizar o status.",
+                    transaction.Id);
+                return new ProviderCancellationResult(true, null, null);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2072,7 +2128,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         catch (Exception ex)
         {
             _logger.LogError(ex, "Falha ao cancelar transação {TransactionId}.", transaction.Id);
-            return false;
+            return new ProviderCancellationResult(false, null, null);
         }
     }
 
@@ -2211,6 +2267,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         Invalid,
         Mismatch
     }
+
+    private sealed record ProviderCancellationResult(bool Success, string? Status, string? StatusDetail);
 
     private static string? GetString(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;

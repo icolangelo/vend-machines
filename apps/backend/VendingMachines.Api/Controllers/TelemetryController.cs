@@ -24,6 +24,7 @@ public sealed class TelemetryController : BaseApiController
     private readonly WebSocketTicketService _tickets;
     private readonly MdbStatusRequestService _mdbStatusRequests;
     private readonly MdbStatusOptions _mdbOptions;
+    private readonly TelemetryReportFileService _reportFiles;
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly LegacyTelemetryRequestRelay? _legacyTelemetryRelay;
 
@@ -39,7 +40,8 @@ public sealed class TelemetryController : BaseApiController
         Microsoft.Extensions.Options.IOptions<MdbStatusOptions> mdbOptions,
         ITelemetryCommandSender? commandSender = null,
         IServiceScopeFactory? scopeFactory = null,
-        LegacyTelemetryRequestRelay? legacyTelemetryRelay = null)
+        LegacyTelemetryRequestRelay? legacyTelemetryRelay = null,
+        TelemetryReportFileService? reportFiles = null)
     {
         _db = db;
         _orchestrator = orchestrator;
@@ -51,6 +53,7 @@ public sealed class TelemetryController : BaseApiController
         _mdbOptions = mdbOptions.Value;
         _scopeFactory = scopeFactory;
         _legacyTelemetryRelay = legacyTelemetryRelay;
+        _reportFiles = reportFiles ?? new TelemetryReportFileService(db);
     }
 
     [HttpGet("connections")]
@@ -239,6 +242,8 @@ public sealed class TelemetryController : BaseApiController
     {
         if (!TryGetIdentity(out var userId, out var companyId))
             return BadRequest(new { message = "Usuário sem empresa." });
+        if (await _reportFiles.HasActiveRequestAsync(companyId, machineId, cancellationToken))
+            return Conflict(new { code = "report_in_progress", message = "A máquina está recebendo um relatório de auditoria. A consulta MDB será liberada ao concluir ou expirar a transferência." });
 
         var relayed = await TryGetLegacyOwnerRelayResultAsync(
             machineId,
@@ -409,6 +414,10 @@ public sealed class TelemetryController : BaseApiController
         if (!TryGetIdentity(out var userId, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
         if (string.IsNullOrWhiteSpace(request.Command)) return BadRequest(new { message = "Comando obrigatório." });
         if (request.RequestId == Guid.Empty) return BadRequest(new { code = "invalid_request_id", message = "Identificador do pedido inválido." });
+        if (string.Equals(request.Command, "RELATORIO_AUDITORIA", StringComparison.OrdinalIgnoreCase))
+            return Conflict(new { code = "report_request_required", message = "Solicite o relatório pelo fluxo de recebimento, que encerra a sessão e bloqueia as consultas MDB durante a transferência." });
+        if (await _reportFiles.HasActiveRequestAsync(companyId, machineId, cancellationToken))
+            return Conflict(new { code = "report_in_progress", message = "A máquina está recebendo um relatório de auditoria. Aguarde a conclusão ou o timeout." });
 
         var requestId = request.RequestId ?? Guid.NewGuid();
         var priorCommand = await _db.TelemetryCommands.AsNoTracking()
@@ -537,6 +546,114 @@ public sealed class TelemetryController : BaseApiController
                     : "A máquina não confirmou o comando."
             });
         return Accepted(new { commandId = command.Id, messageId = result.MessageId, status = command.Status });
+    }
+
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    [HttpPost("machines/{machineId}/reports/request")]
+    public async Task<IActionResult> RequestMachineReport(
+        string machineId, [FromBody] RequestTelemetryReportRequest request, CancellationToken cancellationToken)
+    {
+        if (!TryGetIdentity(out var userId, out var companyId)) return BadRequest(new { message = "Usuário sem empresa." });
+        if (request.RequestId == Guid.Empty) return BadRequest(new { code = "invalid_request_id", message = "Identificador do pedido inválido." });
+
+        var prior = await _db.TelemetryReportTransferRequests.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == request.RequestId, cancellationToken);
+        if (prior is not null)
+        {
+            if (prior.CompanyId != companyId || prior.MachineId != machineId || prior.UserId != userId)
+                return Conflict(new { code = "request_id_conflict", message = "O identificador do pedido já foi usado para outra solicitação." });
+            if (prior.Status is "waiting_session" or "requesting" or "receiving")
+                return Accepted(new { requestId = prior.Id, status = prior.Status, fileName = prior.FileName });
+            return Conflict(new { code = "report_request_finished", message = prior.Error ?? "Esta solicitação já foi finalizada." });
+        }
+
+        var machine = await _db.Machines.FirstOrDefaultAsync(item => item.Id == machineId && item.CompanyId == companyId, cancellationToken);
+        if (machine is null) return NotFound();
+        var connection = await _db.MachineConnectionStates.AsNoTracking().FirstOrDefaultAsync(
+            item => item.MachineId == machineId && item.CompanyId == companyId, cancellationToken);
+        if (connection?.MonitoringEnabled != true)
+            return Conflict(new { code = "monitoring_inactive", message = "Ative o acompanhamento da máquina." });
+        if (!await _connections.IsOnlineAsync(machine.SerialNumber, cancellationToken))
+            return Conflict(new { code = "machine_offline", message = "Máquina offline." });
+        if (!await _connections.HasCommandRouteAsync(machine.SerialNumber, cancellationToken))
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { code = "machine_owner_unknown", message = "A rota de comandos da máquina não está disponível." });
+
+        TelemetryReportTransferRequest transfer;
+        try
+        {
+            transfer = await _reportFiles.ReserveAsync(request.RequestId, companyId, machineId, userId, cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict(new { code = "report_request_in_progress", message = "Já existe uma solicitação de relatório ativa para esta máquina." });
+        }
+
+        var sessionDeadline = DateTime.UtcNow.AddMinutes(2);
+        try
+        {
+            var activeSession = await _db.MachineSessions.AsNoTracking()
+                .Where(item => item.MachineId == machineId && item.CompanyId == companyId && item.ClosedAt == null)
+                .OrderByDescending(item => item.StartedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (activeSession is not null &&
+                (activeSession.State is MachineSessionStates.Opening or MachineSessionStates.AwaitingSelection) &&
+                activeSession.ItemNumber is null && activeSession.TransactionId is null)
+            {
+                await _orchestrator.CancelSessionAsync(activeSession.Id, companyId, userId, "audit_report_requested", cancellationToken);
+            }
+
+            while (activeSession is not null && activeSession.ClosedAt is null && DateTime.UtcNow < sessionDeadline)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+                activeSession = await _db.MachineSessions.AsNoTracking()
+                    .FirstOrDefaultAsync(item => item.Id == activeSession.Id && item.CompanyId == companyId, cancellationToken);
+            }
+            if (activeSession is not null && activeSession.ClosedAt is null)
+            {
+                const string closeTimeout = "Tempo esgotado aguardando o encerramento da sessão MDB.";
+                await _reportFiles.SetRequestStateAsync(transfer.Id, "failed", closeTimeout, DateTime.UtcNow, CancellationToken.None);
+                return StatusCode(StatusCodes.Status504GatewayTimeout,
+                    new { code = "session_close_timeout", message = closeTimeout });
+            }
+
+            var sentAt = DateTime.UtcNow;
+            await _reportFiles.SetRequestStateAsync(transfer.Id, "receiving", null, sentAt.AddMinutes(2), cancellationToken);
+            var result = await _commandSender.SendCommandAsync(machine.SerialNumber, "RELATORIO_AUDITORIA", cancellationToken);
+            _db.TelemetryCommands.Add(new TelemetryCommand
+            {
+                CompanyId = companyId,
+                MachineId = machineId,
+                UserId = userId,
+                MessageId = result.MessageId,
+                Command = "RELATORIO_AUDITORIA",
+                Status = result.Success ? "acknowledged" : "failed",
+                Attempts = result.Attempts,
+                SentAt = sentAt,
+                AckAt = result.Success ? DateTime.UtcNow : null,
+                Error = result.Error
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+            if (!result.Success)
+            {
+                if (result.Error is "machine_offline" or "machine_owner_unknown" or "command_queue_timeout")
+                    await _reportFiles.SetRequestStateAsync(transfer.Id, "failed", result.Error, DateTime.UtcNow, CancellationToken.None);
+                return StatusCode(result.Error == "ack_timeout" ? StatusCodes.Status504GatewayTimeout : StatusCodes.Status503ServiceUnavailable,
+                    new { code = result.Error ?? "command_failed", message = "A máquina não confirmou a solicitação do relatório. A reserva será liberada após o timeout de recebimento." });
+            }
+
+            return Accepted(new { requestId = transfer.Id, status = "receiving", message = "Sessão encerrada; aguardando o recebimento do relatório." });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // O comando pode já ter chegado à máquina. O deadline persistido libera a reserva com segurança.
+            throw;
+        }
+        catch (InvalidOperationException ex)
+        {
+            await _reportFiles.SetRequestStateAsync(transfer.Id, "failed", ex.Message, DateTime.UtcNow, CancellationToken.None);
+            return Conflict(new { code = ex.Message, message = MapError(ex.Message) });
+        }
     }
 
     [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
@@ -832,6 +949,7 @@ public sealed class TelemetryController : BaseApiController
         "session_admission_gate_unavailable" => "Não foi possível confirmar a disponibilidade para abrir uma sessão. Tente novamente em alguns instantes.",
         "closure_not_incomplete" => "Esta sessão não está aguardando confirmação de encerramento.",
         "monitoring_inactive" => "Ative o acompanhamento da máquina.",
+        "report_in_progress" => "A máquina está reservada para o recebimento de um relatório de auditoria.",
         "session_already_active" => "A máquina já possui uma sessão ativa.",
         "mdb_status_unavailable" => "O status MDB ainda não está disponível.",
         "mdb_status_stale" => "O status MDB está desatualizado. Consulte novamente.",
@@ -865,3 +983,4 @@ public sealed class SendCommandRequest
     public string Command { get; set; } = string.Empty;
     public object? Data { get; set; }
 }
+public sealed class RequestTelemetryReportRequest { public Guid RequestId { get; set; } }

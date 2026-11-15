@@ -208,6 +208,20 @@ public sealed class TelemetryReportFileValidation
     public string? ValidationError { get; set; }
 }
 
+public sealed class TelemetryReportTransferRequest
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid CompanyId { get; set; }
+    public string MachineId { get; set; } = string.Empty;
+    public Guid? UserId { get; set; }
+    public string Status { get; set; } = "waiting_session";
+    public string? FileName { get; set; }
+    public string? Error { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime ExpiresAt { get; set; } = DateTime.UtcNow.AddMinutes(2);
+}
+
 public class DeliveryFailure
 {
     public Guid Id { get; set; } = Guid.NewGuid();

@@ -33,6 +33,7 @@ public class AppDbContext : DbContext
     public DbSet<TelemetryEvent> TelemetryEvents { get; set; } = null!;
     public DbSet<TelemetryReportFileChunk> TelemetryReportFileChunks { get; set; } = null!;
     public DbSet<TelemetryReportFileValidation> TelemetryReportFileValidations { get; set; } = null!;
+    public DbSet<TelemetryReportTransferRequest> TelemetryReportTransferRequests { get; set; } = null!;
     public DbSet<DeviceMessageInbox> DeviceMessageInbox { get; set; } = null!;
     public DbSet<DeliveryFailure> DeliveryFailures { get; set; } = null!;
     public DbSet<OutboxMessage> OutboxMessages { get; set; } = null!;
@@ -152,6 +153,14 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<TelemetryReportFileValidation>().Property(x => x.ValidationError).HasMaxLength(256);
         modelBuilder.Entity<TelemetryReportFileValidation>().HasIndex(x => new { x.CompanyId, x.MachineId, x.FileName }).IsUnique();
         modelBuilder.Entity<TelemetryReportFileValidation>().HasIndex(x => new { x.CompanyId, x.MachineId, x.ValidatedAt });
+        modelBuilder.Entity<TelemetryReportTransferRequest>().HasKey(x => x.Id);
+        modelBuilder.Entity<TelemetryReportTransferRequest>().Property(x => x.MachineId).HasMaxLength(64);
+        modelBuilder.Entity<TelemetryReportTransferRequest>().Property(x => x.Status).HasMaxLength(24);
+        modelBuilder.Entity<TelemetryReportTransferRequest>().Property(x => x.FileName).HasMaxLength(128);
+        modelBuilder.Entity<TelemetryReportTransferRequest>().Property(x => x.Error).HasMaxLength(256);
+        modelBuilder.Entity<TelemetryReportTransferRequest>().HasIndex(x => new { x.CompanyId, x.MachineId, x.CreatedAt });
+        modelBuilder.Entity<TelemetryReportTransferRequest>().HasIndex(x => new { x.CompanyId, x.MachineId })
+            .IsUnique().HasFilter("\"Status\" IN ('waiting_session', 'requesting', 'receiving')");
         modelBuilder.Entity<DeviceMessageInbox>().HasKey(x => x.Id);
         modelBuilder.Entity<DeviceMessageInbox>().HasIndex(x => x.IdempotencyKey).IsUnique();
         modelBuilder.Entity<DeviceMessageInbox>().HasIndex(x => new { x.Status, x.NextAttemptAt, x.ReceivedAt });

@@ -31,6 +31,12 @@ public static class MdbStatusPollClaim
         AppDbContext db,
         DateTime dueBefore,
         DateTime onlineAfter,
+        DateTime routeValidAfter) => GetEligibleStates(db, onlineAfter, routeValidAfter)
+        .Where(x => x.MdbStatusRequestAt == null || x.MdbStatusRequestAt <= dueBefore);
+
+    public static IQueryable<MachineConnectionState> GetEligibleStates(
+        AppDbContext db,
+        DateTime onlineAfter,
         DateTime routeValidAfter) => db.MachineConnectionStates.AsNoTracking()
         .Where(x => x.MonitoringEnabled && x.IsOnline && x.LastSeenAt >= onlineAfter &&
                     x.OwnerNodeId != null && x.OwnerNodeId != "" &&
@@ -38,7 +44,9 @@ public static class MdbStatusPollClaim
                     x.OwnerConnectionId == x.ConnectionId &&
                     x.CommandRoutingVersion == TelemetryConnectionManager.CurrentCommandRoutingVersion &&
                     x.OwnerLeaseExpiresAt > routeValidAfter &&
-                    (x.MdbStatusRequestAt == null || x.MdbStatusRequestAt <= dueBefore));
+                    !db.TelemetryReportTransferRequests.Any(request => request.CompanyId == x.CompanyId &&
+                        request.MachineId == x.MachineId &&
+                        (request.Status == "waiting_session" || request.Status == "requesting" || request.Status == "receiving")));
 
     public static async Task<bool> TryClaimAsync(
         AppDbContext db,
@@ -57,6 +65,9 @@ public static class MdbStatusPollClaim
                         x.OwnerConnectionId == x.ConnectionId &&
                         x.CommandRoutingVersion == TelemetryConnectionManager.CurrentCommandRoutingVersion &&
                         x.OwnerLeaseExpiresAt > requestedAt &&
+                        !db.TelemetryReportTransferRequests.Any(request => request.CompanyId == x.CompanyId &&
+                            request.MachineId == x.MachineId &&
+                            (request.Status == "waiting_session" || request.Status == "requesting" || request.Status == "receiving")) &&
                         (x.MdbStatusRequestAt == null || x.MdbStatusRequestAt <= dueBefore))
             .ExecuteUpdateAsync(update => update
                 .SetProperty(x => x.MdbStatusRequestAt, requestedAt), cancellationToken);
@@ -109,6 +120,11 @@ public sealed class MdbStatusRequestService
         }
 
         var isPoll = string.Equals(source, "poll", StringComparison.OrdinalIgnoreCase);
+        if (await _db.TelemetryReportTransferRequests.AsNoTracking().AnyAsync(request =>
+                request.CompanyId == companyId && request.MachineId == machineId &&
+                (request.Status == "waiting_session" || request.Status == "requesting" || request.Status == "receiving"),
+                cancellationToken))
+            throw new InvalidOperationException("report_in_progress");
         var requestedAt = DateTime.UtcNow;
         if (isPoll)
         {
@@ -206,8 +222,8 @@ public sealed class MdbStatusPollingWorker : BackgroundService
             {
                 try
                 {
-                    var machines = await GetDueMachinesAsync(stoppingToken);
-                    var results = await Task.WhenAll(machines.Select(machine => RequestOneAsync(machine, stoppingToken)));
+                    var batch = await GetDueMachinesAsync(stoppingToken);
+                    var results = await Task.WhenAll(batch.Machines.Select(machine => RequestOneAsync(machine, stoppingToken)));
                     if (results.Any(result => result == PollRequestResult.Failed))
                     {
                         _health?.ReportFailure(BackgroundWorkerNames.MdbStatusPolling, new InvalidOperationException("mdb_machine_request_failed"));
@@ -215,6 +231,10 @@ public sealed class MdbStatusPollingWorker : BackgroundService
                     else if (results.Any(result => result == PollRequestResult.Succeeded))
                     {
                         _health?.ReportSuccess(BackgroundWorkerNames.MdbStatusPolling);
+                    }
+                    else if (!batch.HasEligibleMachines)
+                    {
+                        _health?.ReportIdle(BackgroundWorkerNames.MdbStatusPolling);
                     }
                     else
                     {
@@ -237,7 +257,7 @@ public sealed class MdbStatusPollingWorker : BackgroundService
         finally { _health?.ReportStopped(BackgroundWorkerNames.MdbStatusPolling); }
     }
 
-    private async Task<List<DueMachine>> GetDueMachinesAsync(CancellationToken cancellationToken)
+    private async Task<PollBatch> GetDueMachinesAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -262,9 +282,20 @@ public sealed class MdbStatusPollingWorker : BackgroundService
             .Take(batchSize)
             .ToListAsync(cancellationToken);
 
-        return dueMachines
+        var hasEligibleMachines = dueMachines.Count > 0 || await MdbStatusPollClaim
+            .GetEligibleStates(db, onlineAfter, now)
+            .Join(
+                db.Machines.AsNoTracking(),
+                state => state.MachineId,
+                machine => machine.Id,
+                (state, machine) => new { state.CompanyId, MachineCompanyId = machine.CompanyId })
+            .AnyAsync(item => item.CompanyId == item.MachineCompanyId, cancellationToken);
+
+        var machines = dueMachines
             .Select(x => new DueMachine(x.MachineId, x.CompanyId))
             .ToList();
+
+        return new PollBatch(machines, hasEligibleMachines);
     }
 
     private async Task<PollRequestResult> RequestOneAsync(DueMachine machine, CancellationToken cancellationToken)
@@ -281,7 +312,7 @@ public sealed class MdbStatusPollingWorker : BackgroundService
                 cancellationToken);
             return outcome.Success ? PollRequestResult.Succeeded : PollRequestResult.Failed;
         }
-        catch (InvalidOperationException ex) when (ex.Message is "machine_offline" or "monitoring_inactive" or "mdb_status_poll_not_due")
+        catch (InvalidOperationException ex) when (ex.Message is "machine_offline" or "monitoring_inactive" or "mdb_status_poll_not_due" or "report_in_progress")
         {
             // O estado persistido pode mudar entre a seleção do lote e o envio.
             return PollRequestResult.Skipped;
@@ -310,4 +341,5 @@ public sealed class MdbStatusPollingWorker : BackgroundService
     }
 
     private sealed record DueMachine(string MachineId, Guid CompanyId);
+    private sealed record PollBatch(List<DueMachine> Machines, bool HasEligibleMachines);
 }

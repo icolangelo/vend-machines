@@ -246,6 +246,18 @@ export async function getTelemetryAuditReports(machineId: string): Promise<Telem
     return result.items;
 }
 
+export async function requestTelemetryAuditReport(machineId: string, requestId: string): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/reports/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId }),
+    });
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({} as { message?: string }));
+        throw new Error(error.message || "Não foi possível solicitar o relatório de auditoria.");
+    }
+}
+
 export async function downloadTelemetryAuditReport(machineId: string, fileName: string): Promise<Blob> {
     const response = await authFetch(
         `${API_BASE_URL}/telemetry/machines/${encodeURIComponent(machineId)}/reports/${encodeURIComponent(fileName)}/download`
@@ -2084,4 +2096,21 @@ export async function getAdminLogs(page: number = 1, pageSize: number = 20, sear
     const response = await authFetch(`${API_BASE_URL}/payments/admin/logs?page=${page}&pageSize=${pageSize}${searchParam}`);
     if (!response.ok) throw new Error("Erro ao carregar logs administrativos.");
     return response.json();
+}
+
+export async function getCompanyAdminUsers(pageNumber = 1, pageSize = 10, searchTerm = ""): Promise<PaginatedUsers> {
+    const response = await authFetch(`${API_BASE_URL}/users/company-admin?pageNumber=${pageNumber}&pageSize=${pageSize}&searchTerm=${encodeURIComponent(searchTerm)}`);
+    if (!response.ok) throw new Error("Não foi possível carregar os usuários da empresa.");
+    return response.json();
+}
+
+export async function getCompanyAdminLogs(page = 1, pageSize = 20, search = ""): Promise<PaginatedAdminLogs> {
+    const response = await authFetch(`${API_BASE_URL}/payments/company-admin/logs?page=${page}&pageSize=${pageSize}&search=${encodeURIComponent(search)}`);
+    if (!response.ok) throw new Error("Não foi possível carregar os logs da empresa.");
+    return response.json();
+}
+
+export async function updateCompanyUserRole(userId: string, role: "Admin" | "Operator"): Promise<void> {
+    const response = await authFetch(`${API_BASE_URL}/users/company-admin/${encodeURIComponent(userId)}/role`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+    if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.message ?? "Não foi possível alterar o perfil."); }
 }

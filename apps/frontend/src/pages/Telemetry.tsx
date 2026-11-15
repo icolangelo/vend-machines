@@ -14,6 +14,7 @@ import {
     createTelemetrySocketTicket,
     downloadTelemetryAuditReport,
     getTelemetryAuditReports,
+    requestTelemetryAuditReport,
     getTelemetryConnections,
     getTelemetryEvents,
     requestMdbStatus,
@@ -575,7 +576,16 @@ export default function Telemetry() {
                                             ))}
                                         </ScrollArea>
                                         <div className="mt-3 flex gap-2 flex-wrap">
-                                            {["RELATORIO_AUDITORIA", "REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
+                                            <Button size="sm" variant="outline" disabled={busy || !canOperateTelemetry || !selected.online || !selected.commandRouteAvailable || !selected.monitoringEnabled}
+                                                onClick={() => run(() => requestTelemetryAuditReport(
+                                                    selected.machineId,
+                                                    typeof crypto !== "undefined" && "randomUUID" in crypto
+                                                        ? crypto.randomUUID()
+                                                        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+                                                ), "Sessão encerrada; aguardando recebimento do relatório")}>
+                                                <Send className="h-3.5 w-3.5 mr-2" />Solicitar relatório de auditoria
+                                            </Button>
+                                            {["REQUISICAO_CONFIGURACAO", "ATUALIZAR_CONFIGURACAO"].map(command => (
                                                 <Button key={command} size="sm" variant="outline" disabled={busy || !canOperateTelemetry || !selected.online || !selected.commandRouteAvailable || !selected.monitoringEnabled}
                                                     onClick={() => run(() => sendManualTelemetryCommand(selected.machineId, command), "Comando confirmado pela máquina") }>
                                                     <Send className="h-3.5 w-3.5 mr-2" />{command.split("_").join(" ")}

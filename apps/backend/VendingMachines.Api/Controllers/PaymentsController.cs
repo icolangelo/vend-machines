@@ -1311,6 +1311,23 @@ public class PaymentsController : BaseApiController
         });
     }
 
+    [HttpGet("company-admin/logs")]
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    public async Task<IActionResult> GetCompanyAdminLogs([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? search = null)
+    {
+        var companyIdValue = User.IsInRole(AppRoles.PlatformAdmin)
+            ? User.FindFirst("impersonated_company_id")?.Value
+            : User.FindFirst("company_id")?.Value;
+        if (!Guid.TryParse(companyIdValue, out var companyId)) return BadRequest(new { message = "Selecione uma empresa." });
+        page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 1, 200);
+        IQueryable<TransactionTelemetryLog> query = _context.TransactionTelemetryLogs.AsNoTracking().Where(l => l.Transaction != null && l.Transaction.CompanyId == companyId)
+            .Include(l => l.Transaction).ThenInclude(t => t!.Machine);
+        if (!string.IsNullOrWhiteSpace(search)) query = query.Where(l => l.Message.Contains(search) || l.LogType.Contains(search) || l.TransactionId.ToString().Contains(search));
+        var totalItems = await query.CountAsync();
+        var rows = await query.OrderByDescending(l => l.Timestamp).Skip((page - 1) * pageSize).Take(pageSize).Select(l => new { l.Id, l.TransactionId, l.Timestamp, l.LogType, l.Message, TransactionAmount = l.Transaction!.Amount, MachineName = l.Transaction.Machine == null ? "Máquina Desconhecida" : l.Transaction.Machine.Name }).ToListAsync();
+        return Ok(new { items = rows.Select(l => new { l.Id, l.TransactionId, l.Timestamp, l.LogType, message = PaymentLogRedactor.RedactMessage(l.Message), l.TransactionAmount, l.MachineName }), page, pageSize, totalItems, totalPages = (int)Math.Ceiling(totalItems / (double)pageSize) });
+    }
+
     [HttpGet("admin/webhook-inbox")]
     [Authorize(Roles = AppRoles.PlatformAdmin)]
     public async Task<IActionResult> GetWebhookInbox(

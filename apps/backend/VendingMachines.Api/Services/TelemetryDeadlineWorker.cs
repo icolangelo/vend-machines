@@ -57,6 +57,10 @@ public sealed class TelemetryDeadlineWorker : BackgroundService
                                   (command.Error == "ack_timeout" || command.Error == "command_outcome_unknown")) &&
                                 !(command.Status == "accepted" && command.Error == "command_intent_persisted"))
                             .ExecuteDeleteAsync(stoppingToken);
+                        await db.TelemetryReportTransferRequests
+                            .Where(request => request.CreatedAt < limit &&
+                                (request.Status == "completed" || request.Status == "failed"))
+                            .ExecuteDeleteAsync(stoppingToken);
                         lastCleanup = DateTime.UtcNow;
                     }
                     _health?.ReportSuccess(BackgroundWorkerNames.TelemetryDeadlines);

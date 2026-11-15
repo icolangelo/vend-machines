@@ -202,6 +202,11 @@ public sealed class MercadoPagoWebhookProcessor
                  ((transaction.Status == "Approved" || transaction.Status == "Refunded" ||
                    transaction.Status == "Chargeback" || transaction.Status == "ReconciliationRequired") &&
                   (!transaction.LastReconciliationAt.HasValue || transaction.LastReconciliationAt <= terminalReconciledBefore)) ||
+                 (transaction.Status == "Cancelled" &&
+                  (transaction.MercadoPagoStatus == null || transaction.MercadoPagoStatus == "pending" ||
+                   transaction.MercadoPagoStatus == "in_process" || transaction.MercadoPagoStatus == "authorized" ||
+                   transaction.MercadoPagoStatus == "approved") &&
+                  (!transaction.LastReconciliationAt.HasValue || transaction.LastReconciliationAt <= terminalReconciledBefore)) ||
                  (transaction.Status == "Rejected" &&
                   (!transaction.LastReconciliationAt.HasValue || transaction.LastReconciliationAt <= rejectedReconciledBefore))))
             .OrderBy(transaction => transaction.LastReconciliationAt)
@@ -242,7 +247,7 @@ public sealed class MercadoPagoWebhookProcessor
                     .SingleAsync(cancellationToken);
                 if (!string.IsNullOrWhiteSpace(paymentId))
                 {
-                    await ProcessPaymentByIdAsync(paymentId, cancellationToken);
+                    await ProcessPaymentByIdAsync(paymentId, cancellationToken, "reconciliation");
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -268,7 +273,7 @@ public sealed class MercadoPagoWebhookProcessor
     {
         var inbox = await _db.WebhookInboxMessages.AsNoTracking()
             .SingleAsync(message => message.Id == inboxId, cancellationToken);
-        await ProcessPaymentByIdAsync(inbox.PaymentId, cancellationToken);
+        await ProcessPaymentByIdAsync(inbox.PaymentId, cancellationToken, "webhook");
     }
 
     private IQueryable<string> GetLegacyOwnerPaymentIds(DateTime now)
@@ -291,7 +296,10 @@ public sealed class MercadoPagoWebhookProcessor
             .Select(transaction => transaction.MercadoPagoPaymentId!);
     }
 
-    private async Task ProcessPaymentByIdAsync(string paymentId, CancellationToken cancellationToken)
+    private async Task ProcessPaymentByIdAsync(
+        string paymentId,
+        CancellationToken cancellationToken,
+        string processingSource)
     {
         PaymentTransaction? transaction = null;
         for (var attempt = 0; attempt < 5; attempt++)
@@ -501,8 +509,17 @@ public sealed class MercadoPagoWebhookProcessor
         }
         else
         {
+            var sourceLabel = processingSource == "reconciliation"
+                ? "Reconciliação automática"
+                : "Processamento do webhook";
+            var message = requiresReconciliation
+                ? $"{sourceLabel}: divergência financeira detectada para status '{paymentStatus}'; transação encaminhada para reconciliação."
+                : transaction.Status == "Cancelled" &&
+                  paymentStatus is ("pending" or "in_process" or "authorized")
+                    ? $"{sourceLabel}: o cancelamento foi solicitado, mas o Mercado Pago ainda informa '{paymentStatus}'. A transação continuará em reconciliação."
+                    : $"{sourceLabel}: status do Mercado Pago confirmado como '{paymentStatus}'; nenhuma nova ação foi necessária.";
             await AddTransactionLogAsync(transaction.Id, "Info",
-                $"Webhook recebido; pagamento continua com status intermediário '{paymentStatus}'.", cancellationToken);
+                message, cancellationToken);
         }
     }
 

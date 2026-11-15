@@ -36,6 +36,49 @@ public class UsersController : ControllerBase
         _accountEmailSender = accountEmailSender;
     }
 
+    [HttpGet("company-admin")]
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    public async Task<IActionResult> GetCompanyAdminUsers([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10, [FromQuery] string? searchTerm = null, CancellationToken cancellationToken = default)
+    {
+        var companyIdValue = User.IsInRole(AppRoles.PlatformAdmin)
+            ? User.FindFirst("impersonated_company_id")?.Value
+            : User.FindFirst("company_id")?.Value;
+        if (!Guid.TryParse(companyIdValue, out var companyId)) return BadRequest(new { message = "Selecione uma empresa." });
+        pageNumber = Math.Max(1, pageNumber);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _context.Users.Where(u => u.CompanyId == companyId);
+        if (!string.IsNullOrWhiteSpace(searchTerm)) { var search = searchTerm.ToLower(); query = query.Where(u => u.Name.ToLower().Contains(search) || u.Email.ToLower().Contains(search)); }
+        var totalItems = await query.CountAsync(cancellationToken);
+        var items = await query.OrderBy(u => u.Name).Skip((pageNumber - 1) * pageSize).Take(pageSize).Select(u => new UserDto { Id = u.Id, Name = u.Name, Email = u.Email, Cpf = u.Cpf, Role = u.Role, IsActive = u.IsActive, CompanyId = u.CompanyId, CreatedAt = u.CreatedAt }).ToListAsync(cancellationToken);
+        return Ok(new PaginatedResult<UserDto> { Items = items, PageNumber = pageNumber, PageSize = pageSize, TotalItems = totalItems, TotalPages = (int)Math.Ceiling((double)totalItems / pageSize) });
+    }
+
+    [HttpPut("company-admin/{userId:guid}/role")]
+    [Authorize(Roles = AppRoles.CompanyAdminOrPlatformAdmin)]
+    public async Task<IActionResult> UpdateCompanyUserRole(Guid userId, [FromBody] UpdateUserRoleRequest request, CancellationToken cancellationToken)
+    {
+        var companyIdValue = User.IsInRole(AppRoles.PlatformAdmin) ? User.FindFirst("impersonated_company_id")?.Value : User.FindFirst("company_id")?.Value;
+        if (!Guid.TryParse(companyIdValue, out var companyId)) return BadRequest(new { message = "Selecione uma empresa." });
+        if (request?.Role is not (AppRoles.Admin or AppRoles.Operator)) return BadRequest(new { message = "O perfil deve ser Administrador ou Operador." });
+        var actorId = Guid.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : Guid.Empty;
+        if (actorId == userId) return Conflict(new { message = "Você não pode alterar o próprio papel." });
+        var target = await _context.Users.FirstOrDefaultAsync(u => u.Id == userId && u.CompanyId == companyId, cancellationToken);
+        if (target == null || target.Role == AppRoles.PlatformAdmin) return NotFound(new { message = "Usuário não encontrado." });
+        await using var mutation = await BeginCompanyAdminMutationAsync(target.CompanyId, cancellationToken);
+        if (mutation != null) await _context.Entry(target).ReloadAsync(cancellationToken);
+        if (target.IsActive && target.Role == AppRoles.Admin && request.Role != AppRoles.Admin && !await HasOtherActiveCompanyAdminAsync(target, cancellationToken))
+            return Conflict(new { message = "A empresa precisa manter pelo menos um administrador ativo." });
+        var previousRole = target.Role;
+        if (previousRole == request.Role) return Ok(new { userId, role = target.Role, changed = false });
+        target.Role = request.Role; target.CredentialVersion++;
+        await _context.SaveChangesAsync(cancellationToken);
+        var now = DateTime.UtcNow;
+        await _context.RefreshSessions.Where(s => s.UserId == target.Id && s.RevokedAt == null).ExecuteUpdateAsync(setters => setters.SetProperty(s => s.RevokedAt, now), cancellationToken);
+        if (_audit != null) await _audit.RecordAsync("user.role_changed", "User", target.Id.ToString(), target.CompanyId, new { previousRole, newRole = request.Role }, cancellationToken);
+        if (mutation != null) await mutation.CommitAsync(cancellationToken);
+        return Ok(new { userId, role = target.Role, changed = true, sessionsRevoked = true });
+    }
+
     [HttpGet]
     public async Task<IActionResult> GetPaginatedUsers(
         [FromQuery] int pageNumber = 1,

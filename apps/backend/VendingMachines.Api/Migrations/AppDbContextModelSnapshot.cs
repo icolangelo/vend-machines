@@ -1592,6 +1592,56 @@ namespace VendingMachines.Api.Migrations
                     b.ToTable("TelemetryReportFileValidations");
                 });
 
+            modelBuilder.Entity("VendingMachines.Api.Models.TelemetryReportTransferRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("MachineId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MachineId")
+                        .IsUnique()
+                        .HasFilter("\"Status\" IN ('waiting_session', 'requesting', 'receiving')");
+
+                    b.HasIndex("CompanyId", "MachineId", "CreatedAt");
+
+                    b.ToTable("TelemetryReportTransferRequests");
+                });
+
             modelBuilder.Entity("VendingMachines.Api.Models.TransactionTelemetryLog", b =>
                 {
                     b.Property<Guid>("Id")
