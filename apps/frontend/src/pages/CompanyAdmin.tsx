@@ -21,7 +21,11 @@ export default function CompanyAdmin() {
     if (!companyKey) return;
     let active = true; setBusy(true);
     const load = tab === "users" ? getCompanyAdminUsers(page, 10, search) : getCompanyAdminLogs(page, 20, search);
-    load.then(data => { if (active) tab === "users" ? setUsers(data as PaginatedUsers) : setLogs(data as PaginatedAdminLogs); })
+    load.then(data => {
+      if (!active) return;
+      if (tab === "users") setUsers(data as PaginatedUsers);
+      else setLogs(data as PaginatedAdminLogs);
+    })
       .catch(e => { if (active) setError(e instanceof Error ? e.message : "Falha ao carregar dados."); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
