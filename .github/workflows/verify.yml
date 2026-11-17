@@ -63,6 +63,9 @@ jobs:
       - name: Test secret scan commit range selection
         run: python3 tools/Deployment/test_secret_scan_range.py
 
+      - name: Test production API revision discovery
+        run: python -B tools/Deployment/test_resolve_production_api_revision.py
+
       - name: Verify migration impact and recovery review
         run: |
           python -B tools/Deployment/test_check_migration_risk.py

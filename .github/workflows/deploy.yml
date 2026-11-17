@@ -115,6 +115,9 @@ jobs:
       - name: Verify backend image context excludes local databases
         run: python -B tools/Deployment/test_backend_docker_context.py
 
+      - name: Test production API revision discovery
+        run: python -B tools/Deployment/test_resolve_production_api_revision.py
+
       - name: Verify migration impact and recovery review
         run: |
           python -B tools/Deployment/test_check_migration_risk.py
@@ -467,15 +470,28 @@ jobs:
         shell: pwsh
         run: ./tools/Database/Test-BackendImagePostgresSmoke.ps1 -Image $env:BACKEND_IMAGE_TAG -SegmentsDirectory artifacts
 
+      - name: Resolve API revision currently serving production
+        id: production-api
+        env:
+          PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready
+          PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready
+          PRODUCTION_BACKEND_BOOTSTRAP_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
+        run: |
+          set -euo pipefail
+          previous_ref="$(python3 tools/Deployment/ResolveProductionApiRevision.py \
+            --health-url "$PRODUCTION_API_HEALTH_URL" \
+            --deploy-ready-url "$PRODUCTION_API_DEPLOY_READY_URL" \
+            --bootstrap-ref "$PRODUCTION_BACKEND_BOOTSTRAP_REF")"
+          git cat-file -e "${previous_ref}^{commit}"
+          echo "ref=$previous_ref" >> "$GITHUB_OUTPUT"
+
       - name: Verify previous API overlap while a legacy MDB socket stays connected
         env:
           BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
-          # Baseline de produção confirmado; atualizar após publicação bem-sucedida.
-          PREVIOUS_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
+          PREVIOUS_BACKEND_REF: ${{ steps.production-api.outputs.ref }}
         run: |
           set -euo pipefail
           previous_ref="$PREVIOUS_BACKEND_REF"
-          git cat-file -e "${previous_ref}^{commit}"
           python tools/Database/Test-PreviousBackendRollbackCompatibility.py \
             --segments artifacts \
             --previous-ref "$previous_ref" \
