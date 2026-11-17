@@ -78,11 +78,7 @@ if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
 fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
-require_contains "$frontend_workflow" 'name: Resolve the API revision currently serving production'
-require_contains "$frontend_workflow" 'ResolveProductionApiRevision.py'
 require_contains "$frontend_workflow" 'vars.PRODUCTION_BACKEND_REF'
-require_contains "$frontend_workflow" 'PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready'
-require_contains "$frontend_workflow" 'PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready'
 require_contains "$frontend_workflow" 'git cat-file -e "${backend_ref}^{commit}"'
 if grep -Fq 'BACKEND_COMPAT_REF: ${{ github.event.before }}' "$frontend_workflow"; then
   echo "A publicação frontend precisa validar a API publicada, não o push anterior." >&2
@@ -93,12 +89,14 @@ require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$workflow" 'FRONTEND_COMPAT_REF: ${{ github.event.before }}'
 require_contains "$workflow" '--frontend-ref "$frontend_ref"'
-require_contains "$workflow" 'name: Resolve API revision currently serving production'
-require_contains "$workflow" 'ResolveProductionApiRevision.py'
-require_contains "$workflow" 'PRODUCTION_API_HEALTH_URL: https://api.vendmachine.com.br/health/ready'
-require_contains "$workflow" 'PRODUCTION_API_DEPLOY_READY_URL: https://api.vendmachine.com.br/health/deploy-ready'
 require_contains "$workflow" 'vars.PRODUCTION_BACKEND_REF'
 require_contains "$workflow" 'git cat-file -e "${previous_ref}^{commit}"'
+require_contains "$workflow" 'Record the verified API revision for future compatibility checks'
+require_contains "$workflow" 'UpdateProductionBackendRevision.py'
+require_contains "$workflow" 'actions: write'
+require_contains "$workflow" 'GITHUB_TOKEN: ${{ github.token }}'
+require_contains "$workflow" 'python -B tools/Deployment/test_update_production_backend_revision.py'
+require_contains "$verify_workflow" 'python -B tools/Deployment/test_update_production_backend_revision.py'
 if grep -Fq 'PREVIOUS_BACKEND_REF: ${{ github.event.before }}' "$workflow"; then
   echo "O ensaio de sobreposição precisa usar a revisão publicada, não o push anterior." >&2
   exit 1
@@ -469,6 +467,12 @@ if grep -Fq 'Coolify-Deployment.sh deploy' "$temporary_dir/build-job"; then
   echo "O job de build não pode acionar Coolify." >&2
   exit 1
 fi
+release_readiness_line="$(grep -nF 'bash tools/Deployment/Coolify-Deployment.sh deploy' "$temporary_dir/release-job" | head -n 1 | cut -d: -f1)"
+revision_record_line="$(grep -nF 'name: Record the verified API revision for future compatibility checks' "$temporary_dir/release-job" | head -n 1 | cut -d: -f1)"
+if [[ -z "$release_readiness_line" || -z "$revision_record_line" ]] || (( revision_record_line <= release_readiness_line )); then
+  echo "A revisão de produção só pode ser registrada após a readiness confirmar o deploy." >&2
+  exit 1
+fi
 if grep -Eiq 'coolify|COOLIFY_BACKEND_DEPLOY_WEBHOOK|COOLIFY_API_TOKEN|Trigger Coolify Deploy' "$temporary_dir/build-job"; then
   echo "O job de build não pode conter integração ou credenciais do Coolify." >&2
   exit 1
@@ -565,7 +569,7 @@ require_contains "$temporary_dir/release-job" 'uses: actions/checkout@v4'
 require_contains "$temporary_dir/release-job" 'environment: production'
 require_contains "$temporary_dir/release-job" 'Verify GitHub production environment protection'
 require_contains "$temporary_dir/release-job" 'validate_github_production_environment.py'
-require_contains "$temporary_dir/release-job" 'actions: read'
+require_contains "$temporary_dir/release-job" 'actions: write'
 require_contains "$temporary_dir/release-job" 'GITHUB_ADMIN_READ_TOKEN: ${{ secrets.GITHUB_ADMIN_READ_TOKEN }}'
 require_contains "$github_environment_validator" 'Configure GITHUB_ADMIN_READ_TOKEN no ambiente production'
 if grep -Eq '^[[:space:]]+administration:' "$temporary_dir/release-job"; then
