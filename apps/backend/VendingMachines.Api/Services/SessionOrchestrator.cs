@@ -381,6 +381,10 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         if (status.Status != MdbStatuses.Enabled || !status.ResponseAt.HasValue)
             return false;
         var statusResponseAt = status.ResponseAt.Value;
+        var openingRecoveryThreshold = TimeSpan.FromSeconds(Math.Clamp(
+            _configuration.GetValue<int?>("MdbStatus:OpeningRecoveryAfterSeconds") ?? 30, 5, 600));
+        var staleOpening = session?.State == MachineSessionStates.Opening &&
+            session.ClosedAt == null && statusResponseAt >= session.StartedAt + openingRecoveryThreshold;
         var statusConfirmedAfterSelectionDeadline = session?.SelectionDeadlineAt.HasValue == true &&
             statusResponseAt >= session.SelectionDeadlineAt.Value;
         if (session == null || session.ItemNumber != null || session.TransactionId != null || session.Transaction != null ||
@@ -388,7 +392,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             (session.State == MachineSessionStates.ClosureIncomplete && session.ClosedAt == null) ||
             (session.State == MachineSessionStates.AwaitingSelection &&
              (session.ClosedAt != null || !statusConfirmedAfterSelectionDeadline)) ||
-            session.State is not (MachineSessionStates.ClosingWithoutSelection or MachineSessionStates.ClosureIncomplete or MachineSessionStates.AwaitingSelection))
+            (session.State == MachineSessionStates.Opening && (!staleOpening || session.ClosedAt != null)) ||
+            session.State is not (MachineSessionStates.Opening or MachineSessionStates.ClosingWithoutSelection or MachineSessionStates.ClosureIncomplete or MachineSessionStates.AwaitingSelection))
             return false;
         if (!await MachineOperationLock.AcquireAsync(_db, session.MachineId, companyId, cancellationToken))
             return false;
@@ -400,11 +405,14 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         if (unresolvedLocalCommand || unresolvedRemoteDispatch) return false;
 
         var wasAwaitingSelection = session.State == MachineSessionStates.AwaitingSelection;
+        var wasOpening = session.State == MachineSessionStates.Opening;
         var now = DateTime.UtcNow;
         var updated = await _db.MachineSessions.Where(item => item.Id == sessionId && item.CompanyId == companyId &&
                 item.ItemNumber == null && item.TransactionId == null &&
                 ((item.State == MachineSessionStates.ClosingWithoutSelection && item.ClosedAt == null) ||
                  (item.State == MachineSessionStates.ClosureIncomplete && item.ClosedAt != null) ||
+                 (item.State == MachineSessionStates.Opening && item.ClosedAt == null &&
+                  item.StartedAt <= statusResponseAt - openingRecoveryThreshold) ||
                  (item.State == MachineSessionStates.AwaitingSelection && item.ClosedAt == null &&
                   item.SelectionDeadlineAt != null && item.SelectionDeadlineAt <= statusResponseAt)))
             .ExecuteUpdateAsync(setters => setters
@@ -418,7 +426,9 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         await AddEventAsync(session, "session.mdb_reset_suspected",
             wasAwaitingSelection
                 ? "MDB respondeu enabled_state após expirar a seleção; sessão sem venda concluída sem FECHAR_SESSAO."
-                : "MDB respondeu enabled_state enquanto o sistema aguardava o fechamento; sessão concluída sem FECHAR_SESSAO.",
+                : wasOpening
+                    ? "MDB confirmou enabled_state após uma tentativa de abertura sem confirmação; sessão antiga encerrada para permitir nova tentativa automática."
+                    : "MDB respondeu enabled_state enquanto o sistema aguardava o fechamento; sessão concluída sem FECHAR_SESSAO.",
             userId, status.DataJson, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         if (transaction != null) await transaction.CommitAsync(cancellationToken);
@@ -1712,9 +1722,13 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         MachineSession? recoveredIdleSession = null;
         if (fresh && normalizedStatus == MdbStatuses.Enabled)
         {
+            var openingRecoveryThreshold = TimeSpan.FromSeconds(Math.Clamp(
+                _configuration.GetValue<int?>("MdbStatus:OpeningRecoveryAfterSeconds") ?? 30, 5, 600));
             var pendingClosure = await _db.MachineSessions.Where(item => item.MachineId == message.MachineId &&
                 item.CompanyId == message.CompanyId && item.ItemNumber == null && item.TransactionId == null &&
                 ((item.State == MachineSessionStates.ClosingWithoutSelection || item.State == MachineSessionStates.ClosureIncomplete) ||
+                 (item.State == MachineSessionStates.Opening && item.ClosedAt == null &&
+                  item.StartedAt <= message.ReceivedAt - openingRecoveryThreshold) ||
                  (item.State == MachineSessionStates.AwaitingSelection && item.ClosedAt == null &&
                   item.SelectionDeadlineAt != null && item.SelectionDeadlineAt <= message.ReceivedAt)))
                 .OrderByDescending(item => item.StartedAt).FirstOrDefaultAsync(cancellationToken);
