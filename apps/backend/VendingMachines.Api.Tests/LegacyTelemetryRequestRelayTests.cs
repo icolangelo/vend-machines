@@ -190,8 +190,17 @@ public sealed class LegacyTelemetryRequestRelayTests
             new CancelSessionRequest { Reason = "user_cancelled" },
             CancellationToken.None);
 
-        var accepted = Assert.IsType<AcceptedResult>(result);
-        Assert.Equal(StatusCodes.Status202Accepted, accepted.StatusCode);
+        if (isClosed)
+        {
+            var accepted = Assert.IsType<AcceptedResult>(result);
+            Assert.Equal(StatusCodes.Status202Accepted, accepted.StatusCode);
+        }
+        else
+        {
+            var paused = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable, paused.StatusCode);
+            Assert.Contains("machine_owner_unknown", JsonSerializer.Serialize(paused.Value));
+        }
         Assert.Equal(0, handler.RequestCount);
         Assert.Empty(await db.TelemetryCommands.ToListAsync());
     }

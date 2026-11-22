@@ -35,7 +35,7 @@ public sealed record DeviceStatusResult(
 public sealed class TelemetryConnectionManager : BackgroundService, ITelemetryConnectionOperations
 {
     public const int MinimumSupportedCommandRoutingVersion = 1;
-    public const int CurrentCommandRoutingVersion = 2;
+    public const int CurrentCommandRoutingVersion = 3;
 
     public static bool SupportsCommandRoutingVersion(int? version) =>
         version is >= MinimumSupportedCommandRoutingVersion and <= CurrentCommandRoutingVersion;

@@ -336,7 +336,7 @@ public sealed class TelemetryController : BaseApiController
             .Where(x => x.Id == sessionId && x.CompanyId == companyId)
             .Select(x => new { x.MachineId, x.State, x.ClosedAt })
             .FirstOrDefaultAsync(cancellationToken);
-        if (sessionForCancellation is not null && _legacyTelemetryRelay?.IsConfigured == true)
+        if (sessionForCancellation is not null && !sessionForCancellation.ClosedAt.HasValue && _legacyTelemetryRelay?.IsConfigured == true)
         {
             var ownerState = await _db.MachineConnectionStates.AsNoTracking()
                 .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, cancellationToken);
@@ -358,7 +358,7 @@ public sealed class TelemetryController : BaseApiController
         {
             var ownerState = await _db.MachineConnectionStates.AsNoTracking()
                 .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, cancellationToken);
-            if (ownerState?.IsOnline == true &&
+            if (!sessionForCancellation.ClosedAt.HasValue && ownerState?.IsOnline == true &&
                 ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
                 return StatusCode(StatusCodes.Status503ServiceUnavailable, new {
                     code = "machine_owner_unknown",
