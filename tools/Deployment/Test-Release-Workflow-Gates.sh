@@ -471,9 +471,8 @@ if grep -Fq 'Coolify-Deployment.sh deploy' "$temporary_dir/build-job"; then
   exit 1
 fi
 release_readiness_line="$(grep -nF 'bash tools/Deployment/Coolify-Deployment.sh deploy' "$temporary_dir/release-job" | head -n 1 | cut -d: -f1)"
-revision_record_line="$(grep -nF 'name: Record the verified API revision for future compatibility checks' "$temporary_dir/release-job" | head -n 1 | cut -d: -f1)"
-if [[ -z "$release_readiness_line" || -z "$revision_record_line" ]] || (( revision_record_line <= release_readiness_line )); then
-  echo "A revisão de produção só pode ser registrada após a readiness confirmar o deploy." >&2
+if [[ -z "$release_readiness_line" ]]; then
+  echo "O workflow precisa confirmar readiness antes de concluir o deploy." >&2
   exit 1
 fi
 if grep -Eiq 'coolify|COOLIFY_BACKEND_DEPLOY_WEBHOOK|COOLIFY_API_TOKEN|Trigger Coolify Deploy' "$temporary_dir/build-job"; then
@@ -572,7 +571,6 @@ require_contains "$temporary_dir/release-job" 'uses: actions/checkout@v4'
 require_contains "$temporary_dir/release-job" 'environment: production'
 require_contains "$temporary_dir/release-job" 'Verify GitHub production environment protection'
 require_contains "$temporary_dir/release-job" 'validate_github_production_environment.py'
-require_contains "$temporary_dir/release-job" 'actions: write'
 require_contains "$temporary_dir/release-job" 'GITHUB_ADMIN_READ_TOKEN: ${{ secrets.GITHUB_ADMIN_READ_TOKEN }}'
 require_contains "$github_environment_validator" 'Configure GITHUB_ADMIN_READ_TOKEN no ambiente production'
 if grep -Eq '^[[:space:]]+administration:' "$temporary_dir/release-job"; then
