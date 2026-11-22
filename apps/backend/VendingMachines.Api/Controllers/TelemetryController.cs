@@ -336,6 +336,17 @@ public sealed class TelemetryController : BaseApiController
             .Where(x => x.Id == sessionId && x.CompanyId == companyId)
             .Select(x => new { x.MachineId, x.State, x.ClosedAt })
             .FirstOrDefaultAsync(cancellationToken);
+        if (sessionForCancellation is not null && _legacyTelemetryRelay?.IsConfigured == true)
+        {
+            var ownerState = await _db.MachineConnectionStates.AsNoTracking()
+                .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, cancellationToken);
+            if (ownerState?.IsOnline == true &&
+                ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new {
+                    code = "machine_owner_unknown",
+                    message = "O encerramento foi pausado porque a instância proprietária da máquina ainda não confirma o estado MDB antes de fechar a sessão. Aguarde a reconexão compatível." });
+        }
+
         if (sessionForCancellation is not null &&
             (sessionForCancellation.ClosedAt.HasValue ||
              sessionForCancellation.State == MachineSessionStates.ClosingWithoutSelection))
@@ -371,6 +382,17 @@ public sealed class TelemetryController : BaseApiController
             {
                 await operationTransaction.CommitAsync(CancellationToken.None);
                 return NotFound();
+            }
+
+            ownerState = await _db.MachineConnectionStates.AsNoTracking()
+                .FirstOrDefaultAsync(state => state.MachineId == sessionForCancellation.MachineId && state.CompanyId == companyId, CancellationToken.None);
+            if (ownerState?.IsOnline == true &&
+                ownerState.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion)
+            {
+                await operationTransaction.CommitAsync(CancellationToken.None);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new {
+                    code = "machine_owner_unknown",
+                    message = "O encerramento foi pausado porque a instância proprietária da máquina ainda não confirma o estado MDB antes de fechar a sessão. Aguarde a reconexão compatível." });
             }
 
             if (sessionForCancellation.ClosedAt.HasValue ||

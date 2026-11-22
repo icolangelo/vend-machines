@@ -131,13 +131,15 @@ VALUES
     }
 
     $latestMigration = Invoke-PostgresScalar 'SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 1;'
-    if ($latestMigration -ne "20261108113731_TrackMdbMenuSequence") {
+    if ($latestMigration -ne "20261114194050_AddTelemetryReportTransferRequests") {
         throw "A cadeia terminou em '$latestMigration', não na migration candidata esperada."
     }
     $leaseColumn = Invoke-PostgresScalar -Sql 'SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ''MachineConnectionStates'' AND column_name = ''OwnerLeaseExpiresAt'' AND is_nullable = ''YES'';'
     if ($leaseColumn -ne "1") { throw "O último segmento não adicionou OwnerLeaseExpiresAt nullable." }
     $legacyOwnerReset = Invoke-PostgresScalar -Sql "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = 'clear_legacy_telemetry_owner_on_connection_change' AND pg_get_functiondef(p.oid) LIKE '%CommandRoutingVersion%NULL%' AND pg_get_functiondef(p.oid) LIKE '%OwnerLeaseExpiresAt%NULL%') THEN '1' ELSE '0' END;"
     if ($legacyOwnerReset -ne "1") { throw "O último segmento não remove metadados de roteamento obsoletos após reconexão legada." }
+    $reportTables = Invoke-PostgresScalar -Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('TelemetryReportFileChunks', 'TelemetryReportFileValidations', 'TelemetryReportTransferRequests');"
+    if ($reportTables -ne "3") { throw "O último segmento não criou todas as tabelas de transferência de relatórios MDB." }
 
     $schemaChecks = [ordered]@{
         "CommandRoutingVersion" = "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'MachineConnectionStates' AND column_name = 'CommandRoutingVersion';"

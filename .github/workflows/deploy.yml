@@ -169,7 +169,7 @@ jobs:
           payment_index=20260926174359_AddPaymentReconciliationTracking
           before_inventory_mapping_index=20261026083333_AddSessionProductSnapshot
           inventory_mapping_index=20261026091223_IndexInventoryMappingMismatchAlerts
-          after_inventory_mapping_index=20261108113731_TrackMdbMenuSequence
+          after_inventory_mapping_index=20261114194050_AddTelemetryReportTransferRequests
 
           "$ef" migrations script 0 "$before_session_index" --idempotent \
             --configuration Release \
@@ -286,6 +286,12 @@ jobs:
               not re.search(column, scripts["after_inventory_mapping"]) for column in menu_sequence_columns
           ):
               raise SystemExit("O último segmento precisa incluir as colunas opcionais da sequência do menu MDB.")
+          report_chunks_migration = "20261114185713_AddTelemetryReportFileChunks"
+          if report_chunks_migration not in scripts["after_inventory_mapping"] or 'CREATE TABLE "TelemetryReportFileChunks"' not in scripts["after_inventory_mapping"]:
+              raise SystemExit("O último segmento precisa incluir as migrations de arquivos de relatório MDB.")
+          report_requests_migration = "20261114194050_AddTelemetryReportTransferRequests"
+          if report_requests_migration not in scripts["after_inventory_mapping"] or 'CREATE TABLE "TelemetryReportTransferRequests"' not in scripts["after_inventory_mapping"]:
+              raise SystemExit("O último segmento precisa incluir a migration de solicitações de relatório MDB.")
           print("Segmentos de migrations PostgreSQL prontos para revisão.")
           PY
 
