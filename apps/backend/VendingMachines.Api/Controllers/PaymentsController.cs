@@ -1007,7 +1007,9 @@ public class PaymentsController : BaseApiController
                     (state.OwnerNodeId == null || state.OwnerNodeId == "" ||
                      state.ConnectionId == null || state.ConnectionId == "" ||
                      state.OwnerConnectionId != state.ConnectionId ||
-                     state.CommandRoutingVersion != TelemetryConnectionManager.CurrentCommandRoutingVersion ||
+                     state.CommandRoutingVersion == null ||
+                     state.CommandRoutingVersion < TelemetryConnectionManager.MinimumSupportedCommandRoutingVersion ||
+                     state.CommandRoutingVersion > TelemetryConnectionManager.CurrentCommandRoutingVersion ||
                      state.OwnerLeaseExpiresAt == null || state.OwnerLeaseExpiresAt <= now))),
                 cancellationToken);
     }

@@ -118,6 +118,70 @@ public sealed class MercadoPagoWebhookControllerTests
     }
 
     [Fact]
+    public async Task Webhook_ForPreviousSupportedRoutingVersion_UsesSharedCandidateInbox()
+    {
+        await using var scenario = await CreateScenarioAsync();
+        var company = new Company { Id = Guid.NewGuid(), Name = "Empresa" };
+        var machine = new Machine
+        {
+            Id = "supported-old-route-webhook-machine",
+            Name = "Máquina com owner anterior compatível",
+            SerialNumber = "supported-old-route-webhook-serial",
+            NormalizedSerialNumber = "SUPPORTED-OLD-ROUTE-WEBHOOK-SERIAL",
+            CompanyId = company.Id
+        };
+        var transaction = new PaymentTransaction
+        {
+            Id = Guid.NewGuid(),
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            Amount = 10m,
+            Status = "Pending",
+            MercadoPagoPaymentId = "123456789"
+        };
+        scenario.Db.Companies.Add(company);
+        scenario.Db.Machines.Add(machine);
+        scenario.Db.PaymentTransactions.Add(transaction);
+        scenario.Db.MachineSessions.Add(new MachineSession
+        {
+            Id = Guid.NewGuid(),
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            TransactionId = transaction.Id,
+            State = "PaymentPending"
+        });
+        scenario.Db.MachineConnectionStates.Add(new MachineConnectionState
+        {
+            CompanyId = company.Id,
+            MachineId = machine.Id,
+            IsOnline = true,
+            LastSeenAt = DateTime.UtcNow,
+            ConnectionId = "previous-api-connection",
+            OwnerNodeId = "previous-api-node",
+            OwnerConnectionId = "previous-api-connection",
+            OwnerLeaseExpiresAt = DateTime.UtcNow.AddMinutes(1),
+            CommandRoutingVersion = TelemetryConnectionManager.CurrentCommandRoutingVersion - 1
+        });
+        await scenario.Db.SaveChangesAsync();
+
+        var handler = new WebhookCaptureHandler();
+        var relay = new LegacyTelemetryRequestRelay(
+            new FixedHttpClientFactory(new HttpClient(handler)),
+            CreateConfiguration(("Telemetry:LegacyApiBaseUrl", "http://legacy-api.internal")));
+        var requestId = "supported-old-route-payment-request";
+        var signature = CreateSignature("123456789", requestId, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+        var controller = CreateController(scenario.Db, signature, requestId, legacyTelemetryRelay: relay).Controller;
+
+        var result = Assert.IsType<OkObjectResult>(await controller.WebhookMercadoPago(ParseBody()));
+
+        Assert.Contains("accepted", JsonSerializer.Serialize(result.Value));
+        Assert.Equal(0, handler.RequestCount);
+        var inboxMessage = await scenario.Db.WebhookInboxMessages.SingleAsync();
+        Assert.Equal("Pending", inboxMessage.Status);
+        Assert.Equal("123456789", inboxMessage.PaymentId);
+    }
+
+    [Fact]
     public async Task Webhook_AcceptsLegacyUnsignedNotificationOnlyAsDurableTrigger()
     {
         await using var scenario = await CreateScenarioAsync();

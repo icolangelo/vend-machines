@@ -894,7 +894,7 @@ public sealed class SessionOrchestratorFlowTests
         await scenario.SendAsync("pool", "end_session", includeTransactionId: true);
 
         var outbox = await scenario.SingleOutboxAsync("refund_payment");
-        Assert.Equal("deferred_candidate_overlap", outbox.Status);
+        Assert.Equal("candidate_owned_overlap", outbox.Status);
         Assert.Equal("provider_operation_failed", outbox.LastError);
         Assert.Equal(1, outbox.Attempts);
         Assert.True(outbox.NextAttemptAt > DateTime.UtcNow);

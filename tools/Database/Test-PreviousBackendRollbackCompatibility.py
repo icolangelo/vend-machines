@@ -61,6 +61,16 @@ def query(container: str, database: str, sql: str) -> str:
     ).strip()
 
 
+def probe_deploy_readiness(postgres: str, api: str) -> tuple[int, str]:
+    url = f"http://{api}:8080/health/deploy-ready"
+    deadline = time.monotonic() + 30
+    while True:
+        status, body = attempt("docker", "exec", postgres, "wget", "-q", "-O", "-", url)
+        if status == 0 or time.monotonic() >= deadline:
+            return status, body
+        time.sleep(1)
+
+
 def create_test_jwt(signing_key: str, user_id: str, company_id: str) -> str:
     def encode(value: bytes) -> str:
         return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -513,7 +523,7 @@ SELECT '{company_id}'::uuid,'Synthetic rollback company',"Id",CURRENT_TIMESTAMP,
 INSERT INTO "Machines" ("Id","Name","ClientName","Location","Status","IsActive","StockLevel","Revenue30d","TotalSales30d","LastSync","SerialNumber","NormalizedSerialNumber","CompanyId","MercadoPagoEnabled","AutoOpenSessionEnabled")
 VALUES ('{machine_id}','Synthetic rollback machine','Fixture','Fixture','online',TRUE,0,0,0,'','{serial}','{serial}','{company_id}',FALSE,FALSE);
 INSERT INTO "MachineConnectionStates" ("Id","MachineId","CompanyId","MonitoringEnabled","IsOnline","ConnectionId","ConnectedAt","LastSeenAt","OwnerNodeId","OwnerConnectionId","OwnerLeaseExpiresAt","CommandRoutingVersion")
-VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_id}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'candidate-node','{connection_id}',CURRENT_TIMESTAMP + INTERVAL '5 minutes',1);'''
+VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_id}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'candidate-node','{connection_id}',CURRENT_TIMESTAMP + INTERVAL '5 minutes',2);'''
             run("docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "vendmachines", "-c", fixture)
             before = query(names["postgres"], "vendmachines", presence_query)
             if before != f"online:{connection_id}:candidate-node":
@@ -821,10 +831,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     f"A segunda candidata não ficou saudável na sobreposição: {candidate_logs[-3500:]}"
                 )
 
-            readiness_code, readiness_body = attempt(
-                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
-                "http://candidate-api:8080/health/deploy-ready",
-            )
+            readiness_code, readiness_body = probe_deploy_readiness(names["postgres"], "candidate-api")
             if readiness_code != 0:
                 owner_routing_version = query(
                     names["postgres"], "vendmachines",
@@ -1102,9 +1109,9 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 webhook_payload = json.loads(webhook_response)
             except json.JSONDecodeError as exc:
                 raise RehearsalError(f"Relay retornou resposta de webhook inválida: {webhook_response[-1800:]}") from exc
-            if webhook_payload.get("routedToLegacyOwner") is not True:
+            if webhook_payload.get("accepted") is not True or webhook_payload.get("routedToLegacyOwner") is True:
                 raise RehearsalError(
-                    "A candidata respondeu sem confirmar o encaminhamento ao owner legado; "
+                    "A candidata não confirmou a persistência do webhook no inbox compartilhado; "
                     f"body={webhook_response[-1800:]}"
                 )
             legacy_webhook_inbox_query = (
@@ -1119,7 +1126,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             if legacy_webhook_inbox_count == "0":
                 _, previous_webhook_logs = attempt("docker", "logs", "--tail", "120", names["api"])
                 raise RehearsalError(
-                    "A API antiga respondeu ao relay, mas não persistiu o webhook na inbox do owner. "
+                    "A candidata aceitou o webhook, mas ele não apareceu no inbox compartilhado. "
                     f"Logs da API anterior: {previous_webhook_logs[-5000:]}"
                 )
             candidate_inbox_count = query(names["postgres"], "vendmachines", legacy_webhook_inbox_query)
@@ -1128,8 +1135,16 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                     "O webhook legado deve persistir exatamente uma vez na inbox compartilhada; "
                     f"encontrados {candidate_inbox_count} registros."
                 )
-            print("legacy_payment_webhook_routed_to_owner=yes")
-            print("legacy_payment_webhook_owner_inbox=single_record")
+            print("candidate_legacy_payment_webhook_acknowledged=yes")
+            print("candidate_legacy_payment_webhook_inbox=single_record")
+            # The fake payment identifier cannot be reconciled against the provider.
+            # Remove this verified synthetic inbox row so it cannot keep deploy readiness
+            # blocked when the candidate is restarted later in the overlap rehearsal.
+            run(
+                "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "postgres", "-d", "vendmachines", "-c",
+                f'''DELETE FROM "WebhookInboxMessages" WHERE "PaymentId"='{legacy_payment_id}';''',
+            )
 
             request_id = str(uuid.uuid4())
             command_body = json.dumps({
@@ -1219,7 +1234,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 '"PayloadJson","Status","Attempts","CreatedAt","NextAttemptAt") '
                 f"VALUES ('{overlap_outbox_id}'::uuid,'{company_id}'::uuid,'{machine_id}',"
                 f"'{overlap_session_id}'::uuid,'{overlap_transaction_id}'::uuid,'refund_payment','{{}}',"
-                "'deferred_candidate_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
+                "'candidate_owned_overlap',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
             )
             run(
                 "docker", "exec", names["postgres"], "psql", "-X", "-v", "ON_ERROR_STOP=1",
@@ -1230,7 +1245,7 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 names["postgres"], "vendmachines",
                 f'''SELECT "Status" FROM "OutboxMessages" WHERE "Id"='{overlap_outbox_id}'::uuid;''',
             )
-            if legacy_outbox_status != "deferred_candidate_overlap":
+            if legacy_outbox_status != "candidate_owned_overlap":
                 raise RehearsalError(
                     "A API antiga reivindicou uma outbox candidata enquanto a candidata estava parada; "
                     f"status={legacy_outbox_status}"
@@ -1335,9 +1350,8 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
             print("legacy_socket_survives_candidate_restart=yes")
             print("candidate_post_restart_command_relay=acknowledged")
 
-            restart_readiness_code, restart_readiness_body = attempt(
-                "docker", "exec", names["postgres"], "wget", "-q", "-O", "-",
-                "http://candidate-api:8080/health/deploy-ready",
+            restart_readiness_code, restart_readiness_body = probe_deploy_readiness(
+                names["postgres"], "candidate-api",
             )
             if restart_readiness_code != 0:
                 owner_routing_version = query(
@@ -1367,7 +1381,9 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 print("candidate_post_restart_readiness=ready")
 
             run("docker", "kill", names["api"])
-            time.sleep(6)
+            # A dead owner remains routable until its 30-second lease expires.
+            # Let that lease elapse before requiring the candidate to block readiness.
+            time.sleep(35)
             unavailable_readiness_code, unavailable_readiness_response = attempt(
                 "docker", "exec", names["candidate_api"], "bash", "-ec",
                 "exec 3<>/dev/tcp/127.0.0.1/8080; "
@@ -1384,7 +1400,11 @@ VALUES (gen_random_uuid(),'{machine_id}','{company_id}',TRUE,TRUE,'{connection_i
                 ) from exc
             unavailable_reason = unavailable_readiness.get("reason")
             if unavailable_readiness_code != 0 or " 503 " not in unavailable_readiness_response.splitlines()[0] or \
-                unavailable_reason not in {"legacy_owner_api_unavailable", "payment_webhooks_unresolved"}:
+                unavailable_reason not in {
+                    "legacy_owner_api_unavailable",
+                    "payment_webhooks_unresolved",
+                    "machine_connections_unroutable",
+                }:
                 raise RehearsalError(
                     "A candidata não bloqueou readiness após a queda do owner legado; "
                     f"exit={unavailable_readiness_code}, body={unavailable_readiness_response[-1800:]}"

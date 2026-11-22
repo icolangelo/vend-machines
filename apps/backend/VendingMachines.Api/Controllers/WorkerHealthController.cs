@@ -36,12 +36,14 @@ public sealed class WorkerHealthController(
                 .GroupBy(row => row.Status)
                 .Select(group => new { status = group.Key, count = group.Count() })
                 .ToDictionaryAsync(item => item.status, item => item.count, cancellationToken);
-            var deferredCandidateCount = financialOutboxCounts.GetValueOrDefault("deferred_candidate_overlap");
+            var deferredCandidateCount = financialOutboxCounts.GetValueOrDefault("deferred_candidate_overlap") +
+                                         financialOutboxCounts.GetValueOrDefault("candidate_owned_overlap");
             if (deferredCandidateCount > 0)
             {
                 financialOutboxCounts["deferred_legacy_overlap"] =
                     financialOutboxCounts.GetValueOrDefault("deferred_legacy_overlap") + deferredCandidateCount;
                 financialOutboxCounts.Remove("deferred_candidate_overlap");
+                financialOutboxCounts.Remove("candidate_owned_overlap");
             }
             var oldestDeviceMessageAt = await db.DeviceMessageInbox.AsNoTracking()
                 .Where(row => row.Status == "Pending" || row.Status == "Retry" || row.Status == "Processing")
@@ -54,7 +56,8 @@ public sealed class WorkerHealthController(
                 .MinAsync(row => (DateTime?)row.CreatedAt, cancellationToken);
             var oldestDeferredLegacyFinancialOutboxAt = await db.OutboxMessages.AsNoTracking()
                 .Where(row => row.Status == "deferred_candidate_overlap" ||
-                              row.Status == "deferred_legacy_overlap")
+                              row.Status == "deferred_legacy_overlap" ||
+                              row.Status == "candidate_owned_overlap")
                 .MinAsync(row => (DateTime?)row.CreatedAt, cancellationToken);
             var earliestProcessingFinancialOutboxLeaseExpiryAt = await db.OutboxMessages.AsNoTracking()
                 .Where(row => row.Status == "processing")

@@ -872,7 +872,10 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
     {
         var now = DateTime.UtcNow;
         var legacyOverlapActive = !string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"]);
-        var claimableStatus = legacyOverlapActive ? "deferred_candidate_overlap" : "pending";
+        // Older APIs promote the deferred_* statuses to pending when their own
+        // LegacyApiBaseUrl is unset. Use a marker they do not know during overlap
+        // so they cannot claim a candidate-owned provider operation.
+        var claimableStatus = legacyOverlapActive ? "candidate_owned_overlap" : "pending";
         var sessionsToBroadcast = new List<MachineSession>();
         var refundedTransactionIds = new HashSet<Guid>();
 
@@ -883,7 +886,8 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
         {
             await _db.OutboxMessages
                 .Where(message => message.Status == "deferred_candidate_overlap" ||
-                                  message.Status == "deferred_legacy_overlap")
+                                  message.Status == "deferred_legacy_overlap" ||
+                                  message.Status == "candidate_owned_overlap")
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(message => message.Status, "pending")
                     .SetProperty(message => message.NextAttemptAt, now)
@@ -1084,7 +1088,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             var retryAt = DateTime.UtcNow;
             var retryStatus = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
                 ? "pending"
-                : "deferred_candidate_overlap";
+                : "candidate_owned_overlap";
             var released = await _db.OutboxMessages
                 .Where(message => message.Id == outboxId &&
                     message.Status == "processing" && message.NextAttemptAt == leaseExpiresAt)
@@ -2171,7 +2175,7 @@ public sealed class SessionOrchestrator : IDeviceTelemetryMessageHandler
             NextAttemptAt = DateTime.UtcNow,
             Status = string.IsNullOrWhiteSpace(_configuration["Telemetry:LegacyApiBaseUrl"])
                 ? "pending"
-                : "deferred_candidate_overlap"
+                : "candidate_owned_overlap"
         });
     }
 
