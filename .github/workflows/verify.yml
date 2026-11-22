@@ -63,12 +63,6 @@ jobs:
       - name: Test secret scan commit range selection
         run: python3 tools/Deployment/test_secret_scan_range.py
 
-      - name: Test automatic production API revision tracking
-        run: python -B tools/Deployment/test_update_production_backend_revision.py
-
-      - name: Test automatic production API revision tracking
-        run: python -B tools/Deployment/test_update_production_backend_revision.py
-
       - name: Verify migration impact and recovery review
         run: |
           python -B tools/Deployment/test_check_migration_risk.py

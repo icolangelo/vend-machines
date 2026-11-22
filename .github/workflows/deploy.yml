@@ -115,9 +115,6 @@ jobs:
       - name: Verify backend image context excludes local databases
         run: python -B tools/Deployment/test_backend_docker_context.py
 
-      - name: Test automatic production API revision tracking
-        run: python -B tools/Deployment/test_update_production_backend_revision.py
-
       - name: Verify migration impact and recovery review
         run: |
           python -B tools/Deployment/test_check_migration_risk.py
@@ -479,10 +476,9 @@ jobs:
       - name: Verify previous API overlap while a legacy MDB socket stays connected
         env:
           BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
-          PREVIOUS_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
         run: |
           set -euo pipefail
-          previous_ref="$PREVIOUS_BACKEND_REF"
+          previous_ref="$(bash tools/Deployment/Get-ProductionBackendRevision.sh)"
           git cat-file -e "${previous_ref}^{commit}"
           python tools/Database/Test-PreviousBackendRollbackCompatibility.py \
             --segments artifacts \
@@ -540,7 +536,6 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production
     permissions:
-      actions: write
       contents: read
       packages: write
     steps:
@@ -610,10 +605,3 @@ jobs:
           ALLOW_MISSING_API_READINESS_ENDPOINT: ${{ inputs.bootstrap_api_readiness_endpoint == 'yes' && 'true' || 'false' }}
         run: |
           bash tools/Deployment/Coolify-Deployment.sh deploy
-
-      - name: Record the verified API revision for future compatibility checks
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          DEPLOYED_API_REVISION: ${{ github.sha }}
-        run: python3 tools/Deployment/UpdateProductionBackendRevision.py

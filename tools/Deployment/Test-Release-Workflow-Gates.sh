@@ -9,10 +9,11 @@ secret_scan_workflow="$repo_root/.github/workflows/secret-scan.yml"
 pre_commit_hook="$repo_root/.githooks/pre-commit"
 api_dockerignore="$repo_root/apps/backend/VendingMachines.Api/.dockerignore"
 backend_context_test="$repo_root/tools/Deployment/test_backend_docker_context.py"
+production_revision_resolver="$repo_root/tools/Deployment/Get-ProductionBackendRevision.sh"
 temporary_dir="$(mktemp -d)"
 trap 'rm -f "$temporary_dir/build-job" "$temporary_dir/release-job"; rmdir "$temporary_dir"' EXIT
 
-if [[ ! -f "$workflow" || ! -f "$verify_workflow" || ! -f "$frontend_workflow" || ! -f "$secret_scan_workflow" || ! -f "$pre_commit_hook" || ! -f "$api_dockerignore" || ! -f "$backend_context_test" ]]; then
+if [[ ! -f "$workflow" || ! -f "$verify_workflow" || ! -f "$frontend_workflow" || ! -f "$secret_scan_workflow" || ! -f "$pre_commit_hook" || ! -f "$api_dockerignore" || ! -f "$backend_context_test" || ! -f "$production_revision_resolver" ]]; then
   echo "Workflows de verificação, deploy e publicação frontend não encontrados." >&2
   exit 1
 fi
@@ -78,7 +79,7 @@ if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
 fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
-require_contains "$frontend_workflow" 'vars.PRODUCTION_BACKEND_REF'
+require_contains "$frontend_workflow" 'bash tools/Deployment/Get-ProductionBackendRevision.sh'
 require_contains "$frontend_workflow" 'git cat-file -e "${backend_ref}^{commit}"'
 if grep -Fq 'BACKEND_COMPAT_REF: ${{ github.event.before }}' "$frontend_workflow"; then
   echo "A publicação frontend precisa validar a API publicada, não o push anterior." >&2
@@ -89,14 +90,14 @@ require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$workflow" 'FRONTEND_COMPAT_REF: ${{ github.event.before }}'
 require_contains "$workflow" '--frontend-ref "$frontend_ref"'
-require_contains "$workflow" 'vars.PRODUCTION_BACKEND_REF'
+require_contains "$workflow" 'bash tools/Deployment/Get-ProductionBackendRevision.sh'
+require_contains "$production_revision_resolver" 'https://api.vendmachine.com.br/health/ready'
+require_contains "$production_revision_resolver" '.sourceCommit'
 require_contains "$workflow" 'git cat-file -e "${previous_ref}^{commit}"'
-require_contains "$workflow" 'Record the verified API revision for future compatibility checks'
-require_contains "$workflow" 'UpdateProductionBackendRevision.py'
-require_contains "$workflow" 'actions: write'
-require_contains "$workflow" 'GITHUB_TOKEN: ${{ github.token }}'
-require_contains "$workflow" 'python -B tools/Deployment/test_update_production_backend_revision.py'
-require_contains "$verify_workflow" 'python -B tools/Deployment/test_update_production_backend_revision.py'
+if grep -Fq 'PRODUCTION_BACKEND_REF' "$workflow" "$frontend_workflow"; then
+  echo "A revisão da API de produção deve ser descoberta pelo health endpoint, sem variável manual." >&2
+  exit 1
+fi
 if grep -Fq 'PREVIOUS_BACKEND_REF: ${{ github.event.before }}' "$workflow"; then
   echo "O ensaio de sobreposição precisa usar a revisão publicada, não o push anterior." >&2
   exit 1

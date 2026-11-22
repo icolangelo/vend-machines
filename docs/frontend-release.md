@@ -8,9 +8,7 @@ A ordem de compatibilidade para uma troca gradual é explícita nos workflows: a
 
 ### Revisão automática da API em produção
 
-Antes de validar compatibilidade, o workflow usa a variável GitHub `PRODUCTION_BACKEND_REF`, que é atualizada automaticamente pelo workflow de release da API depois que o Coolify confirma `Ready` na revisão implantada. A atualização não ocorre em build, publicação de imagem ou tentativa de deploy que não conclua a readiness.
-
-O SHA gravado é a revisão confirmada em `/health/ready`, não o último commit da branch. Se a API não tiver readiness ou o workflow não conseguir atualizar a variável no GitHub, a release fica visivelmente bloqueada e não deve avançar para o frontend até a referência ser corrigida.
+Antes de validar compatibilidade, o workflow consulta `https://api.vendmachine.com.br/health/ready`, exige `status = Ready` e usa o `sourceCommit` anunciado pela própria API. Assim, a checagem acompanha tanto releases feitas pelo workflow quanto publicações manuais no Coolify, sem variável de repositório para manter. Se o endpoint não estiver pronto, não anunciar um SHA válido ou apontar para um commit ausente no histórico, a publicação do frontend para com erro.
 
 Comparei as rotas/métodos da interface anterior (`origin/develop`) com os controllers do snapshot candidato `7c6338c`: todas as chamadas usadas pela interface antiga existem na API candidata. A direção inversa ainda falha: a interface candidata tem **36 combinações de rota/método** que não existem na API de `origin/develop`, incluindo alertas, estoque, relatórios, convites e administração. Portanto, a sequência compatível é atualizar primeiro a API, manter a interface atual e só publicar o frontend candidato depois que a nova API estiver atendendo. Essa verificação é estática; login, fluxos funcionais, rede real e MDB físico ainda exigem homologação.
 

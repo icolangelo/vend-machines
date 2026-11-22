@@ -57,11 +57,9 @@ jobs:
           node --test tools/Deployment/test_frontend_api_contract.mjs
 
       - name: Verify frontend compatibility with the production API
-        env:
-          BACKEND_COMPAT_REF: ${{ vars.PRODUCTION_BACKEND_REF || 'f8c8daac850aec4e0ec298ec3df8994a27ffbdea' }}
         run: |
           set -euo pipefail
-          backend_ref="$BACKEND_COMPAT_REF"
+          backend_ref="$(bash tools/Deployment/Get-ProductionBackendRevision.sh)"
           git cat-file -e "${backend_ref}^{commit}"
           node tools/Deployment/CheckFrontendApiContract.mjs --backend-ref "$backend_ref"
 
