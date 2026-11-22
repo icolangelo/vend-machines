@@ -476,6 +476,7 @@ jobs:
       - name: Verify previous API overlap while a legacy MDB socket stays connected
         env:
           BACKEND_IMAGE_TAG: ${{ steps.meta.outputs.tags }}
+          PRODUCTION_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF }}
         run: |
           set -euo pipefail
           previous_ref="$(bash tools/Deployment/Get-ProductionBackendRevision.sh)"

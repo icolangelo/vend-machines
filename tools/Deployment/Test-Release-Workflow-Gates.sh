@@ -79,6 +79,7 @@ if ! grep -Fq 'fetch-depth: 0' <<< "$frontend_checkout"; then
 fi
 require_contains "$frontend_workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs'
 require_contains "$frontend_workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
+require_contains "$frontend_workflow" 'PRODUCTION_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF }}'
 require_contains "$frontend_workflow" 'bash tools/Deployment/Get-ProductionBackendRevision.sh'
 require_contains "$frontend_workflow" 'git cat-file -e "${backend_ref}^{commit}"'
 if grep -Fq 'BACKEND_COMPAT_REF: ${{ github.event.before }}' "$frontend_workflow"; then
@@ -90,14 +91,11 @@ require_contains "$workflow" 'node tools/Deployment/CheckFrontendApiContract.mjs
 require_contains "$workflow" 'node --test tools/Deployment/test_frontend_api_contract.mjs'
 require_contains "$workflow" 'FRONTEND_COMPAT_REF: ${{ github.event.before }}'
 require_contains "$workflow" '--frontend-ref "$frontend_ref"'
+require_contains "$workflow" 'PRODUCTION_BACKEND_REF: ${{ vars.PRODUCTION_BACKEND_REF }}'
 require_contains "$workflow" 'bash tools/Deployment/Get-ProductionBackendRevision.sh'
 require_contains "$production_revision_resolver" 'https://api.vendmachine.com.br/health/ready'
 require_contains "$production_revision_resolver" '.sourceCommit'
 require_contains "$workflow" 'git cat-file -e "${previous_ref}^{commit}"'
-if grep -Fq 'PRODUCTION_BACKEND_REF' "$workflow" "$frontend_workflow"; then
-  echo "A revisão da API de produção deve ser descoberta pelo health endpoint, sem variável manual." >&2
-  exit 1
-fi
 if grep -Fq 'PREVIOUS_BACKEND_REF: ${{ github.event.before }}' "$workflow"; then
   echo "O ensaio de sobreposição precisa usar a revisão publicada, não o push anterior." >&2
   exit 1
