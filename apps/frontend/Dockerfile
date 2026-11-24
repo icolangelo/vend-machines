@@ -12,7 +12,7 @@ RUN npm run build \
   && node scripts/assert-production-bundle.mjs dist \
   && node scripts/render-nginx-config.mjs
 
-FROM ghcr.io/nginx/nginx-unprivileged:stable-alpine@sha256:4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5 AS runtime
+FROM ghcr.io/nginx/nginx-unprivileged:stable-alpine@sha256:44e74ca483234093081138b6d7b6f561d55557756a2deefc3a5056148defeb99 AS runtime
 
 COPY --from=build /app/nginx.conf.generated /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
